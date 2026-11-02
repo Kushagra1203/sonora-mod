@@ -21,6 +21,7 @@ use ui::{
 use crate::chrome::sessions_button::SessionsButton;
 use crate::chrome::{Chrome, SidebarRight};
 use crate::shared::menus::ItemMenu;
+use crate::shared::quality;
 use crate::shared::transport::{NOTCH, fraction, like, moved, percent, transport, volume_icon};
 
 const SEEK_MAX: f32 = 560.;
@@ -331,6 +332,9 @@ impl PlayerBar {
         let shown = self.playback.read(cx).shown_track(cx);
         let track = shown.as_ref();
         let explicit = track.is_some_and(|track| track.explicit);
+        // How the stream is actually encoded, which the engine reports once it opens it, so
+        // the badge says what is playing rather than what was asked for.
+        let quality = quality::of(self.playback.read(cx), cx);
         let title = match track {
             Some(track) => div()
                 .id("now-playing-track")
@@ -421,20 +425,35 @@ impl PlayerBar {
             .child(headline)
             .when_some(track, |this, track| {
                 this.child(
-                    InlineLinks::new(
-                        "now-playing-artist",
-                        track.artist_refs.iter().map(|artist| {
-                            InlineLink::new(artist.name.clone(), artist.id.clone().map(Into::into))
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .when(centered, |this| this.justify_center())
+                        .child(
+                            InlineLinks::new(
+                                "now-playing-artist",
+                                track.artist_refs.iter().map(|artist| {
+                                    InlineLink::new(
+                                        artist.name.clone(),
+                                        artist.id.clone().map(Into::into),
+                                    )
+                                }),
+                                track.artists.clone(),
+                                muted,
+                            )
+                            .text_size(artists)
+                            .when(centered, |this| this.justify_center())
+                            .flex_shrink(1.)
+                            .truncate()
+                            .on_click(|id, cx| {
+                                navigate(Destination::Artist(id), cx);
+                            }),
+                        )
+                        .when_some(quality, |this, quality| {
+                            this.child(quality::badge("player-quality", &quality, *theme))
                         }),
-                        track.artists.clone(),
-                        muted,
-                    )
-                    .text_size(artists)
-                    .when(centered, |this| this.justify_center())
-                    .truncate()
-                    .on_click(|id, cx| {
-                        navigate(Destination::Artist(id), cx);
-                    }),
                 )
             })
     }

@@ -18,6 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Local songs read word-by-word lyrics from a `.ttml` file beside them or from TTML in their
   lyrics tag.
 - The Now playing preview in Appearance settings draws the visualizer style you pick.
+- A song playing from a streaming service upgrades to a lossless copy from your addons within the
+  first seconds, without stopping, and the quality badge follows it up to Lossless or Hi-Res.
+  Switch it off on the Addon sources page.
 
 ### Changed
 
@@ -27,6 +30,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The tray menu and taskbar buttons follow the song of the Jam or device you are listening to.
 - A song's right-click menu groups Artist, Album, Radio and Details under one Go to submenu.
 - Sorting by Date added puts the songs you added most recently first.
+- Lossless upgrades now match titles that carry a featuring credit, an explicit/clean edit marker
+  or a bracketed qualifier, and find a copy sooner.
+- Playback moves on to the next queued song after a losslessly upgraded track ends, instead of
+  showing the next one while the old one replays from where it was.
 
 ### Fixed
 

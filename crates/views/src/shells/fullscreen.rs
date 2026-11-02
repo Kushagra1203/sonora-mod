@@ -790,6 +790,9 @@ impl FullscreenView {
             true => Pixels::ZERO,
             false => theme.metrics.control_small,
         };
+        // Under the timestamp row, where the number alone never says whether the stream is
+        // lossless or a lossy one.
+        let quality = shared::quality::of(self.playback.read(cx), cx);
 
         div()
             .id("fullscreen-controls")
@@ -803,6 +806,9 @@ impl FullscreenView {
             .on_click(|_, _, cx| cx.stop_propagation())
             .when(inline, |this| this.child(self.pill(cx)))
             .child(self.seek(cx))
+            .when_some(quality, |this, quality| {
+                this.child(shared::quality::line("fullscreen-quality", &quality, theme))
+            })
             .child(
                 div()
                     .id("fullscreen-transport")

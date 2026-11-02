@@ -9,8 +9,8 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Ta
 use music::connect::{self, Command, Repeat};
 use music::vault::Vault;
 use music::{
-    Analyzer, Meter, MusicApi, PlaybackConfig, PlaybackEvent as BackendEvent, PlaybackEvents,
-    PlaybackFactory, Player, Quality, Spectrum, Track, TrackSignal, Transcode,
+    AddonUpgrade, Analyzer, Meter, MusicApi, PlaybackConfig, PlaybackEvent as BackendEvent,
+    PlaybackEvents, PlaybackFactory, Player, Quality, Spectrum, Track, TrackSignal, Transcode,
 };
 use ui::{Pin, PinKind};
 
@@ -123,6 +123,28 @@ const KEYS_FAQ: &str = "https://sonorahq.org/faq#spotify-playback-keys";
 struct Preloaded {
     id: String,
     segue: bool,
+}
+
+/// An addon stream standing in for the track the UI shows: `display` is the id the queue and
+/// history know, `addon` is what the shadow engine plays.
+struct Shadow {
+    display: String,
+    addon: String,
+    phase: Shade,
+    /// What the addon engine said it decodes to, shown as the display track's signal once it
+    /// is the one playing.
+    signal: Option<TrackSignal>,
+}
+
+/// How far the shadow has got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shade {
+    /// The addon stream is being fetched and held paused.
+    Loading,
+    /// It is loaded, and the seek, play and pause of the original are on their way.
+    Swapping,
+    /// It is the stream the listener hears.
+    Playing,
 }
 
 /// The position shown between the engine's reports. It runs on wall time from `reset` and is
@@ -415,6 +437,21 @@ pub struct Playback {
     track: Option<Track>,
     engine: Option<Box<dyn Player>>,
     local_engine: Option<Box<dyn Player>>,
+    /// The addon engine that can take over the current track with a lossless stream.
+    addon_engine: Option<Box<dyn Player>>,
+    /// The addon engine's event pump; dropping it stops listening.
+    addon_task: Option<Task<()>>,
+    /// The search for a lossless copy of the track playing, held so a skip cancels it.
+    upgrade_task: Option<Task<()>>,
+    /// The display track whose stream an addon copy is shadowing, once one was found.
+    shadow: Option<Shadow>,
+    /// The display track an upgrade was already tried for, so one attempt is made per track
+    /// rather than one per play event.
+    attempted: Option<String>,
+    /// The addon sources an upgrade searches and the factory that plays one.
+    upgrade: Arc<AddonUpgrade>,
+    /// Whether a track from another provider is upgraded when an addon holds a lossless copy.
+    lossless_upgrade: bool,
     session: Entity<Session>,
     queue: Entity<Queue>,
     settings: Entity<AppSettings>,
@@ -586,6 +623,7 @@ impl Playback {
         let level = settings.read(cx).volume();
         let normalisation = settings.read(cx).normalisation();
         let gapless = settings.read(cx).gapless();
+        let lossless_upgrade = settings.read(cx).lossless_upgrade();
         let transcode = settings.read(cx).transcode();
         let quality = settings.read(cx).quality();
         let keep_tracks = settings.read(cx).keep_tracks();
@@ -604,6 +642,13 @@ impl Playback {
             track: None,
             engine: None,
             local_engine: None,
+            addon_engine: None,
+            addon_task: None,
+            upgrade_task: None,
+            shadow: None,
+            attempted: None,
+            upgrade: Arc::new(AddonUpgrade::new()),
+            lossless_upgrade,
             session,
             queue,
             settings,
@@ -805,8 +850,55 @@ impl Playback {
     }
 
     fn active_engine(&self) -> Option<&dyn Player> {
+        if self
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| shadow.phase != Shade::Loading)
+            && let Some(engine) = self.addon_engine.as_deref()
+        {
+            return Some(engine);
+        }
         let id = self.track.as_ref()?.id.as_deref()?;
         self.engine_for(id)
+    }
+
+    /// Abandons an upgrade without touching the track that plays: cancels its search, retires
+    /// the addon engine and forgets the resolved stream. The caller is responsible for the
+    /// original stream being audible, which it is unless the shadow had already taken over.
+    fn drop_upgrade(&mut self) {
+        self.upgrade_task = None;
+        self.attempted = None;
+        if let Some(shadow) = self.shadow.take() {
+            self.upgrade.forget_stream(&shadow.addon);
+        }
+        self.addon_task = None;
+        retire(self.addon_engine.take());
+    }
+
+    /// Puts the track back on its original stream after the addon copy stopped. The original
+    /// engine reloads the display track where the shadow had got to, and the same track is not
+    /// searched for again, so a source that keeps failing cannot make a loop.
+    fn fall_back(&mut self, cx: &mut Context<Self>) {
+        let Some(shadow) = self.shadow.take() else {
+            return;
+        };
+        self.upgrade.forget_stream(&shadow.addon);
+        self.addon_task = None;
+        retire(self.addon_engine.take());
+        let Some(track) = self
+            .track
+            .clone()
+            .filter(|track| track.id.as_deref() == Some(shadow.display.as_str()))
+        else {
+            return;
+        };
+        let at = self.live_position();
+        log::warn!(
+            "playback: the addon stream for {} stopped, returning to the original",
+            track.name
+        );
+        self.load_from(&track, at, Start::Retry, cx);
+        self.attempted = Some(shadow.display);
     }
 
     /// The spectrum of the music on its way into the equalizer, on every output.
@@ -829,7 +921,14 @@ impl Playback {
     /// what its engine reported about the track's sound, `None` inside until it opened it.
     pub fn track_signal(&self) -> Option<Option<&TrackSignal>> {
         let id = self.track.as_ref()?.id.as_deref()?;
-        self.engine_for(id)?;
+        match self.shadow.as_ref() {
+            Some(shadow) if shadow.phase != Shade::Loading => {
+                self.addon_engine.as_ref()?;
+            }
+            _ => {
+                self.engine_for(id)?;
+            }
+        }
         Some(
             self.signals
                 .iter()
@@ -910,6 +1009,7 @@ impl Playback {
             return self.failed(format!("{} has no track id", track.name), cx);
         };
         let is_local = music::is_local_id(&id);
+        self.drop_upgrade();
         if !is_local {
             match self.refused {
                 Some(Refusal::Keys) => return self.refuse(cx),
@@ -969,6 +1069,366 @@ impl Playback {
             })
             .ok();
         }));
+    }
+
+    /// Looks for a lossless addon copy of the track that just started on another service, once
+    /// per track. The original keeps playing while the search runs.
+    fn maybe_upgrade(&mut self, cx: &mut Context<Self>) {
+        if !self.lossless_upgrade || self.shadow.is_some() {
+            return;
+        }
+        if self.intent != Intent::Play || self.state != PlaybackState::Playing {
+            return;
+        }
+        let Some(track) = self.track.clone() else {
+            return;
+        };
+        let Some(id) = track.id.clone() else {
+            return;
+        };
+        if music::is_local_id(&id) || music::is_addon_id(&id) {
+            return;
+        }
+        if self.session.read(cx).provider_slug() == Some("addons") {
+            return;
+        }
+        if self.attempted.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        if Network::lost(cx) || !self.upgrade.available() {
+            return;
+        }
+
+        self.attempted = Some(id.clone());
+        let upgrade = self.upgrade.clone();
+        let wanted = track.clone();
+        let name = track.name.clone();
+        self.upgrade_task = Some(Io::global(cx).load(
+            async move { Ok::<_, anyhow::Error>(upgrade.find(&wanted).await) },
+            move |this, found, cx| {
+                this.upgrade_task = None;
+                let Some(found) = found.unwrap_or(None) else {
+                    log::debug!("playback: no lossless addon copy of {name}");
+                    return;
+                };
+                this.begin_swap(&id, found, cx);
+            },
+            cx,
+        ));
+    }
+
+    /// Starts the addon engine on the copy that was found, held paused at the live position.
+    /// The original keeps playing until the shadow says it has opened the stream.
+    fn begin_swap(&mut self, display: &str, addon: Track, cx: &mut Context<Self>) {
+        if self.track.as_ref().and_then(|track| track.id.as_deref()) != Some(display)
+            || self.intent != Intent::Play
+            || self.state != PlaybackState::Playing
+        {
+            return;
+        }
+        let Some(addon_id) = addon.id.clone() else {
+            return;
+        };
+        self.start_addon_engine(cx);
+        let Some(engine) = self.addon_engine.as_ref() else {
+            return;
+        };
+        let at = self.live_position();
+        self.shadow = Some(Shadow {
+            display: display.to_owned(),
+            addon: addon_id.clone(),
+            phase: Shade::Loading,
+            signal: None,
+        });
+        if let Err(error) = engine.load_paused_at(&addon_id, at) {
+            log::warn!(
+                "playback: cannot hold the addon stream for {}: {error:#}",
+                addon.name
+            );
+            self.drop_upgrade();
+            self.attempted = Some(display.to_owned());
+        }
+        cx.notify();
+    }
+
+    /// Builds the addon engine on first use and starts pumping its events.
+    fn start_addon_engine(&mut self, cx: &mut Context<Self>) {
+        if self.addon_engine.is_some() {
+            return;
+        }
+        let playback = self.upgrade.factory();
+        let config = self.engine_config(Quality::Lossless);
+        let (engine, events) = playback.start(config);
+        self.listen_addon(events, cx);
+        self.addon_engine = Some(engine);
+    }
+
+    /// Pumps the shadow engine's events until it is dropped.
+    fn listen_addon(&mut self, mut events: Box<dyn PlaybackEvents>, cx: &mut Context<Self>) {
+        self.addon_task = Some(cx.spawn(async move |this, cx| {
+            while let Some(event) = events.next().await {
+                if this
+                    .update(cx, |this, cx| this.on_addon_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    /// Once the addon stream has opened paused, moves it to where the original is now and
+    /// starts it just before pausing the original, so the swap is as close to the same sample
+    /// as two independent outputs can make it.
+    fn swap_in(&mut self, cx: &mut Context<Self>) {
+        if self
+            .shadow
+            .as_ref()
+            .is_none_or(|shadow| shadow.phase != Shade::Loading)
+        {
+            return;
+        }
+        if self.intent != Intent::Play || self.state != PlaybackState::Playing {
+            self.drop_upgrade();
+            return;
+        }
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.phase = Shade::Swapping;
+        }
+        let at = self.live_position();
+        if let Some(engine) = self.addon_engine.as_deref() {
+            engine.seek(at);
+            engine.play();
+        }
+        if let Some(engine) = self.engine.as_deref() {
+            engine.pause();
+        }
+        log::info!(
+            "playback: switching to a lossless addon stream at {}s",
+            at.as_secs()
+        );
+        cx.notify();
+    }
+
+    /// Makes the addon stream the one the listener hears, keeping the track the UI shows. A
+    /// pause pressed while the swap was in flight lands here too, and commits it held paused.
+    fn commit_swap(&mut self, at: Duration, cx: &mut Context<Self>) {
+        let Some(shadow) = self.shadow.as_ref() else {
+            return;
+        };
+        if shadow.phase != Shade::Swapping {
+            return;
+        }
+        let display = shadow.display.clone();
+        let signal = shadow.signal.clone();
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.phase = Shade::Playing;
+        }
+        self.failures = 0;
+        self.throttles = 0;
+        self.position = at;
+        self.seek_in_flight = None;
+        self.seek_target = None;
+        if let Some(signal) = signal {
+            self.learn_signal(display, signal, cx);
+        }
+        self.remember(true, cx);
+        match self.intent == Intent::Pause {
+            true => {
+                self.state = PlaybackState::Paused;
+                self.paused_at = Some(SystemTime::now());
+                self.clock.reset(at, false);
+                if let Some(engine) = self.addon_engine.as_deref() {
+                    engine.pause();
+                }
+                cx.emit(PlaybackEvent::Paused);
+                self.follow_up_seek(cx);
+                log::info!("playback: the lossless addon stream is ready, held paused");
+            }
+            false => {
+                self.pressed = None;
+                self.state = PlaybackState::Playing;
+                self.paused_at = None;
+                self.clock.reset(at, true);
+                self.follow_up_seek(cx);
+                log::info!("playback: now playing the lossless addon stream");
+            }
+        }
+        cx.notify();
+    }
+
+    /// Applies what the shadow engine reports. Everything from it is about the track it was
+    /// asked to play, so an event about another id is a leftover and is dropped.
+    fn on_addon_event(&mut self, event: BackendEvent, cx: &mut Context<Self>) {
+        let Some(shadow) = self.shadow.as_ref() else {
+            return;
+        };
+        let display = shadow.display.clone();
+        let addon = shadow.addon.clone();
+        let phase = shadow.phase;
+
+        if let BackendEvent::OutputChanged = event {
+            log::warn!("playback: the addon output changed");
+            match phase {
+                Shade::Loading => {
+                    self.drop_upgrade();
+                    self.attempted = Some(display);
+                }
+                Shade::Swapping | Shade::Playing => self.fall_back(cx),
+            }
+            return;
+        }
+        if let Some(id) = event.id()
+            && id != addon
+        {
+            return;
+        }
+
+        match event {
+            BackendEvent::OutputChanged => {}
+            BackendEvent::Signal { track, .. } => {
+                let changed = self
+                    .shadow
+                    .as_ref()
+                    .and_then(|shadow| shadow.signal.as_ref())
+                    != Some(&track);
+                let display = self.shadow.as_ref().map(|shadow| shadow.display.clone());
+                if let Some(shadow) = self.shadow.as_mut() {
+                    shadow.signal = Some(track.clone());
+                }
+                if phase == Shade::Playing
+                    && changed
+                    && let Some(display) = display
+                {
+                    self.learn_signal(display, track, cx);
+                }
+                if phase == Shade::Loading {
+                    self.swap_in(cx);
+                }
+            }
+            BackendEvent::Loading { .. } => {}
+            BackendEvent::Length { duration, .. } => {
+                if let Some(track) = self.track.as_mut()
+                    && !duration.is_zero()
+                    && track.duration != duration
+                {
+                    track.duration = duration;
+                }
+            }
+            BackendEvent::Playing { at, .. } => match phase {
+                Shade::Loading => {}
+                Shade::Swapping => self.commit_swap(at, cx),
+                Shade::Playing if self.overtaken(Intent::Play) => {}
+                Shade::Playing => {
+                    let at = self.landed(at);
+                    let started = self.state != PlaybackState::Playing;
+                    self.intent = Intent::Play;
+                    self.pressed = None;
+                    self.state = PlaybackState::Playing;
+                    self.paused_at = None;
+                    self.failures = 0;
+                    self.throttles = 0;
+                    self.position = at;
+                    self.clock.reset(at, true);
+                    if started {
+                        cx.emit(PlaybackEvent::StartedPlayback);
+                    }
+                    self.follow_up_seek(cx);
+                }
+            },
+            BackendEvent::Seeked { at, .. } => match phase {
+                Shade::Loading => {}
+                Shade::Swapping => self.commit_swap(at, cx),
+                Shade::Playing => {
+                    let at = self.landed(at);
+                    self.position = at;
+                    self.clock.reset(at, self.state == PlaybackState::Playing);
+                    self.remember(true, cx);
+                    cx.emit(PlaybackEvent::Seeked);
+                    self.follow_up_seek(cx);
+                }
+            },
+            BackendEvent::Paused { .. }
+                if phase == Shade::Playing && self.overtaken(Intent::Pause) => {}
+            BackendEvent::Paused { at, .. } if phase == Shade::Playing => {
+                self.intent = Intent::Pause;
+                self.pressed = None;
+                self.state = PlaybackState::Paused;
+                self.paused_at = Some(SystemTime::now());
+                self.position = at;
+                self.clock.reset(at, false);
+                self.remember(true, cx);
+                cx.emit(PlaybackEvent::Paused);
+                self.follow_up_seek(cx);
+            }
+            BackendEvent::Paused { .. } => {}
+            BackendEvent::Position { at, .. } if phase == Shade::Playing => {
+                let mut failed = false;
+                if self.seek_in_flight.is_some() {
+                    self.stale_positions += 1;
+                    if self.stale_positions <= STALE_POSITIONS {
+                        return;
+                    }
+                    log::warn!("playback: the addon seek did not land, carrying on from {at:?}");
+                    self.seek_in_flight = None;
+                    failed = true;
+                }
+                self.position = at;
+                match (self.state == PlaybackState::Playing, failed) {
+                    (true, true) => self.clock.reset(at, true),
+                    (true, false) => self.clock.correct(at),
+                    (false, _) => self.clock.reset(at, false),
+                }
+                self.remember(false, cx);
+                // Ahead of a gapless join: the shadow engine has the sound, so the main engine
+                // only caches the next track; a queued join behind a paused track would play
+                // the wrong thing when the shadow ends.
+                self.preload_next(at, false, cx);
+                if failed {
+                    self.follow_up_seek(cx);
+                }
+            }
+            BackendEvent::Position { .. } => {}
+            BackendEvent::Downloaded { .. } if phase == Shade::Playing => {
+                self.preload_upcoming(false, cx);
+            }
+            BackendEvent::Downloaded { .. } => {}
+            BackendEvent::Ended { .. } if phase == Shade::Playing => {
+                let ended = self.track.take();
+                if let Some(shadow) = self.shadow.take() {
+                    self.upgrade.forget_stream(&shadow.addon);
+                }
+                self.state = PlaybackState::Idle;
+                self.position = Duration::ZERO;
+                self.clock.reset(Duration::ZERO, false);
+                cx.emit(PlaybackEvent::EndedPlayback);
+                match self.sleep == Some(Sleep::EndOfTrack) {
+                    true => {
+                        self.drop_upgrade();
+                        self.doze(cx);
+                    }
+                    // The end came from the addon engine, so the next track must not be asked
+                    // for as a gapless join: the join the main engine queued behind the paused
+                    // original never fired.
+                    false => self.advance(ended, Start::Skip, cx),
+                }
+            }
+            BackendEvent::Ended { .. } => {}
+            BackendEvent::Unavailable { .. }
+            | BackendEvent::Throttled { .. }
+            | BackendEvent::Refused
+            | BackendEvent::Gated => {
+                log::warn!("playback: the lossless addon stream stopped");
+                match phase {
+                    Shade::Loading => {
+                        self.drop_upgrade();
+                        self.attempted = Some(display);
+                    }
+                    Shade::Swapping | Shade::Playing => self.fall_back(cx),
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Replaces the queue with `tracks` and plays the one at `index`.
@@ -1494,7 +1954,7 @@ impl Playback {
 
     /// Lines the next track up behind the current one once it is near its end, so a gapless
     /// engine can join them. An engine that fetched it already only queues it here.
-    fn preload_next(&mut self, position: Duration, cx: &Context<Self>) {
+    fn preload_next(&mut self, position: Duration, segue: bool, cx: &Context<Self>) {
         let Some(duration) = self.track.as_ref().map(|track| track.duration) else {
             return;
         };
@@ -1504,7 +1964,7 @@ impl Playback {
         {
             return;
         }
-        self.preload_upcoming(true, cx);
+        self.preload_upcoming(segue, cx);
     }
 
     /// Asks the engine to fetch the track that plays after this one. With `segue` it is also
@@ -1622,7 +2082,7 @@ impl Playback {
             return;
         }
         let ended = self.seed(cx);
-        self.advance(ended, cx);
+        self.advance(ended, Start::Segue, cx);
     }
 
     /// Fills the suggestions from the current track's radio when radio is on and there are
@@ -1754,16 +2214,20 @@ impl Playback {
 
     /// Decides what follows a track that ended: the same one on repeat-one, the queue's start
     /// on repeat-all, more radio when it is on and the queue ran out, else the next in line.
-    fn advance(&mut self, ended: Option<Track>, cx: &mut Context<Self>) {
+    /// Moves to what plays after the track that ended. `start` is how the next one is asked
+    /// for: a gapless join is right when the engine playing it heard the end itself, but a
+    /// track whose end arrived from another engine is loaded plainly, since the join the first
+    /// engine queued behind it never fired and would replay it from where it paused.
+    fn advance(&mut self, ended: Option<Track>, start: Start, cx: &mut Context<Self>) {
         match self.repeat {
             Repeat::One => match ended {
-                Some(track) => self.load_after(&track, Start::Segue, cx),
-                None => self.segue_queue(cx),
+                Some(track) => self.load_after(&track, start, cx),
+                None => self.segue_queue(start, cx),
             },
             Repeat::All if !self.queue.read(cx).has_next() => {
                 self.fetch = None;
                 if let Some(track) = self.queue.update(cx, |queue, cx| queue.rewind(cx)) {
-                    self.follow_after(track, Start::Segue, cx);
+                    self.follow_after(track, start, cx);
                 }
             }
             // The station's next stretch is on its way; playing resumes when it lands.
@@ -1775,21 +2239,21 @@ impl Playback {
                     .or_else(|| self.track.clone())
                     .filter(|seed| seed.id.as_deref().is_some_and(|id| self.stations(id, cx)));
                 match seed {
-                    Some(seed) => self.extend_radio(&seed, cx),
-                    None => self.segue_queue(cx),
+                    Some(seed) => self.extend_radio(&seed, start, cx),
+                    None => self.segue_queue(start, cx),
                 }
             }
-            _ => self.segue_queue(cx),
+            _ => self.segue_queue(start, cx),
         }
     }
 
-    fn segue_queue(&mut self, cx: &mut Context<Self>) {
+    fn segue_queue(&mut self, start: Start, cx: &mut Context<Self>) {
         self.fetch = None;
-        self.follow_queue(Start::Segue, cx);
+        self.follow_queue(start, cx);
     }
 
     /// Appends the seed's radio to the queue and moves on, or just moves on if it fails.
-    fn extend_radio(&mut self, seed: &Track, cx: &mut Context<Self>) {
+    fn extend_radio(&mut self, seed: &Track, start: Start, cx: &mut Context<Self>) {
         let Some(id) = seed.id.clone() else {
             return self.next(cx);
         };
@@ -1811,7 +2275,7 @@ impl Playback {
                         queue.insert(tracks, Some(origin), QueuePlacement::End, cx)
                     });
                     this.leave_station();
-                    this.follow_queue(Start::Segue, cx);
+                    this.follow_queue(start, cx);
                 }
                 Ok(_) => log::warn!("playback: radio returned no tracks"),
                 Err(error) => log::warn!("playback: cannot extend radio: {error:#}"),
@@ -2020,6 +2484,14 @@ impl Playback {
         }
         self.intent = Intent::Pause;
         self.pressed = Some(Instant::now());
+        // A search that has not found anything yet is abandoned: the original stream pauses
+        // where it is, and play searches again. A swap already in flight commits held paused,
+        // since the original engine is already under it.
+        match self.shadow.as_ref().map(|shadow| shadow.phase) {
+            Some(Shade::Loading) => self.drop_upgrade(),
+            Some(Shade::Swapping) => self.commit_swap(self.live_position(), cx),
+            Some(Shade::Playing) | None => {}
+        }
         if let Some(engine) = self.active_engine() {
             engine.pause();
             cx.notify();
@@ -2321,13 +2793,16 @@ impl Playback {
         self.set_volume(level, cx);
     }
 
-    /// Sends the gain for the current level to both engines.
+    /// Sends the gain for the current level to every engine.
     fn apply_gain(&self) {
         let level = gain(self.level);
         if let Some(engine) = self.engine.as_ref() {
             engine.set_gain(level);
         }
         if let Some(engine) = self.local_engine.as_ref() {
+            engine.set_gain(level);
+        }
+        if let Some(engine) = self.addon_engine.as_ref() {
             engine.set_gain(level);
         }
     }
@@ -2338,6 +2813,12 @@ impl Playback {
 
     pub fn gapless(&self) -> bool {
         self.gapless
+    }
+
+    /// Whether a track playing through another service is swapped to a lossless addon copy
+    /// once one is found.
+    pub fn lossless_upgrade(&self) -> bool {
+        self.lossless_upgrade
     }
 
     pub fn transcode(&self) -> Transcode {
@@ -2485,6 +2966,25 @@ impl Playback {
         self.settings
             .update(cx, |settings, cx| settings.set_gapless(on, cx));
         self.restart_engine(cx);
+    }
+
+    /// Turns upgrading to a lossless addon copy on or off. Turning it off while a copy is
+    /// already playing puts the original stream back where the copy had got to, without
+    /// searching for another.
+    pub fn set_lossless_upgrade(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.lossless_upgrade == on {
+            return;
+        }
+        self.lossless_upgrade = on;
+        self.settings
+            .update(cx, |settings, cx| settings.set_lossless_upgrade(on, cx));
+        if !on {
+            match self.shadow.as_ref().map(|shadow| shadow.phase) {
+                Some(Shade::Swapping | Shade::Playing) => self.fall_back(cx),
+                Some(Shade::Loading) | None => self.drop_upgrade(),
+            }
+        }
+        cx.notify();
     }
 
     /// Changes how a converting server is asked to send tracks. The streaming engine restarts,
@@ -2646,18 +3146,8 @@ impl Playback {
 
     /// Builds the streaming engine and starts pumping its events.
     fn start_engine(&mut self, playback: Arc<dyn PlaybackFactory>, cx: &mut Context<Self>) {
-        let config = PlaybackConfig {
-            normalisation: self.normalisation,
-            gapless: self.gapless,
-            position_interval: POSITION_INTERVAL,
-            gain: gain(self.level),
-            transcode: self.transcode,
-            quality: self.quality,
-            equalizer: self.equalizer.clone(),
-            meter: self.meter.clone(),
-            analyzer: self.analyzer.clone(),
-            vault: Some(self.vault.clone()),
-        };
+        self.drop_upgrade();
+        let config = self.engine_config(self.quality);
         let (engine, events) = playback.start(config);
 
         self.listen(events, false, cx);
@@ -2673,23 +3163,30 @@ impl Playback {
     }
 
     fn start_local_engine(&mut self, playback: Arc<dyn PlaybackFactory>, cx: &mut Context<Self>) {
-        let config = PlaybackConfig {
-            normalisation: self.normalisation,
-            gapless: self.gapless,
-            position_interval: POSITION_INTERVAL,
-            gain: gain(self.level),
-            transcode: self.transcode,
-            quality: self.quality,
-            equalizer: self.equalizer.clone(),
-            meter: self.meter.clone(),
-            analyzer: self.analyzer.clone(),
-            vault: Some(self.vault.clone()),
-        };
+        let config = self.engine_config(self.quality);
         let (engine, events) = playback.start(config);
 
         self.listen(events, true, cx);
         self.local_engine = Some(engine);
         self.prepare_resume(cx);
+    }
+
+    /// What every engine started here is configured with. The shadow engine asks an addon for
+    /// lossless however the setting for the original service reads, since that is its whole
+    /// reason to exist.
+    fn engine_config(&self, quality: Quality) -> PlaybackConfig {
+        PlaybackConfig {
+            normalisation: self.normalisation,
+            gapless: self.gapless,
+            position_interval: POSITION_INTERVAL,
+            gain: gain(self.level),
+            transcode: self.transcode,
+            quality,
+            equalizer: self.equalizer.clone(),
+            meter: self.meter.clone(),
+            analyzer: self.analyzer.clone(),
+            vault: Some(self.vault.clone()),
+        }
     }
 
     /// Pumps an engine's events into `on_backend_event` until the engine is dropped.
@@ -2722,10 +3219,26 @@ impl Playback {
         }
         // kept for whichever track it names, since a queued track reports before it plays
         if let BackendEvent::Signal { id, track } = event {
+            if self
+                .shadow
+                .as_ref()
+                .is_some_and(|shadow| shadow.phase != Shade::Loading && shadow.display == id)
+            {
+                return;
+            }
             self.learn_signal(id, track, cx);
             return;
         }
         if local != self.local_active() {
+            return;
+        }
+        // The shadow has the sound and the original engine is paused underneath it, so what
+        // that engine reports from here on is the echo of the pause, not news.
+        if self
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| shadow.phase != Shade::Loading)
+        {
             return;
         }
         let current_id = self.track.as_ref().and_then(|track| track.id.as_deref());
@@ -2789,6 +3302,7 @@ impl Playback {
                     cx.emit(PlaybackEvent::StartedPlayback);
                 }
                 self.follow_up_seek(cx);
+                self.maybe_upgrade(cx);
             }
             BackendEvent::Paused { at, .. } => {
                 self.intent = Intent::Pause;
@@ -2827,7 +3341,7 @@ impl Playback {
                     (false, _) => self.clock.reset(at, false),
                 }
                 self.remember(false, cx);
-                self.preload_next(at, cx);
+                self.preload_next(at, true, cx);
                 if failed {
                     self.follow_up_seek(cx);
                 }
@@ -2849,7 +3363,7 @@ impl Playback {
                 cx.emit(PlaybackEvent::EndedPlayback);
                 match self.sleep == Some(Sleep::EndOfTrack) {
                     true => self.doze(cx),
-                    false => self.advance(ended, cx),
+                    false => self.advance(ended, Start::Segue, cx),
                 }
             }
             BackendEvent::Throttled { .. } => self.throttled(cx),
@@ -2894,8 +3408,8 @@ impl Playback {
                 cx.emit(PlaybackEvent::EndedPlayback);
                 match (exhausted || self.intent == Intent::Pause, self.repeat) {
                     (true, _) => self.hold_next(cx),
-                    (false, Repeat::One) => self.segue_queue(cx),
-                    (false, _) => self.advance(failed, cx),
+                    (false, Repeat::One) => self.segue_queue(Start::Segue, cx),
+                    (false, _) => self.advance(failed, Start::Segue, cx),
                 }
             }
             BackendEvent::Refused => {
@@ -2923,6 +3437,7 @@ impl Playback {
     /// track keeps playing.
     fn teardown(&mut self, cx: &mut Context<Self>) {
         self.task = None;
+        self.drop_upgrade();
         self.engine = None;
         self.signals.retain(|(id, _)| music::is_local_id(id));
 
