@@ -158,11 +158,12 @@ pub enum SettingsPage {
     About,
     LyricsSources,
     MusicFolders,
+    Addons,
 }
 
 impl SettingsPage {
     /// Every page, the sections first and the drill-ins after them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Providers,
         Self::General,
         Self::Appearance,
@@ -177,6 +178,7 @@ impl SettingsPage {
         Self::About,
         Self::LyricsSources,
         Self::MusicFolders,
+        Self::Addons,
     ];
 
     pub fn id(self) -> &'static str {
@@ -195,6 +197,7 @@ impl SettingsPage {
             Self::About => "about",
             Self::LyricsSources => "lyrics-sources",
             Self::MusicFolders => "music-folders",
+            Self::Addons => "addons",
         }
     }
 
@@ -215,6 +218,7 @@ impl SettingsPage {
             Self::About => "settings-page-about",
             Self::LyricsSources => "settings-page-lyrics-sources",
             Self::MusicFolders => "settings-page-music-folders",
+            Self::Addons => "settings-page-addons",
         }
     }
 
@@ -223,6 +227,7 @@ impl SettingsPage {
         match self {
             Self::LyricsSources => Some(Self::Lyrics),
             Self::MusicFolders => Some(Self::Providers),
+            Self::Addons => Some(Self::Providers),
             _ => None,
         }
     }
@@ -235,7 +240,7 @@ impl SettingsPage {
     pub fn tab(self) -> SettingsTab {
         match self {
             Self::General | Self::About => SettingsTab::General,
-            Self::Providers | Self::MusicFolders => SettingsTab::Providers,
+            Self::Providers | Self::MusicFolders | Self::Addons => SettingsTab::Providers,
             Self::Appearance | Self::PlayerBar | Self::NowPlaying => SettingsTab::Appearance,
             Self::Lyrics | Self::LyricsSources => SettingsTab::Lyrics,
             Self::Playback | Self::Sound | Self::Storage => SettingsTab::Playback,

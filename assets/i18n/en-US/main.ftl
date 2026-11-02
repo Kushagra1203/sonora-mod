@@ -607,8 +607,10 @@ settings-tab-integrations = Integrations
 settings-about-name = Sonora
 settings-page-lyrics-sources = Lyrics sources
 settings-page-music-folders = Music folders
+settings-page-addons = Addon sources
 settings-group-services = Streaming services
 settings-group-local-files = Local files
+settings-group-addons = Addon sources
 settings-group-background = Background
 settings-group-controls = Controls
 settings-group-display = Display
@@ -795,6 +797,11 @@ settings-stream-quality-flac = FLAC, { $depth }-bit { $rate } kHz
 settings-stream-quality-flac-up-to = FLAC, up to { $depth }-bit { $rate } kHz
 settings-stream-quality-lossy = { $codec }, { $kbps } kbps
 settings-stream-quality-lossy-up-to = { $codec }, up to { $kbps } kbps
+quality-hi-res = Hi-Res Lossless
+quality-lossless = Lossless
+quality-lossy = Lossy
+quality-codec = { $codec } { $kbps } kbps
+quality-detail = { $depth }-bit / { $rate } kHz
 settings-stream-format = Stream format
 settings-stream-format-detail = What the server converts each track to before sending it
 settings-stream-format-original = Original
@@ -1107,6 +1114,36 @@ settings-scrobble-key = API key
 settings-scrobble-secret = API secret
 settings-scrobble-token = User token
 settings-scrobble-server = Server address
+settings-addons = Addon sources
+settings-addons-detail = Community servers that find lossless tracks. The Addons provider searches them in the order they stand here.
+settings-addons-count = { $count ->
+    [one] { $count } addon
+   *[other] { $count } addons
+    }
+settings-addons-count-active = { $count ->
+    [one] { $count } addon · In use
+   *[other] { $count } addons · In use
+    }
+settings-addons-none = No addons yet
+settings-addon-provider = Addons
+settings-addon-provider-detail = Search and play from the sources below
+settings-addon-provider-use = Use addons
+settings-addon-provider-active = In use
+settings-addon-upgrade = Upgrade to lossless
+settings-addon-upgrade-detail = While another service plays, switch to a lossless copy from your addons as soon as one is found.
+settings-addon-move-up = Move { $name } up
+settings-addon-move-down = Move { $name } down
+settings-addon-move-up-short = Move up
+settings-addon-move-down-short = Move down
+settings-addon-remove-short = Remove
+settings-addon-add = Add an addon
+settings-addon-add-title = Add an addon
+settings-addon-add-detail = Paste the address of an addon server. It is checked before it is saved.
+settings-addon-url-hint = https://my-addon.example.com
+settings-addon-enabled = Enable { $name }
+settings-addon-remove = Remove { $name }
+settings-addon-checking = Checking…
+settings-addon-submit = Add
 settings-local-folder = Music folders
 settings-local-folder-empty = Not configured
 settings-choose-folder = Choose folder…

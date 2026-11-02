@@ -26,6 +26,7 @@ use crate::shared::text;
 
 mod about;
 mod accounts;
+mod addons;
 mod appearance;
 mod connect;
 mod discord;
@@ -66,6 +67,8 @@ enum Slot {
     Accounts,
     LocalFolder,
     Folders,
+    AddonSources,
+    AddonsList,
     Theme,
     Adaptive,
     CommunityThemes,
@@ -256,6 +259,10 @@ pub struct SettingsView {
     username: Entity<Input>,
     password: Entity<Input>,
     credentials_for: Option<&'static str>,
+    /// The address being added, while the add-addon dialog is up.
+    addon_url: Entity<Input>,
+    /// Whether the add-addon dialog is up.
+    addon_prompt_open: bool,
     secret: Entity<Input>,
     manual_secret: Option<(&'static str, &'static str)>,
     scrobbling: Entity<Scrobbling>,
@@ -300,6 +307,7 @@ impl SettingsView {
     ) -> Self {
         let settings = Sonora::global(cx).settings.clone();
         let scrobbling = Sonora::global(cx).scrobbling.clone();
+        let addons = Sonora::global(cx).addons.clone();
         let drm = Sonora::global(cx).drm.clone();
         let equalizer = Sonora::global(cx).equalizer.clone();
         let outputs = Sonora::global(cx).outputs.clone();
@@ -313,6 +321,8 @@ impl SettingsView {
         cx.observe(&scrobbling, |this, _, cx| this.remeasure(cx))
             .detach();
         cx.observe(&settings, |this, _, cx| this.remeasure(cx))
+            .detach();
+        cx.observe(&addons, |this, _, cx| this.remeasure(cx))
             .detach();
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
         playback.update(cx, |playback, cx| playback.measure_storage(cx));
@@ -434,6 +444,8 @@ impl SettingsView {
             username: cx.new(|cx| Input::new("login-username-hint", cx)),
             password: cx.new(|cx| Input::new("login-password-hint", cx).masked()),
             credentials_for: None,
+            addon_url: cx.new(|cx| Input::new("settings-addon-url-hint", cx)),
+            addon_prompt_open: false,
             secret: cx.new(|cx| Input::new("login-cookie-hint", cx)),
             manual_secret: None,
             sign_in_for: None,
@@ -548,6 +560,7 @@ impl SettingsView {
             SettingsPage::About => self.about_groups(),
             SettingsPage::LyricsSources => self.lyrics_sources_groups(),
             SettingsPage::MusicFolders => self.music_folders_groups(),
+            SettingsPage::Addons => self.addons_groups(),
         }
     }
 
@@ -688,7 +701,7 @@ impl SettingsView {
     )]
     fn slot_meta(&self, slot: Slot, cx: &App) -> Option<(SharedString, SharedString)> {
         let meta = match slot {
-            Slot::Folders => return None,
+            Slot::Folders | Slot::AddonsList => return None,
             Slot::Startup => (t!("settings-startup"), t!("settings-startup-detail")),
             Slot::Entries => (t!("settings-entries"), t!("settings-entries-detail")),
             Slot::Language => (t!("settings-language"), t!("settings-language-detail")),
@@ -709,6 +722,7 @@ impl SettingsView {
                     false => SharedString::default(),
                 },
             ),
+            Slot::AddonSources => (t!("settings-addons"), t!("settings-addons-detail")),
             Slot::Theme => (t!("settings-theme"), t!("settings-theme-detail")),
             Slot::Adaptive => (t!("settings-adaptive"), t!("settings-adaptive-detail")),
             Slot::CommunityThemes => (
@@ -945,6 +959,8 @@ impl SettingsView {
             Slot::Accounts => div().into_any_element(),
             Slot::LocalFolder => self.local_folder_row(cx),
             Slot::Folders => self.folders(cx),
+            Slot::AddonSources => self.addon_sources_row(cx),
+            Slot::AddonsList => self.addons_list(cx),
             Slot::Theme | Slot::Icons | Slot::Corners => div().into_any_element(),
             Slot::Adaptive => self.adaptive_row(cx),
             Slot::CommunityThemes => self.community_themes_row(cx),
@@ -1422,6 +1438,9 @@ impl Render for SettingsView {
         })
         .when(self.credentials_for.is_some(), |this| {
             this.child(self.credentials_prompt(cx).into_any_element())
+        })
+        .when(self.addon_prompt_open, |this| {
+            this.child(self.addon_prompt(cx).into_any_element())
         })
         .when_some(self.scrobble_prompt, |this, service| {
             this.child(self.scrobble_modal(service, cx).into_any_element())

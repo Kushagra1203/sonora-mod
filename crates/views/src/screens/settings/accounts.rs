@@ -71,6 +71,7 @@ impl SettingsView {
     pub(super) fn accounts_groups(&self) -> Vec<Group> {
         vec![
             Group::new("settings-group-services", "icons/music.svg").cards(Slot::Accounts),
+            Group::new("settings-group-addons", "icons/link.svg").rows([Slot::AddonSources]),
             Group::new("settings-group-local-files", "icons/file-music.svg")
                 .rows([Slot::LocalFolder]),
         ]
@@ -312,6 +313,7 @@ impl SettingsView {
         let chosen = self.chosen.filter(|_| loading);
         session
             .providers()
+            .filter(|info| info.account_service)
             .map(|info| Account {
                 slug: info.slug,
                 name: info.name,
@@ -337,9 +339,11 @@ impl SettingsView {
         let session = self.session.read(cx);
         let signed_out = matches!(session.state(), SessionState::SignedOut);
         let info = session.providers().find(|info| {
-            info.options
-                .iter()
-                .any(|option| matches!(option, SignIn::Anonymous))
+            info.account_service
+                && info
+                    .options
+                    .iter()
+                    .any(|option| matches!(option, SignIn::Anonymous))
         })?;
         let loading = session.is_pending();
         let active = match self.chosen.filter(|_| loading) {

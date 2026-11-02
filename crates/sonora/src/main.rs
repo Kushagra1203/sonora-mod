@@ -121,6 +121,7 @@ fn main() -> ExitCode {
             Arc::new(music::subsonic::SubsonicProvider::new()),
             Arc::new(music::deezer::DeezerProvider::new()),
             Arc::new(music::tidal::TidalProvider::new()),
+            Arc::new(music::addon::AddonProvider::new()),
         ];
         let local_provider: Arc<dyn music::MusicProvider> =
             Arc::new(music::local::LocalProvider::new(
@@ -303,6 +304,7 @@ fn show_window(cx: &mut App) {
 fn open_window(cx: &mut App) {
     let Sonora {
         session,
+        addons: _,
         control: _,
         cover: _,
         devices: _,
