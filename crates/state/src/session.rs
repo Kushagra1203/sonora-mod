@@ -94,6 +94,9 @@ pub struct ProviderInfo {
     pub name: &'static str,
     pub options: Vec<SignIn>,
     pub web_sign_in: bool,
+    /// Whether the provider is a streaming service with a sign-in to offer, rather than a
+    /// source reached from elsewhere in settings.
+    pub account_service: bool,
     pub protected: bool,
     pub stored: bool,
     /// Whether what is stored is an anonymous session rather than an account.
@@ -267,6 +270,7 @@ impl Session {
                 // Asked in this order because answering `supported` starts a child process once
                 // on Linux, and only a provider that signs in with cookies is worth it.
                 web_sign_in: provider.web_sign_in().is_some() && webview::supported(),
+                account_service: provider.account_service(),
                 protected: provider.protected(),
                 stored: provider.stored(),
                 guest: provider.stored_guest(),

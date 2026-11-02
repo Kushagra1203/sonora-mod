@@ -1,3 +1,4 @@
+mod addons;
 mod artist;
 mod catalog;
 mod control;
@@ -44,6 +45,7 @@ mod vault;
 mod wake;
 mod window_shape;
 
+pub use addons::Addons;
 pub use artist::{ArtistDetail, ArtistDetailEvent};
 pub use control::Control;
 pub use cover::Cover;
@@ -206,6 +208,8 @@ pub(crate) fn settled<T>(result: Result<T>, cx: &mut gpui::App) -> std::result::
 
 pub struct Sonora {
     pub session: Entity<Session>,
+    /// The addon source list the settings screen manages.
+    pub addons: Entity<Addons>,
     pub control: Entity<Control>,
     pub cover: Entity<Cover>,
     pub devices: Entity<Devices>,
@@ -392,8 +396,11 @@ pub fn init(
         cx,
     );
 
+    let addons = cx.new(|_| Addons::new());
+
     cx.set_global(Sonora {
         session,
+        addons,
         control,
         cover,
         devices,
