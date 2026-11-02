@@ -1,6 +1,12 @@
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
+# This Asahi box carries libxkbcommon-x11.so.0 but not the -devel symlink the linker wants
+# for `-lxkbcommon-x11`. The symlink in ~/.local/lib stands in for it, and this is what makes
+# the linker find it. Harmless everywhere else: the path exists on this machine only.
+[env]
+LIBRARY_PATH = { value = "/home/kushagra/.local/lib", force = true }
+
 [alias]
 prof = "run --release --package sonora --features profiler"
 prober = "run --package music --example lyrics-prober --"
