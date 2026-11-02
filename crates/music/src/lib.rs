@@ -1,4 +1,5 @@
 mod aac;
+pub mod addon;
 pub mod apple;
 pub mod artwork;
 mod audio;
@@ -49,6 +50,9 @@ use time::format_description::well_known::Iso8601;
 use time::parsing::Parsed;
 use time::{Month, OffsetDateTime};
 
+/// The addon list, as the settings screen reads and writes it. State and views reach an
+/// addon only through these.
+pub use addon::{AddonEntry, AddonProbe, AddonUpgrade, addon_list, addon_probe, addon_save};
 pub use audio::Meter;
 pub use equalizer::Equalizer;
 pub use models::{
@@ -75,6 +79,11 @@ pub fn is_local_id(id: &str) -> bool {
         || id.starts_with(LOCAL_ALBUM_PREFIX)
         || id.starts_with(LOCAL_ARTIST_PREFIX)
         || id.starts_with(LOCAL_PLAYLIST_PREFIX)
+}
+
+/// Whether a track id names a stream the addon provider holds.
+pub fn is_addon_id(id: &str) -> bool {
+    id.starts_with("addon:")
 }
 
 pub fn distinct_covers(tracks: &[Track], wanted: usize) -> Vec<String> {
@@ -999,6 +1008,12 @@ pub trait MusicProvider: Send + Sync {
         None
     }
     fn sign_in_options(&self) -> Vec<SignIn>;
+    /// Whether this provider belongs in the sign-in list as a streaming service. A source
+    /// with no account of its own, such as addons, says no and is reached from its own
+    /// settings page instead.
+    fn account_service(&self) -> bool {
+        true
+    }
     fn stored(&self) -> bool;
     /// Whether what is stored is an anonymous session rather than an account, so a caller
     /// can tell the two apart. A provider without an anonymous sign-in never says yes.
