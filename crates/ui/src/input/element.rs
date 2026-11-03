@@ -360,14 +360,18 @@ impl Render for Input {
             .rounded(radius)
             // a field tucked into a frosted menu takes the menu's own translucent row fill, since
             // a flat one would sit on the frost as a solid slab
-            .map(|this| match (self.blurred, self.tucked, blurring(cx)) {
-                (true, _, true) => glass(this, cx),
-                (false, true, true) => this.bg(theme.secondary_hover),
-                _ => this.bg(theme.secondary),
-            })
-            .when(self.blurred, |this| this.shadow_sm())
+            .map(
+                |this| match (self.bare, self.blurred, self.tucked, blurring(cx)) {
+                    // A bare field is laid into a surface its caller already drew.
+                    (true, _, _, _) => this,
+                    (false, true, _, true) => glass(this, cx),
+                    (false, false, true, true) => this.bg(theme.secondary_hover),
+                    (false, ..) => this.bg(theme.secondary),
+                },
+            )
+            .when(self.blurred && !self.bare, |this| this.shadow_sm())
             .when_else(
-                self.tucked,
+                self.tucked || self.bare,
                 |this| this.w_full(),
                 |this| {
                     this.border_1().border_color(match self.invalid {

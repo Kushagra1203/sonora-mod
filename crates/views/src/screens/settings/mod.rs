@@ -79,6 +79,7 @@ enum Slot {
     Opacity,
     WindowBlur,
     Blur,
+    Frosted,
     Ambient,
     AmbientMotion,
     Visualizer,
@@ -754,6 +755,7 @@ impl SettingsView {
                 t!("settings-blur-window-detail"),
             ),
             Slot::Blur => (t!("settings-blur"), t!("settings-blur-detail")),
+            Slot::Frosted => (t!("settings-frosted"), t!("settings-frosted-detail")),
             Slot::Corners => (t!("settings-corners"), t!("settings-corners-detail")),
             Slot::FullscreenControlsAutohide => (
                 t!("settings-fullscreen-controls-autohide"),
@@ -973,6 +975,7 @@ impl SettingsView {
             Slot::Opacity => self.opacity_row(cx),
             Slot::WindowBlur => self.blur_window_row(cx),
             Slot::Blur => self.blur_row(cx),
+            Slot::Frosted => self.frosted_row(cx),
             Slot::FullscreenControlsAutohide => self.fullscreen_controls_autohide_row(cx),
             Slot::OsFullscreen => self.os_fullscreen_row(cx),
             Slot::PanelLyricsSize => self.panel_lyrics_size_row(cx),

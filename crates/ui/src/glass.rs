@@ -33,9 +33,14 @@ pub fn blurring(cx: &App) -> bool {
 pub fn glass<E: Styled>(element: E, cx: &App) -> E {
     let theme = cx.theme();
 
-    element
-        .bg(theme.popover.opacity(GLASS_FILL))
-        .backdrop_blur(GLASS_BLUR)
+    match frosted(cx) {
+        true => element
+            .bg(theme.popover.opacity(FROSTED_FILL))
+            .backdrop_blur(FROSTED_BLUR),
+        false => element
+            .bg(theme.popover.opacity(GLASS_FILL))
+            .backdrop_blur(GLASS_BLUR),
+    }
 }
 
 /// The fill shared by context menus and raised translucent panels. With blur disabled it
@@ -90,6 +95,17 @@ pub const LIQUID_FILL: f32 = 0.12;
 /// halved again until the backdrop is a smear of a few dozen texels. The refraction in the
 /// backdrop shader does the work a wider blur would otherwise be asked for.
 pub const LIQUID_BLUR: Pixels = px(4.);
+/// How much of the popover colour a frosted surface keeps, and how hard it blurs: a matte
+/// sheet rather than a clear one. The setting that picks between the two is `Theme::frosted`.
+const FROSTED_FILL: f32 = 0.62;
+const FROSTED_BLUR: Pixels = px(18.);
+
+/// Whether glass is drawn frosted rather than liquid. Frosted is the matte treatment: a thick
+/// fill over a wide blur, with none of the thin lens. It only applies while blur is painted at
+/// all; without it the frost would sit on flat paint, which is the same as the flat fallback.
+pub fn frosted(cx: &App) -> bool {
+    cx.theme().frosted && blurring(cx)
+}
 /// How hard the backdrop bends at the capsule's rim, from 0 for a plain blur to 1.
 pub const LIQUID_BEND: f32 = 1.;
 /// The radius a liquid capsule turns its corners with. Big and continuous, so the shape reads
@@ -110,9 +126,11 @@ const RIM_SHADED: f32 = 0.32;
 pub fn liquid_capsule(cx: &App) -> Div {
     let theme = cx.theme();
     let blurred = blurring(cx);
-    let fill = match blurred {
-        true => theme.popover.opacity(LIQUID_FILL),
-        false => theme.popover,
+    let frosted = frosted(cx);
+    let fill = match (blurred, frosted) {
+        (false, _) => theme.popover,
+        (true, true) => theme.popover.opacity(FROSTED_FILL),
+        (true, false) => theme.popover.opacity(LIQUID_FILL),
     };
     let lit = theme.foreground.opacity(RIM_LIT);
     let shaded = theme.background.opacity(RIM_SHADED);
@@ -124,8 +142,13 @@ pub fn liquid_capsule(cx: &App) -> Div {
         .overflow_hidden()
         .bg(fill)
         .when(blurred, |this| {
-            this.backdrop_blur(LIQUID_BLUR)
-                .backdrop_liquid(LIQUID_BEND)
+            this.backdrop_blur(match frosted {
+                true => FROSTED_BLUR,
+                false => LIQUID_BLUR,
+            })
+            // The lens at the rim is what separates liquid glass from a matte sheet, so the
+            // frosted treatment leaves it out.
+            .when(!frosted, |this| this.backdrop_liquid(LIQUID_BEND))
         })
         .shadow_lg()
         // light lands on the top and left edges, as on the near side of a thick lens

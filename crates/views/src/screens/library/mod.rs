@@ -1327,6 +1327,7 @@ impl Tooled for LibraryView {
                 &self.popovers,
                 &self.sliders[self.section.slot()],
                 filters,
+                false,
                 move |change, cx| {
                     filtered.update(cx, |view, cx| view.filter(change, cx)).ok();
                 },
@@ -1336,6 +1337,7 @@ impl Tooled for LibraryView {
         tools.push(tools::sorts(
             &self.popovers,
             self.sorts(cx),
+            false,
             move |key, cx| {
                 sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
             },

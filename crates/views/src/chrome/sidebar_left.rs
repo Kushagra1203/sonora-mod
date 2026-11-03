@@ -234,6 +234,12 @@ impl SidebarLeft {
         }
     }
 
+    /// The width the panel stands at when it is fully open, whatever its openness now. The
+    /// shell lays the panel out at this width while it slides.
+    pub fn full_width(&self) -> Pixels {
+        self.width
+    }
+
     pub fn toggle(&mut self, cx: &mut Context<Self>) {
         match self.cramped {
             true => self.forced = Some(!self.is_open()),
@@ -763,7 +769,9 @@ impl Render for SidebarLeft {
                 }
                 cx.notify();
             }))
-            .when(!self.is_open(), |this| this.hidden())
+            // In the flow the shell clips the panel as it slides, so it stays drawn while it
+            // moves. Only an overlaid panel, which nothing clips, hides itself when closed.
+            .when(overlaid && !self.is_open(), |this| this.hidden())
             .when(!theme.transparent, |this| this.bg(sidebar_bg))
             .border_color(sidebar_border)
             .when(overlaid, |this| {

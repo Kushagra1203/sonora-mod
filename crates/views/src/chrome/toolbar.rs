@@ -126,6 +126,27 @@ impl Toolbar {
         cx.notify();
     }
 
+    /// The search field entity, for a page that draws the field in its own controls rather
+    /// than in the title bar.
+    pub fn input(&self) -> Entity<Input> {
+        self.input.clone()
+    }
+
+    /// Whether the search field is showing.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Shows the search field and focuses it.
+    pub fn reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus(window, cx);
+    }
+
+    /// Empties and hides the search field.
+    pub fn collapse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(window, cx);
+    }
+
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.open {
             true => self.close(window, cx),

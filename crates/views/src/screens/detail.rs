@@ -1,22 +1,23 @@
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, Hsla, Pixels, Point, Render, ScrollHandle, SharedString,
-    WeakEntity, Window, div, px,
+    AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, Hsla, Pixels, Point, Render,
+    ScrollHandle, SharedString, SpringAnimation, WeakEntity, Window, div, px,
 };
 
 use std::rc::Rc;
 
 use i18n::t;
 use music::{Album, AlbumDetail, Playlist, ReleaseType, Track};
-use router::{Destination, navigate};
+use router::{Destination, navigate, trail};
 use state::{
     AppSettings, Collection, Detail, DownloadsChanged, LibraryEvent, Origin, Playback, Progress,
     Sonora,
 };
+use ui::motion::Springs;
 use ui::{
     ActiveTheme as _, ArrowRing, Button, InlineLink, InlineLinks, Menu, Picker, Popovers, Popup,
-    SortAxis,
+    SortAxis, liquid_capsule,
 };
 use ui::{
     ColumnSpec, FilterChange, Listing as _, MIN_CONTENT, Pending, Pin, PinKind, Scrollbar,
@@ -42,10 +43,23 @@ use crate::shared::{cells, page};
 
 const PINNED: [&str; 3] = ["cover", "title", "name"];
 
+/// How wide the search field opens to in the hero's controls.
+const SEARCH_WIDTH: f32 = 220.;
+
 enum Saveable {
     Album(Album),
     Playlist(Playlist),
 }
+
+/// What the floating controls ask of the window: the two sidebars, which a page cannot reach
+/// on its own. The title bar carries the same two on every other screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DetailEvent {
+    ToggleSidebar,
+    ToggleSidebarRight,
+}
+
+impl EventEmitter<DetailEvent> for DetailView {}
 
 /// Which list the recommendation rail shows: releases, or artists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +288,10 @@ impl DetailView {
 
         let me = cx.entity();
         let toolbar = Toolbar::searchable(&me, cx);
+        // The field opens inside a liquid capsule the page draws, so it lays no surface of its
+        // own under the text.
+        let input = toolbar.read(cx).input();
+        input.update(cx, |input, cx| input.set_bare(true, cx));
 
         let mut view = Self {
             detail,
@@ -433,14 +451,18 @@ impl DetailView {
             Picker::icon("detail-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
                 .large()
-                .rounded_full()
+                .round()
                 .left()
                 .menu(menu)
         });
-        let actions = div()
+        // Play and its neighbours on the left, the list's own controls on the right, both on
+        // the hero's last line. The bar that used to hold the latter is not drawn on these
+        // pages, so the page carries them itself.
+        let plays = div()
             .flex()
             .items_center()
             .gap_2()
+            .flex_none()
             .child(HeroPlayButton::listed(
                 "play-detail",
                 label,
@@ -453,7 +475,14 @@ impl DetailView {
                 self.playback.clone(),
             ))
             .children(self.library_button(cx))
-            .children(self.download_button(cx))
+            .children(self.download_button(cx));
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(plays)
+            .child(div().flex_1())
+            .child(self.listing_controls(cx))
             .children(overflow);
 
         let cover = header.and_then(|header| header.cover.clone());
@@ -467,24 +496,242 @@ impl DetailView {
 
         let view = self.me.clone();
         let art = theme.metrics.cover * 3.2;
-        PageHero::new("detail-hero", title)
-            .pending(header.is_none() && self.detail.read(cx).is_loading())
-            .pin(pin)
-            .cover(cover)
-            .art(art)
-            .art_radius(theme.radius * 3.)
-            .title_size(theme.text(Text::Display) * 1.35)
-            .eyebrow(eyebrow)
-            .meta(strip)
-            .actions(actions)
-            .drag_start(move |event, window, cx| {
-                window.prevent_default();
-                view.update(cx, |this, cx| {
-                    this.context_menu = Some(event.position);
-                    cx.notify();
+        div()
+            .flex()
+            .flex_col()
+            // The controls sit a little higher than the hero, without moving it: the negative
+            // margin lifts them and the one below hands the room back.
+            .child(
+                div()
+                    .mt(-theme.metrics.pad)
+                    .mb(theme.metrics.pad)
+                    .pb_3()
+                    .child(self.hero_controls(cx)),
+            )
+            .child(
+                PageHero::new("detail-hero", title)
+                    .pending(header.is_none() && self.detail.read(cx).is_loading())
+                    .pin(pin)
+                    .cover(cover)
+                    .art(art)
+                    .art_radius(theme.radius * 3.)
+                    .title_size(theme.text(Text::Display) * 1.35)
+                    .eyebrow(eyebrow)
+                    .meta(strip)
+                    .actions(actions)
+                    .drag_start(move |event, window, cx| {
+                        window.prevent_default();
+                        view.update(cx, |this, cx| {
+                            this.context_menu = Some(event.position);
+                            cx.notify();
+                        })
+                        .ok();
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The controls that float over an album or playlist in place of the title bar: history and
+    /// the sidebar toggle at the hero's top left, the queue and lyrics toggle at its top right.
+    fn hero_controls(&self, cx: &Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        let navigation = trail(cx);
+        let (can_back, can_forward) = {
+            let navigation = navigation.read(cx);
+            (navigation.can_go_back(), navigation.can_go_forward())
+        };
+        let settings = Sonora::global(cx).settings.clone();
+        let (sidebar_open, queue_open) = {
+            let settings = settings.read(cx);
+            (settings.sidebar_open(), settings.sidebar_right_open())
+        };
+
+        let back = navigation.clone();
+        let forward = navigation.clone();
+        let history = liquid_capsule(cx)
+            .flex()
+            .items_center()
+            .child(
+                Button::new("detail-back")
+                    .ghost()
+                    .icon("icons/chevron-left.svg")
+                    .tooltip("nav-back")
+                    .size_10()
+                    .px_0()
+                    .rounded_full()
+                    .disabled(!can_back)
+                    .on_click(move |_, _, cx| back.update(cx, |nav, cx| nav.back(cx))),
+            )
+            .child(div().flex_none().w(px(1.)).h(px(14.)).bg(theme.border))
+            .child(
+                Button::new("detail-forward")
+                    .ghost()
+                    .icon("icons/chevron-right.svg")
+                    .tooltip("nav-forward")
+                    .size_10()
+                    .px_0()
+                    .rounded_full()
+                    .disabled(!can_forward)
+                    .on_click(move |_, _, cx| forward.update(cx, |nav, cx| nav.forward(cx))),
+            );
+        // The sidebar toggle leads, hard against the sidebar it stands for. Its glyph swings
+        // between the open and closed marks on the same spring the search field opens with,
+        // so the two buttons in this row change the same way.
+        let sidebar = liquid_capsule(cx).child(
+            Button::new("detail-sidebar")
+                .ghost()
+                .icon(match sidebar_open {
+                    true => "icons/panel-left-close.svg",
+                    false => "icons/panel-left-open.svg",
                 })
-                .ok();
-            })
+                .tooltip("nav-sidebar")
+                .size_10()
+                .px_0()
+                .rounded_full()
+                .aria_expanded(sidebar_open)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailEvent::ToggleSidebar)))
+                .with_spring(
+                    "detail-sidebar-swing",
+                    SpringAnimation::new(Springs::RESPONSIVE)
+                        .to(match sidebar_open {
+                            true => 1.,
+                            false => 0.,
+                        })
+                        .with_epsilon(0.01),
+                    |button, t| button.turned(t * (1. - t)),
+                ),
+        );
+        let queue = liquid_capsule(cx).child(
+            Button::new("detail-sidebar-right")
+                .ghost()
+                .icon(match queue_open {
+                    true => "icons/panel-right-close.svg",
+                    false => "icons/panel-right-open.svg",
+                })
+                .tooltip("nav-sidebar-right")
+                .size_10()
+                .px_0()
+                .rounded_full()
+                .aria_expanded(queue_open)
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(DetailEvent::ToggleSidebarRight)))
+                .with_spring(
+                    "detail-sidebar-right-swing",
+                    SpringAnimation::new(Springs::RESPONSIVE)
+                        .to(match queue_open {
+                            true => 1.,
+                            false => 0.,
+                        })
+                        .with_epsilon(0.01),
+                    |button, t| button.turned(t * (1. - t)),
+                ),
+        );
+
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(sidebar)
+                    .child(history),
+            )
+            .child(queue)
+            .into_any_element()
+    }
+
+    /// The search, filter and sort controls of the list, opposite the play buttons in the hero.
+    /// The search opens into a glass field in place, pushing the other controls aside.
+    fn listing_controls(&self, cx: &Context<Self>) -> AnyElement {
+        let sifted = self.me.clone();
+        let sorted = self.me.clone();
+        let filter = tools::filters(
+            &self.popovers,
+            &self.sliders,
+            self.table.filters(cx),
+            true,
+            move |change, cx| {
+                sifted.update(cx, |view, cx| view.sift(change, cx)).ok();
+            },
+            cx,
+        );
+        let sort = tools::sorts(
+            &self.popovers,
+            self.sorts(cx),
+            true,
+            move |key, cx| {
+                sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
+            },
+            cx,
+        );
+
+        let toolbar = self.toolbar.clone();
+        let open = toolbar.read(cx).is_open();
+        let field = toolbar.read(cx).input();
+        let toggle = {
+            let toolbar = toolbar.clone();
+            Button::new("detail-search-toggle")
+                .ghost()
+                .icon(match open {
+                    true => "icons/x.svg",
+                    false => "icons/search.svg",
+                })
+                .tooltip(match open {
+                    true => "common-dismiss",
+                    false => "common-search",
+                })
+                .aria_expanded(open)
+                .rounded_full()
+                .on_click(move |_, window, cx| match open {
+                    true => toolbar.update(cx, |toolbar, cx| toolbar.collapse(window, cx)),
+                    false => toolbar.update(cx, |toolbar, cx| toolbar.reveal(window, cx)),
+                })
+        };
+
+        // The field is always laid out, at a width the spring carries between nothing and the
+        // reading width. It hangs off the search button's left, the outermost control, so
+        // opening it stretches the row to the left and moves nothing else.
+        let field = div()
+            .flex_none()
+            .overflow_hidden()
+            .h(cx.theme().metrics.control)
+            .child(
+                liquid_capsule(cx)
+                    .flex()
+                    .items_center()
+                    .h_full()
+                    .w_full()
+                    .overflow_hidden()
+                    .px_2()
+                    .child(field),
+            )
+            .with_spring(
+                "detail-search-field",
+                SpringAnimation::new(Springs::RESPONSIVE)
+                    .to(match open {
+                        true => 1.,
+                        false => 0.,
+                    })
+                    .with_epsilon(0.01),
+                move |this, t| this.w(px(SEARCH_WIDTH * t)),
+            );
+        let search = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(field)
+            .child(liquid_capsule(cx).child(toggle));
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .flex_none()
+            .child(search)
+            .child(liquid_capsule(cx).child(filter))
+            .child(liquid_capsule(cx).child(sort))
             .into_any_element()
     }
 
@@ -840,7 +1087,7 @@ impl Render for DetailView {
             .child(
                 Scroller::new("detail-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .pt(inset * 1.5)
+                    .pt(inset)
                     .pb(inset)
                     .child(div().px(inset).child(self.header(cx)))
                     .child(div().px(inset).child(table(&self.table)))
@@ -931,6 +1178,7 @@ impl Tooled for DetailView {
                 &self.popovers,
                 &self.sliders,
                 self.table.filters(cx),
+                false,
                 move |change, cx| {
                     sifted.update(cx, |view, cx| view.sift(change, cx)).ok();
                 },
@@ -939,6 +1187,7 @@ impl Tooled for DetailView {
             tools::sorts(
                 &self.popovers,
                 self.sorts(cx),
+                false,
                 move |key, cx| {
                     sorted.update(cx, |view, cx| view.set_sort(key, cx)).ok();
                 },

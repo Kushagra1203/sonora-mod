@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
@@ -25,6 +25,69 @@ use crate::shells::Shell;
 /// The paint layer toasts take. Dialogs paint at 0 and menus at 1, so a toast shows over an
 /// open dialog and a menu opened after it still shows over the toast.
 const TOAST_LAYER: usize = 1;
+/// How long a sidebar takes to slide between closed and open, like a door along its rail.
+const SLIDE: Duration = Duration::from_millis(240);
+
+/// A sidebar's slide: how much of its width is showing, eased toward whichever state the
+/// sidebar is in. The shell owns one per side, so both panels move together with the page
+/// between them.
+struct Slide {
+    shown: f32,
+    from: f32,
+    target: f32,
+    since: Instant,
+}
+
+impl Slide {
+    fn new(open: bool) -> Self {
+        let shown = match open {
+            true => 1.,
+            false => 0.,
+        };
+        Self {
+            shown,
+            from: shown,
+            target: shown,
+            since: Instant::now(),
+        }
+    }
+
+    /// Aims at `open`, carrying on from wherever the last slide had reached.
+    fn aim(&mut self, open: bool, animates: bool) {
+        let target = match open {
+            true => 1.,
+            false => 0.,
+        };
+        if self.target == target {
+            return;
+        }
+        let reached = self.shown;
+        self.from = reached;
+        self.target = target;
+        self.since = Instant::now();
+        if !animates {
+            self.shown = target;
+        }
+    }
+
+    /// How much of the width shows now, asking for the next frame while the slide runs.
+    fn value(&mut self, window: &Window) -> f32 {
+        if self.shown == self.target {
+            return self.shown;
+        }
+        let progress = (self.since.elapsed().as_secs_f32() / SLIDE.as_secs_f32()).clamp(0., 1.);
+        self.shown = match progress >= 1. {
+            true => self.target,
+            false => {
+                self.from + (self.target - self.from) * ui::motion::ease_in_out_cubic(progress)
+            }
+        };
+        if self.shown != self.target {
+            window.request_animation_frame();
+        }
+        self.shown
+    }
+}
 
 pub(crate) struct Workspace {
     sidebar: Entity<SidebarLeft>,
@@ -52,6 +115,9 @@ pub(crate) struct Workspace {
     cached: bool,
     transition: Option<Entrance>,
     focus: FocusHandle,
+    /// The slides the two sidebars move on, one each.
+    left_slide: Slide,
+    right_slide: Slide,
 }
 
 impl Workspace {
@@ -63,6 +129,8 @@ impl Workspace {
     ) -> Self {
         let sidebar = cx.new(SidebarLeft::new);
         let sidebar_right = cx.new(|cx| SidebarRight::new(queue.clone(), playback.clone(), cx));
+        let left_open = sidebar.read(cx).is_open();
+        let right_open = sidebar_right.read(cx).is_open();
         let player_bar = cx.new(|cx| PlayerBar::new(playback.clone(), queue, cx));
         let settings = Sonora::global(cx).settings.clone();
         cx.observe(&settings, |_, _, cx| cx.notify()).detach();
@@ -88,6 +156,8 @@ impl Workspace {
             cached: true,
             transition: None,
             focus: cx.focus_handle(),
+            left_slide: Slide::new(left_open),
+            right_slide: Slide::new(right_open),
         }
     }
 
@@ -190,15 +260,33 @@ impl Shell for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let right = self.sidebar_right.read(cx).occupied_width(window);
+        let animates = ui::motion::animates(cx);
         let reserved = self.sidebar_right.read(cx).reserved_width();
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.adapt(reserved, window, cx));
-        let left = self.sidebar.read(cx).occupied_width();
+        // Both sidebars slide between closed and open rather than jumping, like a door along
+        // its rail: the shell lays each panel out at its full width and clips it to the share
+        // the slide has reached, so the page beside it is pushed across frame by frame.
+        let overlay = self.sidebar.read(cx).overlays();
         let overlay_width = self.sidebar.read(cx).overlay_width();
+        let left_full = self.sidebar.read(cx).full_width();
+        self.left_slide
+            .aim(self.sidebar.read(cx).is_open(), animates);
+        let left = match overlay {
+            // An overlaid sidebar floats over the page instead of pushing it, so it reserves
+            // nothing while it slides.
+            true => Pixels::ZERO,
+            false => left_full * self.left_slide.value(window),
+        };
+        let right_full = self.sidebar_right.read(cx).full_width();
+        let right_open = self.sidebar_right.read(cx).occupied_width(window) > Pixels::ZERO;
+        self.right_slide.aim(right_open, animates);
+        let right_reveal = self.right_slide.value(window);
+        let right = right_full * right_reveal;
+        self.sidebar_right
+            .update(cx, |panel, cx| panel.set_reveal(right_reveal, cx));
         Chrome::publish(left, right, reserved, cx);
         let covered = self.sidebar_right.read(cx).covers_content(window);
-        let overlay = self.sidebar.read(cx).overlays();
         let bar_height = PlayerBar::height(window, cx);
         let underlap = self.settings.read(cx).player_bar_translucent();
         let bottom = match underlap {
@@ -206,19 +294,50 @@ impl Render for Workspace {
             false => Pixels::ZERO,
         };
         Chrome::set_bottom(bottom, cx);
-        // A cached view is laid out from the style given here and its own root
-        // style is never consulted, so it can only be cached while it is in the
-        // flow at a width this knows: an overlaid sidebar places itself, and a
-        // closed one hides itself and takes no space at all.
-        let sidebar_width = self.sidebar.read(cx).occupied_width();
-        let sidebar = match overlay || sidebar_width == gpui::Pixels::ZERO {
+        // A cached view is laid out from the style given here and its own root style is never
+        // consulted, so it is cached at the width the panel keeps throughout the slide. An
+        // overlaid sidebar places itself and is left as it is.
+        let sidebar = match overlay {
             true => self.sidebar.clone().into_any_element(),
-            false => self
-                .sidebar
-                .clone()
-                .cached(StyleRefinement::default().w(sidebar_width).h_full())
+            false => div()
+                .relative()
+                .flex_none()
+                .h_full()
+                .overflow_hidden()
+                .w(left)
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .h_full()
+                        .w(left_full)
+                        .child(
+                            self.sidebar
+                                .clone()
+                                .cached(StyleRefinement::default().w(left_full).h_full()),
+                        ),
+                )
                 .into_any_element(),
         };
+        // The right panel hangs off the near edge of its own rail, so it slides in from the
+        // window's right as the page gives up the room.
+        let sidebar_right = div()
+            .relative()
+            .flex_none()
+            .h_full()
+            .overflow_hidden()
+            .w(right)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(right_full)
+                    .child(self.sidebar_right.clone()),
+            )
+            .into_any_element();
         // The header is cached at the height it last measured, so a page that redraws every
         // frame leaves it be. Until it has measured itself it is laid out as it is.
         let top = crate::screens::settings::Layout::of(window, cx);
@@ -369,7 +488,7 @@ impl Render for Workspace {
                                     }),
                             ),
                     )
-                    .child(self.sidebar_right.clone())
+                    .child(sidebar_right)
                     .when(overlay, |this| this.child(self.sidebar.clone())),
             )
             .child(

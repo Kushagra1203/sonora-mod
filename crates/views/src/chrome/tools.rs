@@ -30,6 +30,7 @@ impl Sliders {
 pub(crate) fn sorts(
     group: &Popovers,
     axes: Vec<SortAxis>,
+    large: bool,
     rank: impl Fn(&'static str, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
@@ -40,6 +41,7 @@ pub(crate) fn sorts(
     Picker::icon(SORTS, group, "icons/arrow-up-down.svg")
         .tooltip("tool-sort")
         .sticky()
+        .when(large, |picker| picker.large().round())
         .tint(match sorted {
             true => theme.primary,
             false => theme.muted_foreground,
@@ -64,6 +66,7 @@ pub(crate) fn filters(
     group: &Popovers,
     sliders: &Sliders,
     axes: Vec<Filter>,
+    large: bool,
     filter_fn: impl Fn(FilterChange, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
@@ -133,6 +136,7 @@ pub(crate) fn filters(
     Picker::icon(FILTERS, group, "icons/funnel.svg")
         .tooltip("tool-filters")
         .sticky()
+        .when(large, |picker| picker.large().round())
         .width(Picker::WIDE)
         .tint(match narrowed {
             true => theme.primary,

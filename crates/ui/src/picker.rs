@@ -30,6 +30,8 @@ pub struct Picker {
     status: Option<Hsla>,
     selected: bool,
     small: bool,
+    /// Whether the trigger is drawn as a circle, for one that floats over artwork.
+    round: bool,
     width: Pixels,
     left: bool,
     sticky: bool,
@@ -60,6 +62,7 @@ impl Picker {
             status: None,
             selected: false,
             small: true,
+            round: false,
             width: Self::REGULAR,
             left: false,
             sticky: false,
@@ -130,6 +133,14 @@ impl Picker {
 
     pub fn large(mut self) -> Self {
         self.small = false;
+        self
+    }
+
+    /// Draws the trigger as a circle rather than a rounded square, for one that floats over
+    /// artwork inside a glass capsule. The hover and press fills follow it, so they keep the
+    /// same cut-out as the glass around them.
+    pub fn round(mut self) -> Self {
+        self.round = true;
         self
     }
 
@@ -207,6 +218,7 @@ impl RenderOnce for Picker {
             status,
             selected,
             small,
+            round,
             width,
             left,
             sticky,
@@ -237,6 +249,7 @@ impl RenderOnce for Picker {
         };
         let button = button
             .when(small, Button::small)
+            .when(round, Button::rounded_full)
             .when_some(name.clone(), Button::name)
             .when_some(leading, Button::leading)
             .when_some(tooltip, |button, key| match above {

@@ -13,30 +13,41 @@ use gpui::{
 };
 use ui::{ActiveTheme as _, Artwork};
 
-/// How much wider and taller than the page the cover is drawn, so its blurred edge never enters
-/// the frame.
-const OVERSIZE: f32 = 1.5;
+/// How far past the window's edges the cover is drawn, so the blur's soft border falls outside
+/// the frame instead of fading the field out at its own edges.
+const BLEED: Pixels = px(100.);
 /// How hard the cover is blurred. Wide enough that no shape survives, narrow enough that the
 /// renderer still has a few texels of colour to work with.
 const BLUR: Pixels = px(84.);
 /// How much of the page colour lies over the whole field, so bright art still leaves the hero's
 /// text readable.
 const SHADE: f32 = 0.30;
-/// Where the field has fully become the page when the window is opaque.
-const FADE_FROM: f32 = 0.55;
-/// How much of the page the cover occupies at its largest (before the fade starts).
-const COVER_REACH: f32 = 0.60;
+/// Where the cover's light starts yielding to the page, and where it has fully become it.
+const FADE_FROM: f32 = 0.42;
+const FADE_TO: f32 = 0.78;
 
 /// The wash behind a detail page. `cover` is the largest cover the page holds; without one the
 /// page keeps the plain theme background.
 #[derive(IntoElement)]
 pub(crate) struct PageWash {
     cover: Option<String>,
+    /// How far below the window's top the wash starts. Zero on a page that drops the title bar,
+    /// the bar's height on one that keeps it.
+    top: Pixels,
 }
 
 impl PageWash {
     pub(crate) fn new(cover: Option<String>) -> Self {
-        Self { cover }
+        Self {
+            cover,
+            top: Pixels::ZERO,
+        }
+    }
+
+    /// Starts the wash `top` below the window's top edge.
+    pub(crate) fn top(mut self, top: Pixels) -> Self {
+        self.top = top;
+        self
     }
 }
 
@@ -54,10 +65,10 @@ impl RenderOnce for PageWash {
         let viewport = window.viewport_size();
         let height = viewport.height;
         let width = viewport.width;
-        let art = width * OVERSIZE;
-        // The cover is drawn taller than the page so it reaches ~COVER_REACH of the viewport
-        // before the fade starts. We oversize horizontally too so the blurred edges never show.
-        let tall = height * COVER_REACH * OVERSIZE;
+        // The cover keeps its own square, so the field shows its top band rather than a zoomed
+        // crop of its middle. It is drawn a little past every edge so the blur never pulls in
+        // the transparent border, and tall enough to reach below the fold at any aspect.
+        let art = (width + BLEED * 2.).max(height + BLEED * 2.);
         // A see-through window keeps its own opacity: the field thins with the page instead of
         // sitting on the wallpaper as an opaque sheet.
         let clarity = match theme.transparent {
@@ -71,14 +82,10 @@ impl RenderOnce for PageWash {
             false => theme.background,
         };
 
-        // The wash sits below the title bar. The title bar height is ~theme.metrics.title_bar.
-        // We offset the wash down by that amount so it starts right under the title bar.
-        let title_bar_h = theme.metrics.title_bar;
-
         div()
             .id("page-wash")
             .absolute()
-            .top(title_bar_h)
+            .top(self.top)
             .left_0()
             .right_0()
             .bottom_0()
@@ -88,17 +95,16 @@ impl RenderOnce for PageWash {
                     .absolute()
                     .left(relative(0.5))
                     .ml(-(art / 2.))
-                    // Position the cover so its bottom sits at ~COVER_REACH of the viewport.
-                    .top(-(tall - height * COVER_REACH))
+                    // The cover's top edge starts just past the window, so what shows is the
+                    // top of the artwork and the blur's soft start stays out of frame.
+                    .top(-BLEED - self.top)
                     .w(art)
-                    .h(tall)
+                    .h(art)
                     .opacity(clarity)
-                    // Fade out from the cover's bottom downward.
-                    .fade_edges(Pixels::ZERO, height * (1. - COVER_REACH + 0.08))
                     .child(
                         Artwork::new(Some(cover))
                             .size(art)
-                            .wide(tall)
+                            .wide(art)
                             .overlay()
                             .soft(true)
                             .blur(BLUR),
@@ -113,7 +119,7 @@ impl RenderOnce for PageWash {
             .child(div().absolute().inset_0().bg(linear_gradient(
                 180.,
                 linear_color_stop(theme.background.opacity(0.), FADE_FROM),
-                linear_color_stop(end, 1.),
+                linear_color_stop(end, FADE_TO),
             )))
             .into_any_element()
     }

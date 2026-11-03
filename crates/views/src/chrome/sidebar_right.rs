@@ -21,6 +21,9 @@ pub(crate) struct SidebarRight {
     width: Pixels,
     open: bool,
     tab: SideTab,
+    /// How much of its width the panel still occupies while the shell slides it in or out.
+    /// The shell sets it each frame; zero means the panel is fully away and need not draw.
+    reveal: f32,
 }
 
 impl SidebarRight {
@@ -48,11 +51,31 @@ impl SidebarRight {
             width,
             open,
             tab,
+            reveal: match open {
+                true => 1.,
+                false => 0.,
+            },
         }
     }
 
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The width the panel stands at when it is fully open, whatever its openness now. The
+    /// shell lays the panel out at this width while it slides.
+    pub(crate) fn full_width(&self) -> Pixels {
+        self.width
+    }
+
+    /// How much of its width the shell is showing this frame, set before the panel draws so a
+    /// closing panel keeps drawing until it has slid away.
+    pub(crate) fn set_reveal(&mut self, reveal: f32, cx: &mut Context<Self>) {
+        if self.reveal == reveal {
+            return;
+        }
+        self.reveal = reveal;
+        cx.notify();
     }
 
     pub(crate) fn available(window: &Window) -> bool {
@@ -140,7 +163,7 @@ impl SidebarRight {
 
 impl Render for SidebarRight {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.open || !Self::available(window) {
+        if !Self::available(window) || (!self.open && self.reveal <= 0.) {
             return div().into_any_element();
         }
 

@@ -246,6 +246,9 @@ pub struct Input {
     compact: bool,
     tucked: bool,
     blurred: bool,
+    /// Whether the field draws no surface of its own. A field laid into a glass capsule that is
+    /// already its surface wants nothing under the text: a second fill would read as a slab.
+    bare: bool,
     clearable: bool,
     masked: bool,
     /// Whether the text keeps to the field's end rather than its start, as a column of numbers.
@@ -281,6 +284,7 @@ impl Input {
             compact: false,
             tucked: false,
             blurred: false,
+            bare: false,
             clearable: false,
             masked: false,
             end: false,
@@ -322,6 +326,22 @@ impl Input {
     pub fn blurred(mut self) -> Self {
         self.blurred = true;
         self
+    }
+
+    /// A field laid into a surface of its own, with no fill and no border to draw one of its
+    /// own over it.
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
+    /// Sets whether the field draws its own surface, for a caller that lays it into one later.
+    pub fn set_bare(&mut self, bare: bool, cx: &mut Context<Self>) {
+        if self.bare == bare {
+            return;
+        }
+        self.bare = bare;
+        cx.notify();
     }
 
     pub fn clearable(mut self) -> Self {

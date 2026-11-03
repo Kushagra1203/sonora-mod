@@ -1,6 +1,6 @@
 use gpui::{AnyView, Context, Entity, MouseButton, NavigationDirection, Render, Task};
 use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelude::*};
-use gpui::{Window, div};
+use gpui::{Pixels, Window, div};
 use input::{
     CloseWindow, MinimizeWindow, NavigateBack, NavigateForward, OpenFilter, OpenSearch,
     OpenSettings, Refresh, ShowMembers, ToggleFullscreen, ToggleLyrics, ToggleQueue,
@@ -22,6 +22,7 @@ use ui::{
 use crate::chrome::{
     Busy, JamInvite, ThemeInvite, TitleBar, TitleBarEvent, TitleBarOptions, Toolbar, Tooled,
 };
+use crate::screens::detail::DetailEvent;
 use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
@@ -425,9 +426,13 @@ impl Root {
                 cx,
             )
         });
-        // Observe the detail for cover changes to drive the page wash.
+        // Observe the detail for cover changes to drive the page wash. Only the detail the
+        // window is actually showing may set it: the other one sits cached and still notifies.
         let detail_for_wash = detail.clone();
         cx.observe(&detail_for_wash, move |this, detail, cx| {
+            if !matches!(router::trail(cx).read(cx).current(), Destination::Album(_)) {
+                return;
+            }
             let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
             if this.page_wash_cover != cover {
                 this.page_wash_cover = cover;
@@ -445,6 +450,19 @@ impl Root {
                 cx,
             )
         });
+        // The page's own controls stand in for the title bar, so their two sidebar toggles
+        // land on the shell the bar would have told.
+        cx.subscribe(&view, |this, _, event, cx| match event {
+            DetailEvent::ToggleSidebar => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+            DetailEvent::ToggleSidebarRight => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+        })
+        .detach();
         self.screens.album = Some(view.clone());
         self.screens.album_detail = Some(detail.clone());
         (view, detail)
@@ -463,9 +481,16 @@ impl Root {
                 cx,
             )
         });
-        // Observe the detail for cover changes to drive the page wash.
+        // Observe the detail for cover changes to drive the page wash. Only the detail the
+        // window is actually showing may set it: the other one sits cached and still notifies.
         let detail_for_wash = detail.clone();
         cx.observe(&detail_for_wash, move |this, detail, cx| {
+            if !matches!(
+                router::trail(cx).read(cx).current(),
+                Destination::Playlist(_)
+            ) {
+                return;
+            }
             let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
             if this.page_wash_cover != cover {
                 this.page_wash_cover = cover;
@@ -483,6 +508,19 @@ impl Root {
                 cx,
             )
         });
+        // The page's own controls stand in for the title bar, so their two sidebar toggles
+        // land on the shell the bar would have told.
+        cx.subscribe(&view, |this, _, event, cx| match event {
+            DetailEvent::ToggleSidebar => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+            DetailEvent::ToggleSidebarRight => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+        })
+        .detach();
         self.screens.playlist = Some(view.clone());
         self.screens.playlist_detail = Some(detail.clone());
         (view, detail)
@@ -617,6 +655,18 @@ impl Root {
         };
 
         options
+    }
+
+    /// Whether the current page runs to the window's top edge with no title bar: an album or a
+    /// playlist, whose own floating controls take the bar's place.
+    fn fullbleed(&self, cx: &App) -> bool {
+        match self.view {
+            RootView::Workspace => matches!(
+                router::trail(cx).read(cx).current(),
+                Destination::Album(_) | Destination::Playlist(_)
+            ),
+            RootView::Fullscreen => false,
+        }
     }
 
     /// Opens settings on the page they last showed, inside the workspace.
@@ -934,6 +984,9 @@ impl Root {
             Destination::Album(id) => {
                 let (album, detail) = self.album(cx);
                 detail.update(cx, |detail, cx| detail.open_album(&id, cx));
+                // The wash follows the page's cover, which the observer keeps up to date once
+                // the new album has loaded.
+                self.page_wash_cover = detail.read(cx).header().and_then(|h| h.cover.clone());
                 toolbar = Some(album.read(cx).toolbar());
                 album.into()
             }
@@ -946,6 +999,9 @@ impl Root {
             Destination::Playlist(id) => {
                 let (playlist, detail) = self.playlist(cx);
                 detail.update(cx, |detail, cx| detail.open_playlist(&id, cx));
+                // The wash follows the page's cover, which the observer keeps up to date once
+                // the new playlist has loaded.
+                self.page_wash_cover = detail.read(cx).header().and_then(|h| h.cover.clone());
                 toolbar = Some(playlist.read(cx).toolbar());
                 playlist.into()
             }
@@ -1159,6 +1215,8 @@ impl Render for Root {
         // the page colour under it would only stack a second alpha beneath that and leave a
         // see-through fullscreen reading nearly solid.
         let ambient = matches!(self.view, RootView::Fullscreen) && ambient::shown(cx);
+        // An album or playlist drops the title bar and draws its own controls over its artwork.
+        let fullbleed = self.fullbleed(cx);
 
         // The shell enters the way a page enters the workspace. An opaque window fades it
         // under a scrim of the page colour, which leaves the workspace's cached views alone,
@@ -1272,18 +1330,26 @@ impl Render for Root {
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.
             .when(self.page_wash_cover.is_some(), |this| {
-                this.child(PageWash::new(self.page_wash_cover.clone()))
+                this.child(
+                    PageWash::new(self.page_wash_cover.clone()).top(match fullbleed {
+                        true => Pixels::ZERO,
+                        false => theme.metrics.title_bar,
+                    }),
+                )
             })
             // The bar only changes when it is told to, so a frame drawn for the lyrics or the
-            // progress bar replays it rather than building it again.
-            .child(
-                self.title_bar.clone().cached(
-                    StyleRefinement::default()
-                        .w_full()
-                        .h(ui::snapped(theme.metrics.title_bar, window))
-                        .flex_none(),
-                ),
-            )
+            // progress bar replays it rather than building it again. An album or playlist draws
+            // its own controls instead, so it goes without one.
+            .when(!fullbleed, |this| {
+                this.child(
+                    self.title_bar.clone().cached(
+                        StyleRefinement::default()
+                            .w_full()
+                            .h(ui::snapped(theme.metrics.title_bar, window))
+                            .flex_none(),
+                    ),
+                )
+            })
             .when_else(
                 show_sign_in,
                 |this| this.child(div().flex().flex_1().min_h_0().child(self.login.clone())),

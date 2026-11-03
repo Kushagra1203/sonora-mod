@@ -509,6 +509,8 @@ struct Appearance {
     /// Whether the app paints its frosted treatments. The key kept its old name, which stood
     /// for a blurred desktop behind the window, so a stored preference carries over.
     blur: bool,
+    /// Whether glass is drawn matte and heavy rather than thin and lens-like.
+    frosted: bool,
     /// Whether a see-through window asks the platform to blur the desktop behind it.
     blur_window: bool,
     font_size: f32,
@@ -807,6 +809,7 @@ impl Default for Appearance {
             icons: icons::BASE.to_owned(),
             rounding: Rounding::Rounded.id().to_owned(),
             blur: true,
+            frosted: false,
             blur_window: true,
             font_size: DEFAULT_FONT_SIZE,
             transparent: false,
@@ -1360,6 +1363,10 @@ impl AppSettings {
         self.values.appearance.blur
     }
 
+    pub fn frosted(&self) -> bool {
+        self.values.appearance.frosted
+    }
+
     pub fn blur_window(&self) -> bool {
         self.values.appearance.blur_window
     }
@@ -1394,6 +1401,7 @@ impl AppSettings {
             transparency: self.transparency(),
             blur: self.blur(),
             blur_window: self.blur_window(),
+            frosted: self.frosted(),
             tint: None,
             tint_secondary: None,
         }
@@ -2203,6 +2211,11 @@ impl AppSettings {
 
     pub fn set_blur(&mut self, blur: bool, cx: &mut Context<Self>) {
         self.values.appearance.blur = blur;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_frosted(&mut self, frosted: bool, cx: &mut Context<Self>) {
+        self.values.appearance.frosted = frosted;
         self.schedule_save(cx);
     }
 

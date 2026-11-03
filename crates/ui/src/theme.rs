@@ -79,6 +79,9 @@ pub struct Look {
     pub blur: bool,
     /// Whether a see-through window asks the platform to blur the desktop behind it.
     pub blur_window: bool,
+    /// Whether glass is drawn matte and heavy rather than thin and lens-like. See
+    /// `ui::frosted`.
+    pub frosted: bool,
     pub tint: Option<Hsla>,
     pub tint_secondary: Option<Hsla>,
 }
@@ -391,6 +394,9 @@ pub struct Theme {
     /// Whether a see-through window asks the platform to blur the desktop behind it. Only
     /// `ui::backdrop` reads it.
     pub blur_window: bool,
+    /// Whether glass is drawn frosted rather than liquid: a thick matte fill over a wide
+    /// blur, with none of the thin lens at the rim. Read it through `ui::frosted`.
+    pub frosted: bool,
     pub tint: Option<Hsla>,
     /// The cover's runner-up hue, carried beside the lead tint for two-colour
     /// surfaces like the fullscreen ambient background. The selection itself stays single.
@@ -445,6 +451,7 @@ impl Theme {
             transparent: false,
             blur: false,
             blur_window: false,
+            frosted: false,
             tint: None,
             tint_secondary: None,
         }
@@ -488,6 +495,7 @@ impl Theme {
             transparent: false,
             blur: false,
             blur_window: false,
+            frosted: false,
             tint: None,
             tint_secondary: None,
         }
@@ -799,6 +807,7 @@ impl Theme {
         theme.transparent = look.transparent;
         theme.blur = look.blur;
         theme.blur_window = look.blur_window;
+        theme.frosted = look.frosted;
         theme.tint = look.tint;
         theme.tint_secondary = look.tint_secondary;
         theme
@@ -982,6 +991,7 @@ mod tests {
             transparency: 0.,
             blur: false,
             blur_window: false,
+            frosted: false,
             tint: Some(TINT),
             tint_secondary: None,
         };

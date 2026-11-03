@@ -39,7 +39,7 @@ impl SettingsView {
                 [Slot::Opacity]
                     .into_iter()
                     .chain(ui::WINDOW_BLUR.then_some(Slot::WindowBlur))
-                    .chain([Slot::Blur]),
+                    .chain([Slot::Blur, Slot::Frosted]),
             ),
         ]
     }
@@ -227,6 +227,28 @@ impl SettingsView {
                     this.settings
                         .update(cx, |settings, cx| settings.set_blur(blur, cx));
                     Theme::set(Look { blur, ..look }, &overrides, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// Switches every glass surface from the thin lens to a matte, heavier frost: the player
+    /// bar, menus, and the controls that float over artwork.
+    pub(super) fn frosted_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let look = self.look(cx);
+        let overrides = self.settings.read(cx).theme_overrides();
+
+        self.row(
+            t!("settings-frosted"),
+            Switch::new("frosted", look.frosted)
+                .name(t!("settings-frosted"))
+                .disabled(!look.blur)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let frosted = !look.frosted;
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_frosted(frosted, cx));
+                    Theme::set(Look { frosted, ..look }, &overrides, cx);
                     cx.notify();
                 }))
                 .into_any_element(),
