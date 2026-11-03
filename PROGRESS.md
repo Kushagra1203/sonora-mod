@@ -139,9 +139,13 @@ takes upstream only when the user merges it.
   `LIBRARY_PATH=~/.local/lib` — handled by `.cargo/config.toml [env]` (dev symlink stands
   in for missing libxkbcommon-x11-devel until `sudo dnf install libxkbcommon-x11-devel`).
 - Build time: incremental ~5-9 min when views/state change, ~30-50s for music-only.
-- Target dir ~13 GB (debug; normal for gpui, keep for iteration speed per user). On
-  2026-11-03 the orphaned `.dwo` split-debug files (2.3 GB, units no longer referenced by
-  any rlib/rmeta/o) were pruned; keep the folder under the 12–13 GB budget and ~10 GB free.
+- **Hard budget: the checkout must stay under 15 GB, ideally 12–13 GB (nearer 10 GB is fine).**
+  Never `cargo clean`; keep the binary, `target/debug/deps` and the newest incremental
+  generation per crate. On 2026-11-03 a cleanup took 17 GB → 9.9 GB by deleting the orphaned
+  `.dwo` split-debug files (2.6 GB unique) and 45 stale incremental generations (5.2 GB);
+  the build cache and `target/debug/sonora` were kept. `profile.dev` uses
+  `split-debuginfo = "unpacked"`, so `.dwo` files accumulate again across full rebuilds and
+  are the first thing to prune when the folder grows.
 - `target/debug/sonora` talks IPC over `/run/user/1000/sonora-dev.sock`; the release
   AppImage uses `sonora.sock` — no collision.
 - CLI drives everything: `sonora providers|provider|search|play|current|pause|queue…`

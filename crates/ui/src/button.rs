@@ -62,6 +62,9 @@ pub struct Button {
     backgroundless: bool,
     hoverless: bool,
     frosted: bool,
+    /// Whether the button floats on glass, where its glyph needs a dark shadow to stay legible
+    /// over whatever bright artwork the glass lets through.
+    glass: bool,
     turn: f32,
     hovered: Option<StyleRefinement>,
     fill: Option<(Hsla, Hsla)>,
@@ -94,6 +97,7 @@ impl Button {
             backgroundless: false,
             hoverless: false,
             frosted: false,
+            glass: false,
             turn: 0.,
             hovered: None,
             fill: None,
@@ -247,6 +251,14 @@ impl Button {
         self
     }
 
+    /// Puts the glyph on glass. The drop shadow behind it is what keeps a white icon readable
+    /// when a bright thumbnail passes under a nearly clear surface, without thickening the
+    /// surface itself.
+    pub fn on_glass(mut self) -> Self {
+        self.glass = true;
+        self
+    }
+
     /// Rotates the icon by `turn` of a full turn, for an owner that animates it with `Spin`.
     pub fn turned(mut self, turn: f32) -> Self {
         self.turn = turn;
@@ -326,6 +338,7 @@ impl RenderOnce for Button {
             backgroundless,
             hoverless,
             frosted,
+            glass,
             turn,
             hovered,
             fill,
@@ -479,14 +492,30 @@ impl RenderOnce for Button {
             .when_some(hovered, |this, style| this.hover(move |_| style))
             .when_some(pressed, |this, style| this.active(move |_| style))
             .when_some(icon, |this, path| {
-                this.child(
+                let glyph = |color| {
                     svg()
-                        .path(icons::path(path))
+                        .path(icons::path(path.clone()))
                         .size(px(16.))
                         .flex_none()
-                        .text_color(foreground)
-                        .with_transformation(Transformation::rotate(radians(turn * TAU))),
-                )
+                        .text_color(color)
+                        .with_transformation(Transformation::rotate(radians(turn * TAU)))
+                };
+                match glass {
+                    true => this.child(
+                        div()
+                            .relative()
+                            .flex_none()
+                            .size(px(16.))
+                            .child(
+                                glyph(theme.background.opacity(0.5))
+                                    .absolute()
+                                    .top(px(1.))
+                                    .left(px(1.)),
+                            )
+                            .child(glyph(foreground)),
+                    ),
+                    false => this.child(glyph(foreground)),
+                }
             })
             .children(leading)
             .when_some(label, |this, label| {

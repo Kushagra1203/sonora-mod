@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{App, Hsla, Pixels, px};
+use gpui::{App, Div, Hsla, Pixels, div, px};
 
 use crate::theme::ActiveTheme as _;
 
@@ -80,4 +80,74 @@ pub fn bar_surface<E: Styled>(element: E, cx: &App) -> E {
 /// `blurring` first, since this one has no theme to read.
 pub fn frost<E: Styled>(element: E) -> E {
     element.backdrop_blur(GLASS_BLUR)
+}
+
+/// How much of the popover colour a liquid-glass surface keeps over what it blurs. Thin
+/// enough that the page reads through, thick enough that the surface has a body of its own.
+pub const LIQUID_FILL: f32 = 0.12;
+/// How hard a liquid-glass surface blurs what is behind it. A narrow blur is deliberate: a
+/// gaussian this wide runs at full resolution, while anything past four pixels is halved and
+/// halved again until the backdrop is a smear of a few dozen texels. The refraction in the
+/// backdrop shader does the work a wider blur would otherwise be asked for.
+pub const LIQUID_BLUR: Pixels = px(4.);
+/// How hard the backdrop bends at the capsule's rim, from 0 for a plain blur to 1.
+pub const LIQUID_BEND: f32 = 1.;
+/// The radius a liquid capsule turns its corners with. Big and continuous, so the shape reads
+/// as a lens rather than a rounded box.
+pub const LIQUID_RADIUS: Pixels = px(30.);
+/// The alpha of the lit rim along the glass's top and left edges.
+const RIM_LIT: f32 = 0.18;
+/// The alpha of the shaded rim along its bottom and right edges.
+const RIM_SHADED: f32 = 0.32;
+
+/// A capsule of liquid glass: the thinnest fill over a narrow blur whose edges bend the page
+/// like a lens, a bright rim where light lands on the top and left edges, and a shaded rim on
+/// the bottom and right. There is deliberately no painted sheen: a fixed highlight that never
+/// changes with the page is the one part of the material that reads as a sticker. Content is
+/// added as ordinary children of the returned div and paints over the material. With blur
+/// turned off the fill becomes opaque, since a thin fill over flat paint leaves text
+/// unreadable.
+pub fn liquid_capsule(cx: &App) -> Div {
+    let theme = cx.theme();
+    let blurred = blurring(cx);
+    let fill = match blurred {
+        true => theme.popover.opacity(LIQUID_FILL),
+        false => theme.popover,
+    };
+    let lit = theme.foreground.opacity(RIM_LIT);
+    let shaded = theme.background.opacity(RIM_SHADED);
+
+    div()
+        .relative()
+        .rounded(LIQUID_RADIUS)
+        .squircle()
+        .overflow_hidden()
+        .bg(fill)
+        .when(blurred, |this| {
+            this.backdrop_blur(LIQUID_BLUR)
+                .backdrop_liquid(LIQUID_BEND)
+        })
+        .shadow_lg()
+        // light lands on the top and left edges, as on the near side of a thick lens
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(LIQUID_RADIUS)
+                .squircle()
+                .border_t_1()
+                .border_l_1()
+                .border_color(lit),
+        )
+        // the far side sits in shade, which grounds the glass against what it floats on
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .rounded(LIQUID_RADIUS)
+                .squircle()
+                .border_b_1()
+                .border_r_1()
+                .border_color(shaded),
+        )
 }

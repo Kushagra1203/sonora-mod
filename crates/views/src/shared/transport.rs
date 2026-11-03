@@ -104,6 +104,7 @@ pub(crate) fn toggle(playback: &Entity<Playback>, big: bool, frosted: bool, cx: 
 
     Button::new(id)
         .ghost()
+        .on_glass()
         .when(frosted, Button::frosted)
         .when(!big, Button::small)
         .icon(icon)
@@ -121,15 +122,18 @@ fn shuffle(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
 
     Button::new("shuffle")
         .ghost()
+        .on_glass()
         .when(frosted, Button::frosted)
         .small()
         .icon("icons/shuffle.svg")
         .indicator(on)
         .aria_toggled(Toggled::from(on))
         .tooltip_above("player-shuffle")
+        // A ghost over clear glass sits on artwork rather than on a panel, so its resting
+        // colour is lifted off the muted one the flat bars use.
         .tint(match on {
             true => theme.primary,
-            false => theme.muted_foreground,
+            false => theme.foreground.opacity(0.78),
         })
         .on_click(move |_, _, cx| {
             playback.update(cx, |playback, cx| playback.toggle_shuffle(cx));
@@ -143,6 +147,7 @@ fn repeat(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
 
     Button::new("repeat")
         .ghost()
+        .on_glass()
         .when(frosted, Button::frosted)
         .small()
         .icon(match repeat {
@@ -156,7 +161,7 @@ fn repeat(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
             Repeat::One => "player-repeat-one",
         })
         .tint(match repeat {
-            Repeat::Off => theme.muted_foreground,
+            Repeat::Off => theme.foreground.opacity(0.78),
             _ => theme.primary,
         })
         .on_click(move |_, _, cx| {
@@ -171,6 +176,7 @@ fn previous(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
 
     Button::new("previous")
         .ghost()
+        .on_glass()
         .when(frosted, Button::frosted)
         .small()
         .icon("icons/skip-back.svg")
@@ -188,6 +194,7 @@ fn next(playback: &Entity<Playback>, frosted: bool, cx: &App) -> Button {
 
     Button::new("next")
         .ghost()
+        .on_glass()
         .when(frosted, Button::frosted)
         .small()
         .icon("icons/skip-forward.svg")

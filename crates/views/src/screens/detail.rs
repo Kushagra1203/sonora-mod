@@ -176,7 +176,10 @@ impl DetailView {
             let source = source.table(cx.weak_entity());
             let mut delegate = TableDelegate::new(source, width, cx).with_column_menu(&PINNED);
             delegate.set_layout(saved, cx);
-            TableState::new(delegate, cx).follow(scroll)
+            TableState::new(delegate, cx)
+                .follow(scroll)
+                .headless()
+                .roomy()
         });
 
         cx.observe(&detail, |this, detail, cx| {
@@ -430,6 +433,7 @@ impl DetailView {
             Picker::icon("detail-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
                 .large()
+                .rounded_full()
                 .left()
                 .menu(menu)
         });
@@ -462,10 +466,14 @@ impl DetailView {
         });
 
         let view = self.me.clone();
+        let art = theme.metrics.cover * 3.2;
         PageHero::new("detail-hero", title)
             .pending(header.is_none() && self.detail.read(cx).is_loading())
             .pin(pin)
             .cover(cover)
+            .art(art)
+            .art_radius(theme.radius * 3.)
+            .title_size(theme.text(Text::Display) * 1.35)
             .eyebrow(eyebrow)
             .meta(strip)
             .actions(actions)
@@ -504,6 +512,7 @@ impl DetailView {
 
         let heart = Button::new("detail-toggle-library")
             .outline()
+            .rounded_full()
             .icon(match saved {
                 true => "icons/heart-filled.svg",
                 false => "icons/heart.svg",
@@ -562,7 +571,7 @@ impl DetailView {
         let ring = |done: f32, color: Hsla| {
             ArrowRing::new("detail-download-ring", Some(done)).color(color)
         };
-        let button = Button::new("detail-download").outline();
+        let button = Button::new("detail-download").outline().rounded_full();
         Some(
             match progress {
                 None => button.icon("icons/download.svg").tooltip("menu-download"),
@@ -607,7 +616,7 @@ impl DetailView {
         notify: &Rc<dyn Fn(&mut App)>,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        let grid = CardGrid::layout(self.width - cx.theme().metrics.inset * 2.);
+        let grid = CardGrid::layout(self.width);
         let card = grid.card;
         let columns = grid.columns.max(1);
         let detail = self.detail.read(cx);
@@ -735,8 +744,8 @@ impl DetailView {
         }
         Some(
             div()
-                .px(theme.metrics.pad * 2.)
-                .pt_2()
+                .px(theme.metrics.inset)
+                .pt_4()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -786,11 +795,17 @@ impl Render for DetailView {
 
         self.table.claim(cx);
         let inset = cx.theme().metrics.inset;
-        let width = cells::content_width(window, Pixels::ZERO, cx);
+        let width = cells::content_width(window, page::reserved(inset), cx);
         if (width - self.width).abs() >= px(0.5) {
             self.width = width;
             self.table.set_width(width, cx);
         }
+
+        let _cover = self
+            .detail
+            .read(cx)
+            .header()
+            .and_then(|header| header.cover.clone());
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
         let viewport = page::viewport(&scroll, inset, window);
@@ -825,12 +840,12 @@ impl Render for DetailView {
             .child(
                 Scroller::new("detail-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                    .pt(inset)
+                    .pt(inset * 1.5)
                     .pb(inset)
                     .child(div().px(inset).child(self.header(cx)))
-                    .child(table(&self.table))
+                    .child(div().px(inset).child(table(&self.table)))
                     .children(self.notices(cx))
-                    .child(div().px(inset).pt_10().children(rails)),
+                    .child(div().px(inset).pt_12().children(rails)),
             )
             .when_some(context_menu, |this, menu| this.child(menu))
             .into_any_element()

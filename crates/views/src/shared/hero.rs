@@ -252,6 +252,7 @@ impl HeroPlayButton {
             .icon("icons/shuffle.svg")
             .tooltip("play-shuffle")
             .outline()
+            .rounded_full()
             .disabled(disabled)
             .on_click(move |_, _, cx| {
                 let queued = listing.queue(cx);
@@ -292,6 +293,7 @@ impl RenderOnce for HeroPlayButton {
                 .label(label)
                 .icon(icon)
                 .primary()
+                .rounded_full()
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
                     playback.update(cx, |playback, cx| match playing {
@@ -324,6 +326,13 @@ pub(crate) struct PageHero {
     drag_start: Option<DragStart>,
     pin: Option<Pin>,
     pending: bool,
+    /// The cover's edge, for a page whose art should carry more of the composition than the
+    /// shared `metrics.cover` allows. Defaults to that token.
+    art: Option<Pixels>,
+    /// How round the cover's corners are, defaulting to the shared hero radius.
+    art_radius: Option<Pixels>,
+    /// The title's size, for a page that gives its name more room than the shared display step.
+    title_size: Option<Pixels>,
 }
 
 impl PageHero {
@@ -342,7 +351,28 @@ impl PageHero {
             drag_start: None,
             pin: None,
             pending: false,
+            art: None,
+            art_radius: None,
+            title_size: None,
         }
+    }
+
+    /// Draws the cover at `art` rather than the shared hero size.
+    pub(crate) fn art(mut self, art: Pixels) -> Self {
+        self.art = Some(art);
+        self
+    }
+
+    /// Rounds the cover's corners, for art that should sit on the page rather than in a frame.
+    pub(crate) fn art_radius(mut self, radius: Pixels) -> Self {
+        self.art_radius = Some(radius);
+        self
+    }
+
+    /// Sets the title in `size`, for a page whose name should carry the header.
+    pub(crate) fn title_size(mut self, size: Pixels) -> Self {
+        self.title_size = Some(size);
+        self
     }
 
     pub(crate) fn pin(mut self, pin: Option<Pin>) -> Self {
@@ -410,7 +440,9 @@ impl RenderOnce for PageHero {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = *cx.theme();
 
-        let art = theme.metrics.cover;
+        let art = self.art.unwrap_or(theme.metrics.cover);
+        let art_radius = self.art_radius.unwrap_or(theme.radius * 1.5);
+        let title_size = self.title_size.unwrap_or(theme.text(Text::Display));
         let drag_start = self.drag_start.map(Rc::from);
         let starter = drag_start.clone();
 
@@ -426,7 +458,7 @@ impl RenderOnce for PageHero {
                     Skeleton::new()
                         .flex_none()
                         .size(art)
-                        .rounded(theme.radius * 1.5)
+                        .rounded(art_radius)
                         .when(self.circle, |skeleton| skeleton.rounded_full()),
                 )
                 .child(
@@ -441,11 +473,8 @@ impl RenderOnce for PageHero {
                         .line_height(relative(LEADING))
                         .children(self.eyebrow.map(|eyebrow| eyebrow_label(eyebrow, cx)))
                         .child(
-                            skeleton_line(theme.text(Text::Display)).child(
-                                Skeleton::new()
-                                    .w(TITLE_SKELETON)
-                                    .h(theme.text(Text::Display)),
-                            ),
+                            skeleton_line(title_size)
+                                .child(Skeleton::new().w(TITLE_SKELETON).h(title_size)),
                         )
                         .child(
                             skeleton_line(theme.text(Text::Small))
@@ -478,7 +507,7 @@ impl RenderOnce for PageHero {
                     .child(
                         Artwork::new(self.cover)
                             .size(art)
-                            .corner_radius(theme.radius * 1.5)
+                            .corner_radius(art_radius)
                             .when(self.circle, Artwork::circle)
                             .when_some(self.fallback, Artwork::fallback)
                             .when(self.accent, Artwork::accent),
@@ -501,7 +530,7 @@ impl RenderOnce for PageHero {
                             .items_center()
                             .gap_3()
                             .min_w_0()
-                            .text_size(theme.text(Text::Display))
+                            .text_size(title_size)
                             .font_weight(FontWeight::BOLD)
                             .child(
                                 div()

@@ -10,7 +10,7 @@ use gpui::{
     AbsoluteLength, AnyElement, App, Context, Corners, Div, DragMoveEvent, Empty, Entity,
     EventEmitter, FocusHandle, Focusable, Global, Interactivity, MouseButton, MouseDownEvent,
     MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Stateful, StyleRefinement, TextAlign,
-    Window, actions, div, point, px, svg,
+    Window, actions, div, point, px, relative, svg,
 };
 
 use i18n::t;
@@ -48,6 +48,8 @@ const SKELETON_BAR: f32 = 0.3;
 /// How far a skeleton bar reaches across its cell, stepped by row and column so the column
 /// edges do not line up into a grid.
 const SKELETON_REACH: [f32; 5] = [0.6, 0.85, 0.45, 0.7, 0.55];
+/// How much taller a roomy row stands than the theme's shared row token.
+const ROOMY: f32 = 1.28;
 
 pub const ROW_GROUP: &str = "table-row";
 
@@ -644,6 +646,11 @@ pub struct TableState<S: TableSource> {
     moving: Option<(usize, usize)>,
     sizing: Option<Sizing>,
     column_menu: Option<Point<Pixels>>,
+    /// A table whose column head is drawn, with its sorting, resizing and moving.
+    headless: bool,
+    /// A table whose rows are taller, rounded and free of dividers, for a page that reads as one
+    /// surface rather than a grid.
+    roomy: bool,
 }
 
 impl<S: TableSource> EventEmitter<TableEvent> for TableState<S> {}
@@ -666,6 +673,31 @@ impl<S: TableSource> TableState<S> {
             moving: None,
             sizing: None,
             column_menu: None,
+            headless: false,
+            roomy: false,
+        }
+    }
+
+    /// Drops the column head. The table still sorts, through the toolbar that owns its axes, and
+    /// its rows keep the whole height the head would have taken.
+    pub fn headless(mut self) -> Self {
+        self.headless = true;
+        self
+    }
+
+    /// Draws the rows with more air and without the dividers that turn a list into a grid. The
+    /// row's own hover veil is rounded, so the page reads as one flowing surface.
+    pub fn roomy(mut self) -> Self {
+        self.roomy = true;
+        self
+    }
+
+    /// The height of one row, after the theme token and this table's own room.
+    fn row_height(&self, window: &Window, cx: &App) -> Pixels {
+        let row = snapped(cx.theme().metrics.row, window);
+        match self.roomy {
+            true => snapped(row * ROOMY, window),
+            false => row,
         }
     }
 
@@ -755,8 +787,11 @@ impl<S: TableSource> TableState<S> {
         };
 
         let metrics = cx.theme().metrics;
-        let row = snapped(metrics.row, window);
-        let head = snapped(metrics.header, window);
+        let row = self.row_height(window, cx);
+        let head = match self.headless {
+            true => Pixels::ZERO,
+            false => snapped(metrics.header, window),
+        };
         let top = head + row * display as f32;
         let above = self.viewport.top + head;
         let below = self.viewport.top + self.viewport.height;
@@ -815,8 +850,10 @@ impl<S: TableSource> TableState<S> {
                     .h(row_height)
                     .flex()
                     .items_center()
-                    .border_b_1()
-                    .border_color(theme.table_row_border)
+                    .when(self.roomy, |this| this.rounded(theme.radius * 1.5))
+                    .when(!self.roomy, |this| {
+                        this.border_b_1().border_color(theme.table_row_border)
+                    })
                     .children(
                         self.delegate
                             .columns
@@ -1215,17 +1252,38 @@ impl<S: TableSource> TableState<S> {
                     .flex()
                     .items_center()
                     .h(row_height)
+                    .when(self.roomy, |this| this.rounded(theme.radius * 1.5))
                     .when(tail, |this| {
                         this.rounded_bl(self.corners.bottom_left)
                             .rounded_br(self.corners.bottom_right)
                     })
-                    .when(!tail || bottom == Pixels::ZERO, |this| {
+                    .when(!self.roomy && (!tail || bottom == Pixels::ZERO), |this| {
                         this.border_b_1().border_color(theme.table_row_border)
                     })
-                    .when(playing, |this| this.bg(theme.muted))
+                    .when(playing, |this| match self.roomy {
+                        true => this.bg(theme.primary.opacity(0.10)),
+                        false => this.bg(theme.muted),
+                    })
                     .when(selected, |this| this.bg(theme.table_active))
-                    .when(!selected, |this| {
+                    .when(!selected && !playing, |this| {
                         this.hover(move |style| style.bg(theme.table_hover))
+                    })
+                    .when(playing && self.roomy, |this| {
+                        this.child(
+                            div()
+                                .absolute()
+                                .left(px(3.))
+                                .top(relative(0.5))
+                                .mt(-theme.metrics.row * 0.18)
+                                .w(px(2.))
+                                .h(theme.metrics.row * 0.36)
+                                .rounded_full()
+                                .bg(theme.primary),
+                        )
+                    })
+                    .when(self.roomy && display % 2 == 0, |this| {
+                        // A subtle hint of white so the stripe reads on dark backgrounds.
+                        this.bg(theme.foreground.opacity(0.025))
                     })
                     .when_some(self.delegate.source.pin(row, cx), Pinnable::pin)
                     .when_some(self.delegate.source.tip(row, cx), |this, text| {
@@ -1385,8 +1443,11 @@ impl<S: TableSource> Render for TableState<S> {
         self.delegate.measure(window, cx);
 
         let metrics = cx.theme().metrics;
-        let row = snapped(metrics.row, window);
-        let head = snapped(metrics.header, window);
+        let row = self.row_height(window, cx);
+        let head = match self.headless {
+            true => Pixels::ZERO,
+            false => snapped(metrics.header, window),
+        };
         let placeholders = self.placeholders(row, cx);
         let height = self.height(head, row, self.delegate.row_count().max(placeholders));
         let pinned = snapped(self.viewport.top.clamp(Pixels::ZERO, height - head), window);
@@ -1471,18 +1532,20 @@ impl<S: TableSource> Render for TableState<S> {
                             }),
                     ),
             )
-            .child(
-                div()
-                    .block_mouse_except_scroll()
-                    .absolute()
-                    .top(pinned)
-                    .left_0()
-                    .w_full()
-                    .when_some(backdrop, |this, backdrop| this.bg(backdrop))
-                    .rounded_tl(top.top_left)
-                    .rounded_tr(top.top_right)
-                    .child(self.header(head, top, cx)),
-            )
+            .when(!self.headless, |this| {
+                this.child(
+                    div()
+                        .block_mouse_except_scroll()
+                        .absolute()
+                        .top(pinned)
+                        .left_0()
+                        .w_full()
+                        .when_some(backdrop, |this, backdrop| this.bg(backdrop))
+                        .rounded_tl(top.top_left)
+                        .rounded_tr(top.top_right)
+                        .child(self.header(head, top, cx)),
+                )
+            })
             .when_some(context_menu, |this, menu| this.child(menu))
             .when_some(column_menu, |this, menu| this.child(menu))
     }

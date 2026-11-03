@@ -26,6 +26,7 @@ use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
+use crate::shared::wash::PageWash;
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -97,6 +98,8 @@ pub struct Root {
     login: Entity<LoginView>,
     title_bar: Entity<TitleBar>,
     ambient: Entity<Ambient>,
+    /// The cover driving the page wash on album/playlist pages. `None` when not on such a page.
+    page_wash_cover: Option<String>,
     /// The question before a Jam link is joined, drawn over whichever shell is up so a link
     /// opened in fullscreen is answered there.
     jam_invite: Entity<JamInvite>,
@@ -360,6 +363,7 @@ impl Root {
             },
             adaptive,
             ambient,
+            page_wash_cover: None,
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
             background: None,
@@ -421,6 +425,16 @@ impl Root {
                 cx,
             )
         });
+        // Observe the detail for cover changes to drive the page wash.
+        let detail_for_wash = detail.clone();
+        cx.observe(&detail_for_wash, move |this, detail, cx| {
+            let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
+            if this.page_wash_cover != cover {
+                this.page_wash_cover = cover;
+                cx.notify();
+            }
+        })
+        .detach();
         let view = cx.new(|cx| {
             DetailView::new(
                 detail.clone(),
@@ -449,6 +463,16 @@ impl Root {
                 cx,
             )
         });
+        // Observe the detail for cover changes to drive the page wash.
+        let detail_for_wash = detail.clone();
+        cx.observe(&detail_for_wash, move |this, detail, cx| {
+            let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
+            if this.page_wash_cover != cover {
+                this.page_wash_cover = cover;
+                cx.notify();
+            }
+        })
+        .detach();
         let view = cx.new(|cx| {
             DetailView::new(
                 detail.clone(),
@@ -587,10 +611,12 @@ impl Root {
     fn options(&self, cx: &Context<Self>) -> TitleBarOptions {
         let content = self.toolbar.clone().map(Into::into);
 
-        match self.view {
+        let options = match self.view {
             RootView::Workspace => self.shells.workspace.read(cx).title_bar(content, cx),
             RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(content, cx),
-        }
+        };
+
+        options
     }
 
     /// Opens settings on the page they last showed, inside the workspace.
@@ -841,6 +867,14 @@ impl Root {
 
     fn show(&mut self, destination: Destination, cx: &mut Context<Self>) {
         clear_listing(cx);
+        // Clear the page wash when leaving album/playlist pages.
+        let is_detail = matches!(
+            destination,
+            Destination::Album(_) | Destination::Playlist(_)
+        );
+        if !is_detail {
+            self.page_wash_cover = None;
+        }
         let opening = matches!(destination, Destination::Fullscreen);
         if opening != matches!(self.view, RootView::Fullscreen) {
             self.os_follow = Some(opening);
@@ -1235,6 +1269,11 @@ impl Render for Root {
             )
             // The ambient background sits behind everything, title bar included.
             .when(ambient, |this| this.child(self.ambient.clone()))
+            // The page wash sits behind the title bar on album/playlist pages so the artwork
+            // colour reaches the top of the window.
+            .when(self.page_wash_cover.is_some(), |this| {
+                this.child(PageWash::new(self.page_wash_cover.clone()))
+            })
             // The bar only changes when it is told to, so a frame drawn for the lyrics or the
             // progress bar replays it rather than building it again.
             .child(

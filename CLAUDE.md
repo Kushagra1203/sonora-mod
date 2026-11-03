@@ -3,6 +3,20 @@
 A native music streaming client, built with Rust and [GPUI](https://github.com/zed-industries/zed)
 (Zed's UI framework). Cargo workspace, edition 2024, resolver 3.
 
+## Hard constraints
+
+- **This checkout must stay under 15 GB at all times.** Check `du -sh ~/sonora-mod` before and
+  after any build-heavy work. The comfortable range is 12–13 GB; nearer 10 GB is fine. Above
+  15 GB is a failure to fix immediately, not a note for later.
+- **Keep the build cache and the binary.** `target/debug/sonora`, `target/debug/deps` (minus
+  split-debug output) and the current incremental generation per crate are what make rebuilds
+  fast. Never `cargo clean` and never delete `vendor/gpui`; the fork is a path dependency.
+- **Delete only junk.** Safe: `*.dwo` split-debug files, stale `target/debug/incremental/<crate>-*`
+  generations older than the newest for that crate, old logs, and `target/debug/build` leftovers.
+  Unsafe: `*.rlib`, `*.rmeta`, the newest incremental directory per crate, and anything tracked.
+- **Clean as you go when a build balloons the checkout.** Re-measure with `du -sh` rather than
+  trusting apparent sizes, and report the before/after numbers.
+
 ## Crate layout
 
 ```

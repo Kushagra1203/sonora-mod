@@ -27,6 +27,7 @@ pub(crate) mod tracks;
 pub(crate) mod transport;
 pub(crate) mod trouble;
 pub(crate) mod visualizer;
+pub(crate) mod wash;
 pub(crate) mod widevine;
 
 pub(crate) use ui::effects;

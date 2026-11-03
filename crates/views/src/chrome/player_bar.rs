@@ -7,7 +7,7 @@ use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, Context, Entity, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, Render, ScrollWheelEvent, SharedString,
+    Point, Render, ScrollWheelEvent, SharedString, TextShadow,
 };
 use gpui::{Window, div, px};
 use i18n::t;
@@ -29,6 +29,10 @@ const VOLUME_WIDTH: f32 = 110.;
 const VOLUME_TIGHT: f32 = 72.;
 const CLOCK_SHORT: f32 = 3.4;
 const CLOCK_LONG: f32 = 5.4;
+/// How far the bar floats from the window's sides and bottom. A local detail of the capsule
+/// shape rather than a rung of the layout ladder.
+const FLOAT_X: f32 = 12.;
+const FLOAT_BOTTOM: f32 = 10.;
 
 pub(crate) struct PlayerBar {
     playback: Entity<Playback>,
@@ -158,13 +162,14 @@ impl PlayerBar {
             .child(
                 Button::new("volume")
                     .ghost()
+                    .on_glass()
                     .small()
                     .icon(volume_icon(level))
                     .tooltip_above(match level <= 0.001 {
                         true => "player-unmute",
                         false => "player-mute",
                     })
-                    .tint(theme.muted_foreground)
+                    .tint(theme.foreground.opacity(0.78))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let wanted = match level <= 0.001 {
                             true => restore,
@@ -215,13 +220,14 @@ impl PlayerBar {
 
             Button::new(id)
                 .ghost()
+                .on_glass()
                 .small()
                 .icon(icon)
                 .tooltip_above(hint)
                 .selected(showing)
                 .tint(match showing {
                     true => theme.foreground,
-                    false => theme.muted_foreground,
+                    false => theme.foreground.opacity(0.78),
                 })
                 .on_click(move |_, window, cx| {
                     let action: Box<dyn gpui::Action> = match side {
@@ -256,6 +262,7 @@ impl PlayerBar {
     fn fullscreen_button(&self) -> Button {
         Button::new("toggle-fullscreen")
             .ghost()
+            .on_glass()
             .small()
             .icon("icons/maximize.svg")
             .tooltip_above("player-fullscreen")
@@ -332,6 +339,11 @@ impl PlayerBar {
         let shown = self.playback.read(cx).shown_track(cx);
         let track = shown.as_ref();
         let explicit = track.is_some_and(|track| track.explicit);
+        // Over clear glass the title can sit against a bright thumbnail, so the words carry a
+        // faint dark shadow. It is invisible on the opaque bar and keeps the type readable
+        // without giving the surface back the milkiness that was just taken out of it.
+        let glass = self.settings.read(cx).player_bar_translucent();
+        let shadow = TextShadow::new(theme.background.opacity(0.7)).blur(px(2.));
         // How the stream is actually encoded, which the engine reports once it opens it, so
         // the badge says what is playing rather than what was asked for.
         let quality = quality::of(self.playback.read(cx), cx);
@@ -419,6 +431,7 @@ impl PlayerBar {
             .when(centered, |this| {
                 this.items_center().line_height(gpui::relative(ui::LEADING))
             })
+            .when(glass, |this| this.text_shadow([shadow]))
             .justify_center()
             .flex_1()
             .min_w_0()
@@ -488,7 +501,7 @@ impl PlayerBar {
             (false, PlayerBarLayout::Compact) => theme.metrics.row + theme.metrics.pad * 2.,
             _ => theme.metrics.player_bar,
         };
-        ui::snapped(height, window)
+        ui::snapped(height + px(FLOAT_BOTTOM), window)
     }
 }
 
@@ -547,6 +560,10 @@ impl Render for PlayerBar {
                 .text_size(clock_text)
                 .font_features(tabular())
                 .text_color(muted)
+                .when(transparent, |this| {
+                    this.text_shadow([TextShadow::new(theme.background.opacity(0.8))
+                        .blur(px(2.))])
+                })
                 .when_else(align_end, |this| this.text_right(), |this| this.text_left())
         };
 
@@ -579,12 +596,9 @@ impl Render for PlayerBar {
             .child(clock_label("player-duration", total, false))
             .into_any_element();
 
-        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-        let radius = crate::chrome::window_radius(self.settings.read(cx), cx, window);
-        #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-        let radius: Option<Pixels> = None;
-
-        let base = div()
+        // The strip the capsule floats on: it reserves the bar's place in the window and draws
+        // nothing itself, so the gap around the glass shows the page behind it.
+        let outer = div()
             .id("player-bar")
             .role(Role::Toolbar)
             .aria_label(t!("settings-page-player-bar"))
@@ -592,16 +606,17 @@ impl Render for PlayerBar {
             .w_full()
             .h(height)
             .flex_none()
+            .px(px(FLOAT_X))
+            .pb(px(FLOAT_BOTTOM));
+
+        let base = ui::liquid_capsule(cx)
+            .flex()
+            .w_full()
+            .h_full()
+            .min_w_0()
             .px_5()
             .when(stacked, |this| this.py_2())
-            .when_some(radius, |this, radius| this.rounded_b(radius))
-            .when_else(
-                transparent,
-                |this| ui::bar_surface(this, cx).text_color(theme.popover_foreground),
-                |this| this.when(!theme.transparent, |this| this.bg(theme.secondary)),
-            )
-            .border_t_1()
-            .border_color(theme.border)
+            .when(transparent, |this| this.text_color(theme.popover_foreground))
             .occlude()
             .on_mouse_move(cx.listener(Self::hover));
 
@@ -691,37 +706,63 @@ impl Render for PlayerBar {
                 .child(buttons)
                 .child(self.sound(px(VOLUME_WIDTH), cx))
                 .child(self.fullscreen_button()),
-            _ => base
-                .items_center()
-                .gap_4()
-                .child(self.now_playing(show_track, window, cx))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_1()
-                        .flex_1()
-                        .min_w_0()
-                        .max_w(px(SEEK_MAX))
-                        .child(transport(&self.playback, false, cx))
-                        .child(seek),
-                )
-                .child(
-                    div()
+            // The widest layout is three floating capsules: what plays, the transport with
+            // its seek, and the controls. The gaps show the page behind, so each reads as its
+            // own piece of glass rather than one stretched bar.
+            _ => {
+                let left = show_track.then(|| {
+                    ui::liquid_capsule(cx)
                         .flex()
                         .items_center()
-                        .justify_end()
-                        .gap_2()
-                        // never narrower than its buttons, or they spill over the seek bar's clock
-                        .flex_1()
-                        .child(buttons)
-                        .child(self.sound(px(VOLUME_WIDTH), cx))
-                        .child(self.fullscreen_button()),
-                ),
+                        .h_full()
+                        .px_4()
+                        .occlude()
+                        .child(self.now_playing(show_track, window, cx))
+                        .into_any_element()
+                });
+                div()
+                    .flex()
+                    .w_full()
+                    .h_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .when_some(left, |row, left| row.child(left))
+                    .child(
+                        ui::liquid_capsule(cx)
+                            .flex()
+                            .flex_col()
+                            .justify_center()
+                            .items_center()
+                            .gap_1()
+                            .h_full()
+                            .px_6()
+                            .flex_1()
+                            .min_w_0()
+                            .max_w(px(SEEK_MAX + 48.))
+                            .occlude()
+                            .child(transport(&self.playback, false, cx))
+                            .child(seek),
+                    )
+                    .child(
+                        ui::liquid_capsule(cx)
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .h_full()
+                            .px_4()
+                            .occlude()
+                            // never narrower than its buttons, or they spill out of the glass
+                            .child(buttons)
+                            .child(self.sound(px(VOLUME_WIDTH), cx))
+                            .child(self.fullscreen_button()),
+                    )
+            }
         };
 
-        content
+        outer
+            .child(content)
             .relative()
             .when_some(context_menu, |this, menu| this.child(menu))
     }
