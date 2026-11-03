@@ -1,4 +1,5 @@
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use gpui::prelude::*;
 use gpui::{Div, RenderImage, Window, div, img, px};
@@ -11,16 +12,22 @@ const TILE: u32 = 512;
 /// band steps by one level at a time, so a couple of levels is the whole budget: one to
 /// scatter the step, the rest is the grain itself.
 const PUSH: u8 = 2;
+/// How hard the grain a frosted panel wears pushes, out of 255. Here the noise is the material
+/// rather than a banding fix, so it stands well above the dither without reading as static.
+const FROST: u8 = 7;
 
-/// The dither tile, built once for the process. Each pixel is nudged toward white or toward
-/// black by up to `PUSH`, which spreads every eight bit step of a gradient across a band of
-/// pixels instead of leaving it a contour that holds still and then jumps a whole band as the
-/// gradient drifts.
-fn tile() -> Arc<RenderImage> {
-    static TILED: OnceLock<Arc<RenderImage>> = OnceLock::new();
+/// The dither tile for `push`, built once per strength for the process. Each pixel is nudged
+/// toward white or toward black by up to `push`, which spreads every eight bit step of a
+/// gradient across a band of pixels instead of leaving it a contour that holds still and then
+/// jumps a whole band as the gradient drifts.
+fn tile(push: u8) -> Arc<RenderImage> {
+    static TILES: OnceLock<Mutex<HashMap<u8, Arc<RenderImage>>>> = OnceLock::new();
 
-    TILED
-        .get_or_init(|| {
+    let tiles = TILES.get_or_init(Default::default);
+    let mut tiles = tiles.lock().unwrap();
+    tiles
+        .entry(push)
+        .or_insert_with(|| {
             let mut seed = 0x2545_f491_4f6c_dd1d_u64;
             let mut roll = move || {
                 seed ^= seed << 13;
@@ -35,7 +42,7 @@ fn tile() -> Arc<RenderImage> {
                     0 => 0,
                     _ => 255,
                 };
-                let alpha = (draw >> 8) as u8 % (PUSH + 1);
+                let alpha = (draw >> 8) as u8 % (u16::from(push) + 1) as u8;
                 *pixel = image::Rgba([level, level, level, alpha]);
             }
             Arc::new(RenderImage::new(vec![Frame::new(pixels)]))
@@ -47,6 +54,16 @@ fn tile() -> Arc<RenderImage> {
 /// parent has to be `relative`, and the tile is sized in device pixels so the grain stays one
 /// pixel wide however the display is scaled.
 pub fn grain(window: &Window) -> Div {
+    lay(window, PUSH)
+}
+
+/// Lays the heavier grain of a frosted panel over whatever it covers. The parent has to be
+/// `relative`; it is meant to be painted under the panel's content.
+pub fn frost(window: &Window) -> Div {
+    lay(window, FROST)
+}
+
+fn lay(window: &Window, push: u8) -> Div {
     let scale = window.scale_factor().max(1.);
     let side = TILE as f32 / scale;
     let viewport = window.viewport_size();
@@ -61,7 +78,7 @@ pub fn grain(window: &Window) -> Div {
         .overflow_hidden()
         .children((0..down).flat_map(move |row| {
             (0..across).map(move |column| {
-                img(tile())
+                img(tile(push))
                     .absolute()
                     .left(px(column as f32 * side))
                     .top(px(row as f32 * side))

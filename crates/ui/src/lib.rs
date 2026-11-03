@@ -83,7 +83,7 @@ pub use glass::{
     glass, liquid_capsule, popover_fill, popover_surface,
 };
 pub use glide::{Glide, ScrollPosition};
-pub use grain::grain;
+pub use grain::{frost as frost_grain, grain};
 pub use info_card::{Fact, InfoCard};
 pub use inline_links::{InlineLink, InlineLinks};
 pub use input::{

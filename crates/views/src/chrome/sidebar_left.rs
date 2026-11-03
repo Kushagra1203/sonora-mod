@@ -26,6 +26,7 @@ use crate::shared::menus::{ItemMenu, item_menu};
 use crate::shared::nav::nav_row;
 use crate::shared::pins::leaving;
 use crate::shared::playlist_editor::{Edit, PlaylistEditor};
+use crate::shared::wash;
 
 /// The one drag list the pinned section keeps, so a pin dropped anywhere in it lands in order.
 const PINS: &str = "sidebar-pins";
@@ -720,6 +721,9 @@ impl Render for SidebarLeft {
         let sidebar_border = theme.sidebar_border;
 
         let current = self.trail.read(cx).current();
+        // On an album or playlist the panel frosts the page wash instead of sitting beside
+        // it: the artwork's colours diffuse through, with the panel's own colour over them.
+        let frosted = matches!(current, Destination::Album(_) | Destination::Playlist(_));
         self.follow(&current);
         self.adapt(super::Chrome::reserved_right(cx), window, cx);
 
@@ -772,8 +776,16 @@ impl Render for SidebarLeft {
             // In the flow the shell clips the panel as it slides, so it stays drawn while it
             // moves. Only an overlaid panel, which nothing clips, hides itself when closed.
             .when(overlaid && !self.is_open(), |this| this.hidden())
-            .when(!theme.transparent, |this| this.bg(sidebar_bg))
+            .when(!theme.transparent, |this| match frosted {
+                true => this
+                    .bg(sidebar_bg.opacity(wash::SIDEBAR_FROST_TINT))
+                    .backdrop_blur(wash::SIDEBAR_FROST_BLUR),
+                false => this.bg(sidebar_bg),
+            })
             .border_color(sidebar_border)
+            // The grain sits under the panel's rows, so the frost has a texture the text
+            // keeps clear of.
+            .when(frosted, |this| this.child(ui::frost_grain(window)))
             .when(overlaid, |this| {
                 this.occlude().absolute().left_0().top_0().bottom_0()
             })

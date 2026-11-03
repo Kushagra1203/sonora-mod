@@ -1,9 +1,11 @@
 use gpui::prelude::*;
 use gpui::{Context, Entity, Pixels, Render, StyleRefinement, Window, div, px};
+use router::Destination;
 use state::{AppSettings, Playback, Queue, SideTab, Sonora};
 use ui::{ActiveTheme as _, MIN_CONTENT, Panel, Room, Side};
 
 use crate::chrome::{Aside, Members};
+use crate::shared::wash;
 
 const MIN_WIDTH: Pixels = px(240.);
 const MAX_WIDTH: Pixels = px(560.);
@@ -168,6 +170,12 @@ impl Render for SidebarRight {
         }
 
         let theme = *cx.theme();
+        // On an album or playlist the panel frosts the page wash instead of sitting beside
+        // it: the artwork's colours diffuse through, with the panel's own colour over them.
+        let frosted = matches!(
+            router::trail(cx).read(cx).current(),
+            Destination::Album(_) | Destination::Playlist(_)
+        );
 
         Panel::new("sidebar-right", Side::Right, self.width)
             .limits(MIN_WIDTH, MAX_WIDTH)
@@ -178,8 +186,16 @@ impl Render for SidebarRight {
                 this.persist(cx);
                 cx.notify();
             }))
-            .when(!theme.transparent, |this| this.bg(theme.background))
+            .when(!theme.transparent, |this| match frosted {
+                true => this
+                    .bg(theme.background.opacity(wash::SIDEBAR_FROST_TINT))
+                    .backdrop_blur(wash::SIDEBAR_FROST_BLUR),
+                false => this.bg(theme.background),
+            })
             .border_color(theme.border)
+            // The grain sits under the panel's rows, so the frost has a texture the text
+            // keeps clear of.
+            .when(frosted, |this| this.child(ui::frost_grain(window)))
             .child(match self.tab {
                 SideTab::Members => self.members.clone().into_any_element(),
                 _ => self
