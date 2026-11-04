@@ -14,7 +14,7 @@ const TILE: u32 = 512;
 const PUSH: u8 = 2;
 /// How hard the grain a frosted panel wears pushes, out of 255. Here the noise is the material
 /// rather than a banding fix, so it stands well above the dither without reading as static.
-const FROST: u8 = 7;
+const FROST: u8 = 9;
 
 /// The dither tile for `push`, built once per strength for the process. Each pixel is nudged
 /// toward white or toward black by up to `push`, which spreads every eight bit step of a

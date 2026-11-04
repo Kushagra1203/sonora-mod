@@ -27,10 +27,10 @@ const FADE_FROM: f32 = 0.42;
 const FADE_TO: f32 = 0.78;
 
 /// How much of a sidebar's own colour it keeps when it frosts the page wash instead of sitting
-/// on it, and how hard it blurs the artwork behind. Heavy enough to diffuse the wallpaper,
-/// thin enough that the album's colours still read through.
-pub(crate) const SIDEBAR_FROST_TINT: f32 = 0.42;
-pub(crate) const SIDEBAR_FROST_BLUR: Pixels = px(30.);
+/// on it, and how hard it blurs the artwork behind. Kept light: most of the colour comes from
+/// the wash itself, and the blur and grain do the diffusing rather than a slab of tint.
+pub(crate) const SIDEBAR_FROST_TINT: f32 = 0.18;
+pub(crate) const SIDEBAR_FROST_BLUR: Pixels = px(38.);
 
 /// The wash behind a detail page. `cover` is the largest cover the page holds; without one the
 /// page keeps the plain theme background.
