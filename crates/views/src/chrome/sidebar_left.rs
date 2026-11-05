@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ui::{
     ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel,
     Picker, Pin, PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text,
-    Vacancy, drop_gap, drop_into, drop_marker,
+    Vacancy, drop_gap, drop_into, drop_marker, snapped,
 };
 
 use gpui::accesskit::Role;
@@ -331,12 +331,32 @@ impl SidebarLeft {
                 .gap_2p5()
                 .leading(mark)
                 .label(name)
-                .tint(theme.foreground)
+                .tint(theme.primary)
                 .hover(move |style| style.bg(theme.sidebar_accent))
                 .active(move |style| style.bg(theme.sidebar_accent))
                 .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
                 .into_any_element(),
         )
+    }
+
+    /// The header that aligns with the right sidebar's eyebrow: a frosted bar with the account
+    /// row when signed in, otherwise empty space of the same height so the navigation starts at
+    /// the same line as the centre and right columns.
+    fn header(&self, frosted: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
+        let height = snapped(theme.metrics.header, window);
+
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .h(height)
+            .px_2()
+            .when(frosted, |this| this.border_b_1().border_color(theme.border))
+            .when_some(self.account(cx), |this, account| this.child(account))
+            .into_any_element()
     }
 
     /// The pinned section: its header, and its entries once it is expanded. The entries are a
