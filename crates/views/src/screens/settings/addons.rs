@@ -9,7 +9,6 @@ use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, SharedString, div, px};
 use i18n::t;
-use music::SignIn;
 use router::{Destination, SettingsPage, navigate};
 use state::Addons;
 use ui::{ActiveTheme as _, Button, Modal, Switch, Text};
@@ -41,67 +40,11 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// The line that makes the addon sources the provider in use. Only addons can be reached
-    /// from here: the streaming services each have their own row on the Providers page.
-    pub(super) fn addon_provider_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = *cx.theme();
-        let session = self.session.read(cx);
-        let active = session.provider_slug() == Some("addons");
-        let stored = session.account("addons").is_some_and(|(_, stored)| stored);
-
-        let control = match active {
-            true => ui::spoken(
-                "settings-addon-provider-active",
-                t!("settings-addon-provider-active"),
-            )
-            .text_size(theme.text(Text::Small))
-            .text_color(theme.muted_foreground)
-            .into_any_element(),
-            false => Button::new("settings-addon-provider-use")
-                .label(t!("settings-addon-provider-use"))
-                .small()
-                .secondary()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.session.update(cx, |session, cx| match stored {
-                        true => session.switch("addons", cx),
-                        false => session.sign_in("addons", SignIn::Anonymous, cx),
-                    });
-                }))
-                .into_any_element(),
-        };
-
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .h(theme.metrics.list_row)
-            .mb_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_w_0()
-                    .child(t!("settings-addon-provider"))
-                    .child(
-                        ui::spoken(
-                            "settings-addon-provider-detail",
-                            t!("settings-addon-provider-detail"),
-                        )
-                        .text_size(theme.text(Text::Small))
-                        .text_color(theme.muted_foreground),
-                    ),
-            )
-            .child(div().flex_none().child(control))
-            .into_any_element()
-    }
-
-    /// The page: one row per addon with its switch and its remove button, then the button that
-    /// opens the dialog for a new address.
+    /// The page: the lossless upgrade switch, then one row per addon with its own switch and
+    /// remove button, then the button that opens the dialog for a new address.
     pub(super) fn addons_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let entries = Addons::global(cx).read(cx).entries().to_vec();
-        let provider = self.addon_provider_row(cx);
         let upgrade_on = self.playback.read(cx).lossless_upgrade();
         let upgrade = Row::new(
             t!("settings-addon-upgrade"),
@@ -150,7 +93,6 @@ impl SettingsView {
         div()
             .flex()
             .flex_col()
-            .child(provider)
             .child(upgrade)
             .children(list)
             .children(empty)

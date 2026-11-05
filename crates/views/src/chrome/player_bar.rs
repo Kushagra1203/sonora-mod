@@ -561,8 +561,7 @@ impl Render for PlayerBar {
                 .font_features(tabular())
                 .text_color(muted)
                 .when(transparent, |this| {
-                    this.text_shadow([TextShadow::new(theme.background.opacity(0.8))
-                        .blur(px(2.))])
+                    this.text_shadow([TextShadow::new(theme.background.opacity(0.8)).blur(px(2.))])
                 })
                 .when_else(align_end, |this| this.text_right(), |this| this.text_left())
         };
@@ -616,7 +615,9 @@ impl Render for PlayerBar {
             .min_w_0()
             .px_5()
             .when(stacked, |this| this.py_2())
-            .when(transparent, |this| this.text_color(theme.popover_foreground))
+            .when(transparent, |this| {
+                this.text_color(theme.popover_foreground)
+            })
             .occlude()
             .on_mouse_move(cx.listener(Self::hover));
 

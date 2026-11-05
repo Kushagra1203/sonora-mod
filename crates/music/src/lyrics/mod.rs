@@ -1,5 +1,8 @@
 pub(crate) mod catalog;
+pub(crate) mod document;
+pub(crate) mod entities;
 mod japanese;
+pub mod karaoke;
 pub mod lrc;
 pub(crate) mod romanize;
 mod shape;

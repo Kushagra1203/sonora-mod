@@ -21,6 +21,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A song playing from a streaming service upgrades to a lossless copy from your addons within the
   first seconds, without stopping, and the quality badge follows it up to Lossless or Hi-Res.
   Switch it off on the Addon sources page.
+- Lyrics come from BiniLyrics, PaxSenix (with Musixmatch and Spotify), BetterLyrics and Genius,
+  alongside the existing sources, and the Lyrics page orders every source the way you want.
+- The audio output can follow the sample rate of the song playing instead of a fixed one, from
+  Sound settings.
+- Lossless upgrades match catalogue rows more carefully, including Japanese titles, featuring
+  credits and packaging in the title, so the wrong recording is far less likely to play.
 
 ### Changed
 
@@ -34,6 +40,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or a bracketed qualifier, and find a copy sooner.
 - Playback moves on to the next queued song after a losslessly upgraded track ends, instead of
   showing the next one while the old one replays from where it was.
+- The Addon sources page no longer offers to switch the whole app to addons, so browsing YouTube
+  no longer gets interrupted; lossless upgrades still work while it plays.
 
 ### Fixed
 
@@ -47,6 +55,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Leaving a Jam you joined works again.
 - Songs you queue in a Jam show your name as the one who added them.
 - A Jam's queue is no longer cleared when a song starts playing.
+- A losslessly upgraded song keeps playing when the output reopens at its sample rate, and pause,
+  resume and seek keep working across the reopen.
 
 ## [0.46.0] - 2026-10-31
 

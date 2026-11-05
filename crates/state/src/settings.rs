@@ -306,17 +306,35 @@ const DEFAULT_STARTUP: &str = "home";
 /// "Whatever the platform uses".
 pub const SYSTEM_FONT: &str = "auto";
 /// Every lyrics source Sonora knows by the name its provider reports, in the order a fresh
-/// install prefers them.
-pub const LYRICS_SOURCES: [&str; 9] = [
+/// install prefers them. Local, Subsonic and Spotify ride along with the track itself; the rest
+/// are catalogues searched by recording.
+pub const LYRICS_SOURCES: [&str; 15] = [
+    "Apple Music", // BiniLyrics
+    "PaxSenix",
+    "PaxSenix: Musixmatch",
+    "BetterLyrics",
+    "BetterLyrics Portato",
+    "PaxSenix: Spotify",
+    "LrcLib",
+    "Kugou",
+    "YouTube Music",
+    "Genius",
+    "Musixmatch",
+    "NetEase",
     LOCAL,
     "Subsonic",
     "Spotify",
-    "YouTube Music",
-    "Apple Music",
-    "Musixmatch",
-    "LrcLib",
-    "Kugou",
-    "NetEase",
+];
+
+/// The sources added after the first release of the lyrics list. An existing settings file gets
+/// them switched on once, then leaves them alone.
+const NEW_LYRICS_SOURCES: [&str; 6] = [
+    "PaxSenix",
+    "PaxSenix: Musixmatch",
+    "BetterLyrics",
+    "BetterLyrics Portato",
+    "PaxSenix: Spotify",
+    "Genius",
 ];
 
 /// A pin together with the provider it belongs to. The pin is flattened so the stored JSON
@@ -398,6 +416,10 @@ struct Values {
     /// The sample rate to open the output device at, in hertz, or `None` for the rate it runs
     /// at. A device that does not offer it opens at its own.
     output_rate: Option<u32>,
+    /// Whether the output device opens at each track's own rate rather than at one rate, so
+    /// nothing between Sonora and the hardware resamples the music. `output_rate` is left as the
+    /// fallback for when following is switched off.
+    output_follows_rate: bool,
     /// The buffer to ask the output device for, in frames, or `None` for Sonora's own. A device
     /// that does not allow it gets the nearest it does.
     output_buffer: Option<u32>,
@@ -416,6 +438,9 @@ struct Values {
     /// Set once Subsonic has been added to a list saved before it existed, so a user who turns it
     /// off afterwards is not given it back.
     subsonic_lyrics_offered: bool,
+    /// Set once the lyric sources added alongside BetterLyrics and PaxSenix have been offered, so
+    /// a user who turns one off afterwards keeps it off.
+    new_lyrics_sources_offered: bool,
     lyrics_providers: Vec<String>,
     /// Every known lyrics source, the preferred one first. Lyrics of the same kind from two
     /// sources go to the one listed higher.
@@ -614,18 +639,33 @@ impl Default for Values {
             lyrics_for_local_files: true,
             output_device: None,
             output_rate: None,
+            output_follows_rate: false,
             output_buffer: None,
             subsonic_format: None,
             subsonic_bitrate: None,
             stream_quality: Quality::default().id().to_owned(),
             local_lyrics_offered: false,
             subsonic_lyrics_offered: false,
+            new_lyrics_sources_offered: false,
             lyrics_provider_priority: lyrics_priority(&[]),
-            // Kugou and NetEase, the last two, start switched off.
-            lyrics_providers: LYRICS_SOURCES[..7]
-                .iter()
-                .map(|name| name.to_string())
-                .collect(),
+            // Musixmatch and NetEase, the old catalogue sources, start switched off; the new
+            // PaxSenix: Musixmatch and PaxSenix: Spotify cover their catalogues. Track-scoped
+            // sources (Local, Subsonic, Spotify) are enabled and sorted to the end of the priority.
+            lyrics_providers: vec![
+                "Apple Music".into(),
+                "PaxSenix".into(),
+                "PaxSenix: Musixmatch".into(),
+                "BetterLyrics".into(),
+                "BetterLyrics Portato".into(),
+                "PaxSenix: Spotify".into(),
+                "LrcLib".into(),
+                "Kugou".into(),
+                "YouTube Music".into(),
+                "Genius".into(),
+                LOCAL.into(),
+                "Subsonic".into(),
+                "Spotify".into(),
+            ],
             karaoke_lyrics: true,
             blur_lyrics: true,
             romanized_lyrics: true,
@@ -887,9 +927,24 @@ impl AppSettings {
             }
         };
         let parsed = bytes.map(|bytes| (serde_json::from_slice::<Values>(json(&bytes)), bytes));
-        let parsed = parsed.map(|(values, bytes)| (values.map(offer_subsonic_lyrics), bytes));
+        let parsed = parsed.map(|(values, bytes)| {
+            let values = values
+                .map(offer_subsonic_lyrics)
+                .map(offer_new_lyrics_sources);
+            // If migrations changed anything, save the updated settings back to disk.
+            if let Ok(ref migrated) = values {
+                let new_bytes = serde_json::to_vec_pretty(migrated).ok();
+                if new_bytes.as_deref() != Some(bytes.as_slice())
+                    && let Err(e) =
+                        save_settings(&path, &new_bytes.unwrap_or_default(), Some(&bytes))
+                {
+                    log::warn!("settings: failed to save migrated settings: {e:#}");
+                }
+            }
+            (values, bytes)
+        });
         let (values, writable, disk, broken) = match parsed {
-            Some((Ok(values), bytes)) => (values.settled(), writable, Some(bytes), None),
+            Some((Ok(values), _bytes)) => (values.settled(), writable, None, None),
             Some((Err(_), bytes)) if empty_settings(&bytes) => {
                 (Values::default().settled(), writable, Some(bytes), None)
             }
@@ -902,6 +957,7 @@ impl AppSettings {
             None => {
                 let values = Values {
                     subsonic_lyrics_offered: true,
+                    new_lyrics_sources_offered: true,
                     ..Values::default()
                 };
                 (values.settled(), writable, None, None)
@@ -1070,6 +1126,12 @@ impl AppSettings {
 
     pub fn output_rate(&self) -> Option<u32> {
         self.values.output_rate
+    }
+
+    /// Whether the output device follows the rate of the track playing instead of
+    /// `output_rate`.
+    pub fn output_follows_rate(&self) -> bool {
+        self.values.output_follows_rate
     }
 
     pub fn output_buffer(&self) -> Option<u32> {
@@ -1682,6 +1744,11 @@ impl AppSettings {
 
     pub fn set_output_rate(&mut self, rate: Option<u32>, cx: &mut Context<Self>) {
         self.values.output_rate = rate;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_output_follows_rate(&mut self, follows: bool, cx: &mut Context<Self>) {
+        self.values.output_follows_rate = follows;
         self.schedule_save(cx);
     }
 
@@ -2729,6 +2796,23 @@ fn offer_subsonic_lyrics(mut values: Values) -> Values {
     values
 }
 
+/// The lyric sources this build adds reach an existing user once, then stay as they were left.
+fn offer_new_lyrics_sources(mut values: Values) -> Values {
+    if !values.new_lyrics_sources_offered {
+        values.new_lyrics_sources_offered = true;
+        for name in NEW_LYRICS_SOURCES {
+            if !values.lyrics_providers.iter().any(|held| held == name) {
+                values.lyrics_providers.push(name.to_owned());
+            }
+        }
+        values.lyrics_providers.sort();
+
+        // Reset priority to default order so new sources appear in their correct positions.
+        values.lyrics_provider_priority = LYRICS_SOURCES.iter().map(|s| s.to_string()).collect();
+    }
+    values
+}
+
 fn themes_path(settings: &Path) -> PathBuf {
     settings
         .parent()
@@ -2988,10 +3072,33 @@ fn place(pinned: &mut Vec<Held>, slug: &str, pin: Pin, gap: Option<usize>, slugs
 /// in the default order.
 fn lyrics_priority(saved: &[String]) -> Vec<String> {
     let mut order: Vec<String> = Vec::new();
-    for name in saved.iter().map(String::as_str).chain(LYRICS_SOURCES) {
-        if LYRICS_SOURCES.contains(&name) && !order.iter().any(|held| held == name) {
-            order.push(name.to_owned());
+    for name in saved {
+        if LYRICS_SOURCES.contains(&name.as_str()) && !order.iter().any(|held| held == name) {
+            order.push(name.clone());
         }
+    }
+
+    // Sources a saved order predates go next to their default neighbours instead of at the end,
+    // so a new catalogue lands near where it belongs even when the user has sorted the list.
+    for (index, name) in LYRICS_SOURCES.iter().enumerate() {
+        if order.iter().any(|held| held == name) {
+            continue;
+        }
+        let after = LYRICS_SOURCES[..index]
+            .iter()
+            .rev()
+            .find_map(|earlier| order.iter().position(|held| held.as_str() == *earlier));
+        let before = LYRICS_SOURCES[index + 1..]
+            .iter()
+            .find_map(|later| order.iter().position(|held| held.as_str() == *later));
+        let at = match (after, before) {
+            (Some(after), Some(before)) if after < before => after + 1,
+            (Some(_), Some(before)) => before,
+            (Some(after), None) => after + 1,
+            (None, Some(before)) => before,
+            (None, None) => order.len(),
+        };
+        order.insert(at, (*name).to_owned());
     }
     order
 }
@@ -3045,15 +3152,21 @@ mod tests {
         assert_eq!(
             values.lyrics_provider_priority,
             [
-                LOCAL,
-                "Subsonic",
-                "Spotify",
-                "YouTube Music",
                 "Apple Music",
-                "Musixmatch",
+                "PaxSenix",
+                "PaxSenix: Musixmatch",
+                "BetterLyrics",
+                "BetterLyrics Portato",
+                "PaxSenix: Spotify",
                 "LrcLib",
                 "Kugou",
-                "NetEase"
+                "YouTube Music",
+                "Genius",
+                "Musixmatch",
+                "NetEase",
+                LOCAL,
+                "Subsonic",
+                "Spotify"
             ]
             .map(str::to_owned)
         );
@@ -3073,12 +3186,40 @@ mod tests {
     }
 
     #[test]
-    fn lyrics_priority_ignores_unknown_and_duplicate_sources_and_appends_missing_ones() {
+    fn lyrics_priority_ignores_unknown_and_duplicate_sources_and_inserts_missing_ones() {
         let order = lyrics_priority(&["LrcLib".into(), "unknown".into(), "LrcLib".into()]);
-        assert_eq!(order[0], "LrcLib");
-        assert_eq!(order.len(), 9);
+        assert_eq!(order[0], "Apple Music");
+        assert!(order.contains(&"LrcLib".to_owned()));
+        assert_eq!(order.len(), LYRICS_SOURCES.len());
         assert!(!order.iter().any(|name| name == "unknown"));
         assert_eq!(order.iter().filter(|name| *name == "LrcLib").count(), 1);
+    }
+
+    #[test]
+    fn a_new_source_lands_between_its_default_neighbours() {
+        // the new default order with the six sources added alongside BetterLyrics and PaxSenix
+        // taken out: they should slot back between their neighbours
+        let order = lyrics_priority(&[
+            "Apple Music".into(),
+            "LrcLib".into(),
+            "Kugou".into(),
+            "YouTube Music".into(),
+            "Musixmatch".into(),
+            "NetEase".into(),
+            "Local".into(),
+            "Subsonic".into(),
+            "Spotify".into(),
+        ]);
+        let between = |earlier: &str, later: &str| {
+            let earlier = order.iter().position(|name| name == earlier).unwrap();
+            let later = order.iter().position(|name| name == later).unwrap();
+            assert!(earlier < later, "{earlier} should come before {later}");
+        };
+        between("Apple Music", "PaxSenix");
+        between("PaxSenix", "PaxSenix: Musixmatch");
+        between("PaxSenix: Spotify", "LrcLib");
+        between("Kugou", "YouTube Music");
+        between("YouTube Music", "Genius");
     }
 
     #[test]

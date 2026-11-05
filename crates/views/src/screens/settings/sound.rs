@@ -70,15 +70,18 @@ impl SettingsView {
     /// through them, otherwise it offers a way into the system's own settings where there is one.
     /// The row keeps its shape while the stream reopens, showing the rate it reopens at.
     pub(super) fn sample_rate_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
         let outputs = self.outputs.read(cx);
         let device = outputs.current();
+        let following = outputs.follows(cx);
         let current = outputs.rate(cx);
         let rates = device
             .map(|device| device.rates.clone())
             .unwrap_or_default();
         // while another device is being tried, the open stream is not the one that will play
         let locked = outputs.switching();
-        let settings_uri = match rates.len() > 1 {
+        // following needs no way into the system's settings: the track decides the rate
+        let settings_uri = match following || rates.len() > 1 {
             true => None,
             false => {
                 music::output::system_audio_settings_uri(device.map(|device| device.id.as_str()))
@@ -88,17 +91,19 @@ impl SettingsView {
             .map(|rate| t!("settings-sample-rate-value", khz = f64::from(rate) / 1_000.))
             .unwrap_or_else(|| t!("settings-output-idle"));
         let rate = ui::spoken("sample-rate-value", rate);
-        let stepper = current.filter(|_| rates.len() > 1).map(|current| {
-            output_stepper(
-                "sample-rate",
-                ("settings-sample-rate-lower", "settings-sample-rate-higher"),
-                current,
-                &rates,
-                locked,
-                Outputs::set_rate,
-                cx,
-            )
-        });
+        let stepper = current
+            .filter(|_| rates.len() > 1 && !following)
+            .map(|current| {
+                output_stepper(
+                    "sample-rate",
+                    ("settings-sample-rate-lower", "settings-sample-rate-higher"),
+                    current,
+                    &rates,
+                    locked,
+                    Outputs::set_rate,
+                    cx,
+                )
+            });
 
         self.row(
             t!("settings-sample-rate"),
@@ -110,6 +115,26 @@ impl SettingsView {
                     Some((lower, higher)) => row.child(lower).child(rate).child(higher),
                     None => row.child(rate),
                 })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .child(t!("settings-sample-rate-follow")),
+                        )
+                        .child(
+                            Switch::new("sample-rate-follow", following)
+                                .name(t!("settings-sample-rate-follow"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.outputs.update(cx, |outputs, cx| {
+                                        outputs.set_following(!following, cx)
+                                    });
+                                })),
+                        ),
+                )
                 .when_some(settings_uri, |row, uri| {
                     row.child(
                         Button::new("sample-rate-change")

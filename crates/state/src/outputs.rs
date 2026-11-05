@@ -59,6 +59,7 @@ impl Outputs {
         let selected = settings.read(cx).output_device().map(str::to_owned);
         output::choose_device(selected.clone());
         output::choose_rate(settings.read(cx).output_rate());
+        output::set_following(settings.read(cx).output_follows_rate());
         output::choose_buffer(settings.read(cx).output_buffer());
 
         let mut changes = output::watch_device_changes();
@@ -176,10 +177,21 @@ impl Outputs {
         }
     }
 
-    /// The rate the device plays at, or is reopening at once a new one is chosen: the one saved in
-    /// settings when the device offers it, otherwise the one it runs at.
+    /// Whether the device opens at the rate of each track playing rather than at one rate.
+    pub fn follows(&self, cx: &App) -> bool {
+        self.settings.read(cx).output_follows_rate()
+    }
+
+    /// The rate the device plays at, or is reopening at once a new one is chosen: the one the
+    /// track playing asks for while following, otherwise the one saved in settings when the
+    /// device offers it, otherwise the one it runs at.
     pub fn rate(&self, cx: &App) -> Option<u32> {
         let active = self.current()?;
+        if self.follows(cx) {
+            return output::following_rate()
+                .filter(|rate| active.rates.contains(rate))
+                .or(Some(active.format.rate));
+        }
         let wanted = self
             .settings
             .read(cx)
@@ -194,6 +206,23 @@ impl Outputs {
         self.settings
             .update(cx, |settings, cx| settings.set_output_rate(Some(rate), cx));
         output::choose_rate(Some(rate));
+        cx.notify();
+    }
+
+    /// Follows each track's own rate from now on, or opens at the saved rate again once it is
+    /// off, and saves the choice. A track already playing asks for its rate at once, so the
+    /// stream reopens at it, paused or not.
+    pub fn set_following(&mut self, follow: bool, cx: &mut Context<Self>) {
+        self.settings.update(cx, |settings, cx| {
+            settings.set_output_follows_rate(follow, cx)
+        });
+        output::set_following(follow);
+        match follow {
+            true => self
+                .playback
+                .update(cx, |playback, cx| playback.follow_rate_now(cx)),
+            false => output::choose_rate(self.settings.read(cx).output_rate()),
+        }
         cx.notify();
     }
 

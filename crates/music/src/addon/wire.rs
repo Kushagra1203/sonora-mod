@@ -7,6 +7,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Reads a string field an addon may send as `null` as its default. Null and absent say the
+/// same thing here, and one null field must not fail the whole answer.
+fn null_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// What an addon says it is and what it can do.
 ///
 /// Only `search` is required to be useful: a search row may carry its own `streamURL`, and an
@@ -102,15 +111,15 @@ pub struct SearchResponse {
 }
 
 /// One row of a search answer.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AddonTrack {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub artist: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub album: String,
     /// Seconds. Read as a double so an addon sending `240.0` is not a parse failure.
     #[serde(default)]
@@ -120,10 +129,10 @@ pub struct AddonTrack {
     #[serde(default, rename = "albumArtworkURL")]
     pub album_artwork_url: Option<String>,
     /// `mp3`, `flac`, `aac`, `m4a` — what the row is, when the addon says.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub format: String,
     /// Not in the spec, but several addons send it and it says the same thing.
-    #[serde(default, rename = "audioQuality")]
+    #[serde(default, rename = "audioQuality", deserialize_with = "null_string")]
     pub audio_quality: String,
     /// How the recording is mixed: `STEREO`, `DOLBY_ATMOS`, `SONY_360RA`.
     #[serde(default, rename = "audioMode")]
@@ -179,17 +188,17 @@ impl AddonTrack {
 /// What is on the end of a `/stream/{id}` call.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AddonStream {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub url: String,
     /// Free text: `mp3`, `flac`, `dash`. Describes the audio, not the transport.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub format: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_string")]
     pub quality: String,
     /// Non-standard spellings of `quality` that addons in the wild send instead.
-    #[serde(default, rename = "streamQuality")]
+    #[serde(default, rename = "streamQuality", deserialize_with = "null_string")]
     pub stream_quality: String,
-    #[serde(default, rename = "audioQuality")]
+    #[serde(default, rename = "audioQuality", deserialize_with = "null_string")]
     pub audio_quality: String,
     #[serde(default)]
     pub codec: Option<String>,
@@ -290,7 +299,7 @@ impl AddonStream {
         let Some(element) = self.encrypted.as_ref() else {
             return false;
         };
-        element.as_flag().map(|flag| flag).unwrap_or_else(|| {
+        element.as_flag().unwrap_or_else(|| {
             element
                 .as_str()
                 .map(|s| {

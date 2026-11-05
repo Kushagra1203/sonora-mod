@@ -4,9 +4,18 @@ const TRUST: u32 = 25;
 const CANDIDATES: usize = 3;
 
 pub(crate) fn hit(source: &'static str, query: &LyricsQuery, lyrics: Lyrics) -> LyricsHit {
+    hit_with_trust(source, query, lyrics, TRUST)
+}
+
+pub(crate) fn hit_with_trust(
+    source: &'static str,
+    query: &LyricsQuery,
+    lyrics: Lyrics,
+    trust: u32,
+) -> LyricsHit {
     LyricsHit {
         source,
-        trust: TRUST,
+        trust,
         lyrics,
         instrumental: false,
         title: query.title.clone(),

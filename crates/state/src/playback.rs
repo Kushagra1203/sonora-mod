@@ -137,14 +137,18 @@ struct Shadow {
 }
 
 /// How far the shadow has got.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shade {
-    /// The addon stream is being fetched and held paused.
+    /// The addon stream is being fetched and held paused, and the original is still the one
+    /// heard.
     Loading,
     /// It is loaded, and the seek, play and pause of the original are on their way.
     Swapping,
     /// It is the stream the listener hears.
     Playing,
+    /// It was the stream the listener hears, and it is being rebuilt after the output reopened
+    /// at the copy's own rate. The original stays silent underneath it throughout.
+    Reopening,
 }
 
 /// The position shown between the engine's reports. It runs on wall time from `reset` and is
@@ -892,12 +896,14 @@ impl Playback {
         else {
             return;
         };
-        let at = self.live_position();
         log::warn!(
             "playback: the addon stream for {} stopped, returning to the original",
             track.name
         );
-        self.load_from(&track, at, Start::Retry, cx);
+        // The original engine played on the same stream the shadow did, so a retire takes its
+        // output down too and can leave its handle with a closed channel. Rebuilding the engine
+        // is what gets the original playing again, where a plain reload would fail.
+        self.restart_output(music::is_local_id(&shadow.display), cx);
         self.attempted = Some(shadow.display);
     }
 
@@ -941,12 +947,114 @@ impl Playback {
     /// Keeps what an engine reported about the sound of track `id`, in place of any older
     /// report for it.
     fn learn_signal(&mut self, id: String, track: TrackSignal, cx: &mut Context<Self>) {
+        self.remember_signal(id, track);
+        self.follow_output_rate(cx);
+        cx.notify();
+    }
+
+    /// Stores what the addon shadow reported. Once the swap has committed, the copy's rate is
+    /// followed too: a hi-res copy should not be converted down to the rate the lossy original
+    /// ran at. Mid-hand-over it is only stored — reopening the shared stream then would retire
+    /// both outputs before the swap has landed.
+    fn learn_shadow_signal(&mut self, id: String, track: TrackSignal, cx: &mut Context<Self>) {
+        self.remember_signal(id, track);
+        self.follow_shadow_rate(cx);
+    }
+
+    /// Asks the output to reopen at the committed addon copy's own rate. The reopen takes the
+    /// shadow's engine down with the stream, and [`Self::restart_addon`] puts it back where the
+    /// clock stands; a rate already asked for is left alone.
+    fn follow_shadow_rate(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.read(cx).output_follows_rate() {
+            return;
+        }
+        let Some(shadow) = self.shadow.as_ref() else {
+            return;
+        };
+        if !matches!(shadow.phase, Shade::Playing | Shade::Reopening) {
+            return;
+        }
+        let Some(rate) = shadow.signal.as_ref().map(|signal| signal.rate) else {
+            return;
+        };
+        music::output::follow_rate(Some(rate));
+    }
+
+    /// Rebuilds the shadow's engine on the output as it is now, so a committed addon copy keeps
+    /// playing after the stream reopened at its own rate or the device moved under it. The copy
+    /// is reloaded where the clock stands and swaps back in, exactly as the first hand-over did;
+    /// one that will not reopen falls back to the lossy original.
+    fn restart_addon(&mut self, cx: &mut Context<Self>) {
+        let Some(shadow) = self.shadow.as_ref() else {
+            return;
+        };
+        let addon = shadow.addon.clone();
+        let display = shadow.display.clone();
+        let at = self.live_position();
+        self.addon_task = None;
+        retire(self.addon_engine.take());
+        self.start_addon_engine(cx);
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.phase = Shade::Reopening;
+        }
+        let Some(engine) = self.addon_engine.as_deref() else {
+            self.fall_back(cx);
+            return;
+        };
+        log::info!("playback: reopening the addon stream at {at:?}");
+        if let Err(error) = engine.load_paused_at(&addon, at) {
+            log::warn!("playback: cannot reopen the addon stream for {display}: {error:#}");
+            self.fall_back(cx);
+        }
+    }
+
+    /// Files what an engine reported about a track's sound, newest last, dropping any earlier
+    /// report of the same track.
+    fn remember_signal(&mut self, id: String, track: TrackSignal) {
         self.signals.retain(|(known, _)| *known != id);
         if self.signals.len() == SIGNALS {
             self.signals.pop_front();
         }
         self.signals.push_back((id, track));
-        cx.notify();
+    }
+
+    /// Asks the output for the rate the sound now runs at, so nothing between Sonora and the
+    /// hardware resamples the music. The committed addon copy's rate is followed once it is the
+    /// one heard, the track playing's rate otherwise. Mid-hand-over the shared stream is left
+    /// alone, and a rate the output already asks for is a no-op, so this is safe to call on
+    /// every signal.
+    fn follow_output_rate(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.read(cx).output_follows_rate() {
+            return;
+        }
+        match self.shadow.as_ref().map(|shadow| shadow.phase) {
+            Some(Shade::Playing | Shade::Reopening) => self.follow_shadow_rate(cx),
+            // mid-hand-over the shared stream must not reopen; the copy's rate is asked for
+            // once it commits
+            Some(Shade::Loading | Shade::Swapping) => {}
+            None => {
+                let rate = self
+                    .track
+                    .as_ref()
+                    .and_then(|track| track.id.clone())
+                    .and_then(|id| {
+                        self.signals
+                            .iter()
+                            .rev()
+                            .find(|(known, _)| *known == id)
+                            .map(|(_, signal)| signal.rate)
+                    });
+                if let Some(rate) = rate {
+                    music::output::follow_rate(Some(rate));
+                }
+            }
+        }
+    }
+
+    /// Asks the output for the current sound's rate again, as when following is switched on by
+    /// a settings page while a track plays.
+    pub fn follow_rate_now(&mut self, cx: &mut Context<Self>) {
+        self.follow_output_rate(cx);
     }
 
     /// Pauses the engine the new track does not belong to, so the two never sound at once.
@@ -1181,14 +1289,19 @@ impl Playback {
     /// starts it just before pausing the original, so the swap is as close to the same sample
     /// as two independent outputs can make it.
     fn swap_in(&mut self, cx: &mut Context<Self>) {
-        if self
-            .shadow
-            .as_ref()
-            .is_none_or(|shadow| shadow.phase != Shade::Loading)
-        {
+        let Some(phase) = self.shadow.as_ref().map(|shadow| shadow.phase) else {
+            return;
+        };
+        if !matches!(phase, Shade::Loading | Shade::Reopening) {
             return;
         }
-        if self.intent != Intent::Play || self.state != PlaybackState::Playing {
+        // the first hand-over only starts from a playing track; one being reopened was
+        // already the stream heard, so only the intent has to be playing still
+        let ready = match phase {
+            Shade::Reopening => self.intent == Intent::Play,
+            _ => self.intent == Intent::Play && self.state == PlaybackState::Playing,
+        };
+        if !ready {
             self.drop_upgrade();
             return;
         }
@@ -1230,7 +1343,7 @@ impl Playback {
         self.seek_in_flight = None;
         self.seek_target = None;
         if let Some(signal) = signal {
-            self.learn_signal(display, signal, cx);
+            self.learn_shadow_signal(display, signal, cx);
         }
         self.remember(true, cx);
         match self.intent == Intent::Pause {
@@ -1268,13 +1381,22 @@ impl Playback {
         let phase = shadow.phase;
 
         if let BackendEvent::OutputChanged = event {
-            log::warn!("playback: the addon output changed");
             match phase {
                 Shade::Loading => {
+                    log::warn!("playback: the addon output changed while opening");
                     self.drop_upgrade();
                     self.attempted = Some(display);
                 }
-                Shade::Swapping | Shade::Playing => self.fall_back(cx),
+                Shade::Swapping => {
+                    log::warn!("playback: the addon output changed mid-swap");
+                    self.fall_back(cx);
+                }
+                // the committed copy is the one the listener hears: reopen it on the stream
+                // rather than dropping back to lossy
+                Shade::Playing | Shade::Reopening => {
+                    log::warn!("playback: the addon output changed, reopening the copy");
+                    self.restart_addon(cx);
+                }
             }
             return;
         }
@@ -1300,9 +1422,9 @@ impl Playback {
                     && changed
                     && let Some(display) = display
                 {
-                    self.learn_signal(display, track, cx);
+                    self.learn_shadow_signal(display, track, cx);
                 }
-                if phase == Shade::Loading {
+                if matches!(phase, Shade::Loading | Shade::Reopening) {
                     self.swap_in(cx);
                 }
             }
@@ -1316,7 +1438,7 @@ impl Playback {
                 }
             }
             BackendEvent::Playing { at, .. } => match phase {
-                Shade::Loading => {}
+                Shade::Loading | Shade::Reopening => {}
                 Shade::Swapping => self.commit_swap(at, cx),
                 Shade::Playing if self.overtaken(Intent::Play) => {}
                 Shade::Playing => {
@@ -1337,7 +1459,7 @@ impl Playback {
                 }
             },
             BackendEvent::Seeked { at, .. } => match phase {
-                Shade::Loading => {}
+                Shade::Loading | Shade::Reopening => {}
                 Shade::Swapping => self.commit_swap(at, cx),
                 Shade::Playing => {
                     let at = self.landed(at);
@@ -1412,6 +1534,7 @@ impl Playback {
                     // original never fired.
                     false => self.advance(ended, Start::Skip, cx),
                 }
+                self.follow_output_rate(cx);
             }
             BackendEvent::Ended { .. } => {}
             BackendEvent::Unavailable { .. }
@@ -1424,7 +1547,7 @@ impl Playback {
                         self.drop_upgrade();
                         self.attempted = Some(display);
                     }
-                    Shade::Swapping | Shade::Playing => self.fall_back(cx),
+                    Shade::Swapping | Shade::Playing | Shade::Reopening => self.fall_back(cx),
                 }
             }
         }
@@ -2490,7 +2613,8 @@ impl Playback {
         match self.shadow.as_ref().map(|shadow| shadow.phase) {
             Some(Shade::Loading) => self.drop_upgrade(),
             Some(Shade::Swapping) => self.commit_swap(self.live_position(), cx),
-            Some(Shade::Playing) | None => {}
+            // a copy being reopened is already committed; its engine is paused below
+            Some(Shade::Playing | Shade::Reopening) | None => {}
         }
         if let Some(engine) = self.active_engine() {
             engine.pause();
@@ -2980,7 +3104,7 @@ impl Playback {
             .update(cx, |settings, cx| settings.set_lossless_upgrade(on, cx));
         if !on {
             match self.shadow.as_ref().map(|shadow| shadow.phase) {
-                Some(Shade::Swapping | Shade::Playing) => self.fall_back(cx),
+                Some(Shade::Swapping | Shade::Playing | Shade::Reopening) => self.fall_back(cx),
                 Some(Shade::Loading) | None => self.drop_upgrade(),
             }
         }
@@ -3088,6 +3212,12 @@ impl Playback {
         if current.is_some() && playing == Some(false) {
             self.resume_at = Some(at);
         }
+        // a committed addon shadow has the sound, so the engine underneath it comes back
+        // empty: reloading the display track would fight the copy that is playing
+        let shadowed = self
+            .shadow
+            .as_ref()
+            .is_some_and(|shadow| matches!(shadow.phase, Shade::Playing | Shade::Reopening));
 
         log::info!("playback: restarting after the audio output changed");
         match local {
@@ -3099,11 +3229,17 @@ impl Playback {
             false => {
                 self.task = None;
                 retire(self.engine.take());
-                self.start_engine(playback, cx);
+                match shadowed {
+                    // the copy is the one heard, and its own engine reopens from its own
+                    // OutputChanged; rebuilding this one must not drop it
+                    true => self.reopen_engine(playback, cx),
+                    false => self.start_engine(playback, cx),
+                }
             }
         }
         if let Some(track) = current
             && playing == Some(true)
+            && !shadowed
         {
             self.load_from(&track, at, Start::Pick, cx);
         }
@@ -3147,13 +3283,32 @@ impl Playback {
     /// Builds the streaming engine and starts pumping its events.
     fn start_engine(&mut self, playback: Arc<dyn PlaybackFactory>, cx: &mut Context<Self>) {
         self.drop_upgrade();
+        self.build_engine(playback, false, cx);
+    }
+
+    /// Rebuilds the streaming engine on an output that reopened under a committed addon copy.
+    /// The copy keeps playing: it is not dropped, and the empty engine beneath it must not reset
+    /// the clock the copy owns, so the state and position are left where they stand.
+    fn reopen_engine(&mut self, playback: Arc<dyn PlaybackFactory>, cx: &mut Context<Self>) {
+        self.build_engine(playback, true, cx);
+    }
+
+    /// Starts the streaming engine, pumping its events into `on_backend_event`. `holding` is set
+    /// when a committed addon copy has the sound and this engine only has to exist, empty, for
+    /// the next hand-over; it keeps the playback state and position untouched.
+    fn build_engine(
+        &mut self,
+        playback: Arc<dyn PlaybackFactory>,
+        holding: bool,
+        cx: &mut Context<Self>,
+    ) {
         let config = self.engine_config(self.quality);
         let (engine, events) = playback.start(config);
 
         self.listen(events, false, cx);
         self.engine = Some(engine);
         self.refused = None;
-        if !self.local_active() {
+        if !self.local_active() && !holding {
             self.state = PlaybackState::Idle;
             self.position = Duration::ZERO;
             self.clock.reset(Duration::ZERO, false);
@@ -3365,6 +3520,9 @@ impl Playback {
                     true => self.doze(cx),
                     false => self.advance(ended, Start::Segue, cx),
                 }
+                // a gapless join reports no signal of its own, so the next track's rate is
+                // asked for here, now that it is the current one
+                self.follow_output_rate(cx);
             }
             BackendEvent::Throttled { .. } => self.throttled(cx),
             BackendEvent::Unavailable { .. } if self.ask_for_reconnect(cx) => {

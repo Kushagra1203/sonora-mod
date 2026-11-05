@@ -4,7 +4,10 @@
 //! opens does `choose_device` make it the one to play on, and the engines are restarted onto it.
 //!
 //! The stream lives here too: one shared cpal stream on that device, every engine's `Output` on
-//! it, and the watch that has them reopen when the device changes.
+//! it, and the watch that has them reopen when the device changes. It runs at one rate, so
+//! everything else is resampled to it: the rate chosen in settings, the device's own when none
+//! is chosen, or the rate the track playing runs at while `set_following` holds, which opens the
+//! device at each track's own rate so nothing between Sonora and the hardware resamples it.
 //!
 //! A device that would not open is remembered, so it is not tried again until it is chosen again
 //! or leaves the system and comes back. Opening one can take CoreAudio ten seconds to give up on.
@@ -174,7 +177,10 @@ struct DeviceSelection {
     /// The chosen device's cpal id, or `None` to follow the system's default.
     chosen: Option<String>,
     /// The rate to open a device at when it offers it, or `None` for the rate it runs at.
+    /// While `follow` is set this is the rate the track playing runs at.
     rate: Option<u32>,
+    /// Whether `rate` follows the track playing rather than a rate chosen in settings.
+    follow: bool,
     /// The buffer to ask a device for, in frames, or `None` for `BUFFER_FRAMES`.
     buffer: Option<u32>,
     /// The devices that would not open, most recent last.
@@ -189,6 +195,7 @@ impl DeviceSelection {
         Self {
             chosen: None,
             rate: None,
+            follow: false,
             buffer: None,
             failed: Vec::new(),
             failing: false,
@@ -822,6 +829,49 @@ pub fn choose_device(id: Option<String>) {
 /// `None`. A stream open at another rate is retired, so every output on it reopens at the new one.
 pub fn choose_rate(rate: Option<u32>) {
     DeviceSelection::lock().rate = rate;
+    reopen_at(rate);
+}
+
+/// Whether the rate follows the track playing, rather than the one chosen in settings. Turning
+/// it off leaves the last followed rate in place until `choose_rate` names the saved one again.
+pub fn set_following(follow: bool) {
+    let mut selection = DeviceSelection::lock();
+    if selection.follow == follow {
+        return;
+    }
+    selection.follow = follow;
+    drop(selection);
+    announce_device_changes();
+}
+
+/// Asks for the rate `track` runs at while following, meaning the stream reopens at it where
+/// the device offers it, so nothing between Sonora and the hardware resamples the music. Does
+/// nothing in the fixed mode, when the rate is unknown, or when it is the one already asked for.
+pub fn follow_rate(track: Option<u32>) {
+    let mut selection = DeviceSelection::lock();
+    if !selection.follow {
+        return;
+    }
+    let Some(rate) = track else {
+        return;
+    };
+    if selection.rate == Some(rate) {
+        return;
+    }
+    selection.rate = Some(rate);
+    drop(selection);
+    reopen_at(Some(rate));
+}
+
+/// The rate a stream opens at while following, the one the track playing asked for, or the last
+/// one asked for before it. `None` while neither settings nor a track has named one.
+pub fn following_rate() -> Option<u32> {
+    DeviceSelection::lock().rate
+}
+
+/// Retires the open stream when `rate` differs from the one it runs at and the device offers it,
+/// so every output on it reopens at the new one.
+fn reopen_at(rate: Option<u32>) {
     let open = ACTIVE_DEVICE
         .lock()
         .unwrap_or_else(PoisonError::into_inner)

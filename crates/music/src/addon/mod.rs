@@ -13,6 +13,7 @@
 //! piece of work.
 
 pub(crate) mod client;
+mod matcher;
 mod playback;
 mod store;
 mod wire;
@@ -275,19 +276,22 @@ impl AddonUpgrade {
 
     /// A lossless copy of `track` that an enabled addon holds and can stream progressively.
     /// Every source is asked at once and the first usable answer wins, so a dead or cold addon
-    /// cannot hold a fast one back; among the rows of one addon a hi-res rendition is tried
+    /// cannot hold a fast one back. Each source is asked every query the matcher offers before
+    /// it is written off, because a first empty answer is usually the catalogue disagreeing
+    /// about how the track is *filed* rather than about whether it holds it; among the rows
+    /// that really are the recording, the most confident comes first and a hi-res rendition
     /// before a CD one. The stream is resolved and checked here so an addon that answers lossy,
     /// hands back a segmented manifest or is DRM-protected never causes a swap. Network:
     /// callers run this off the main thread.
     pub async fn find(&self, track: &Track) -> Option<Track> {
-        let title = track.name.trim();
-        if title.is_empty() {
+        let target = matcher::Target::of(track);
+        if target.title.trim().is_empty() {
             return None;
         }
-        let query = match track.artists.trim() {
-            "" => title.to_owned(),
-            artists => format!("{title} {artists}"),
-        };
+        let queries = matcher::queries(&target);
+        if queries.is_empty() {
+            return None;
+        }
         self.shared.sync();
         let addons: Vec<Arc<Addon>> = self
             .shared
@@ -301,12 +305,16 @@ impl AddonUpgrade {
 
         let mut searches =
             futures::stream::FuturesUnordered::from_iter(addons.into_iter().map(|addon| {
-                let query = query.clone();
-                ask(addon, query)
+                let queries = queries.clone();
+                let target = target.clone();
+                async move {
+                    let rows = ask(&addon, &queries, &target).await;
+                    (addon, rows)
+                }
             }));
 
         while let Some((addon, rows)) = searches.next().await {
-            let rows = match rows {
+            let mut candidates = match rows {
                 Ok(rows) => rows,
                 Err(error) => {
                     log::warn!(
@@ -316,8 +324,7 @@ impl AddonUpgrade {
                     continue;
                 }
             };
-            let mut candidates: Vec<&AddonTrack> =
-                rows.iter().filter(|row| matches(track, row)).collect();
+            // stable, so the matcher's confidence order survives the quality preference
             candidates.sort_by_key(|row| !row.is_hi_res());
             for row in candidates {
                 match addon
@@ -750,160 +757,29 @@ fn track_of(shared: &Shared, addon: &Addon, row: &AddonTrack) -> Track {
     }
 }
 
-/// Whether an addon row is the same recording as `track`, as far as a title, artist and a
-/// roughly equal length can say. The comparison ignores case and punctuation, and an artist
-/// field listing several names matches when one of them does.
-fn matches(track: &Track, row: &AddonTrack) -> bool {
-    if title_key(&track.name) != title_key(&row.title) {
-        return false;
-    }
-    let row_artist = word_key(&row.artist);
-    let artists = word_key(&track.artists);
-    if !row_artist.is_empty()
-        && !artists.is_empty()
-        && !(row_artist == artists
-            || row_artist.contains(&artists)
-            || artists.contains(&row_artist))
-    {
-        return false;
-    }
-    match (track.duration.as_secs(), row.duration_secs()) {
-        (0, _) | (_, None) => true,
-        (wanted, Some(found)) => wanted.abs_diff(found) <= 15,
-    }
-}
-
-/// Asks one addon for rows that may be `query`, carrying the addon along with its answer so
-/// the caller knows which source answered without keeping the list around.
-async fn ask(addon: Arc<Addon>, query: String) -> (Arc<Addon>, Result<Vec<AddonTrack>>) {
-    let rows = addon
-        .client
-        .search_within(&query, Tier::HiRes, UPGRADE_SEARCH)
-        .await;
-    (addon, rows)
-}
-
-/// A title as the words that decide which recording it is. A bracketed qualifier is a
-/// presentation note (a featuring credit, a soundtrack, a video tag) and falls away, unless it
-/// names a version — a remix, an edit, an instrumental — which is a different recording and
-/// must match only itself. Unbracketed featuring credits fall away the same way. So
-/// `Dracula (feat. JENNIE)` matches `Dracula`, while `like JENNIE (Peggy Gou Remix)` does not
-/// match `like JENNIE`.
-fn title_key(text: &str) -> String {
-    let lower = text.to_lowercase();
-    let mut outside = String::with_capacity(lower.len());
-    let mut kept = String::new();
-    let mut inside = String::new();
-    let mut depth = 0usize;
-    for character in lower.chars() {
-        match character {
-            '(' | '[' | '{' => {
-                if depth == 0 {
-                    inside.clear();
-                }
-                depth += 1;
-                if depth == 1 {
-                    continue;
-                }
-            }
-            ')' | ']' | '}' if depth > 0 => {
-                depth -= 1;
-                if depth == 0 {
-                    if is_version_qualifier(&inside) {
-                        kept.push(' ');
-                        kept.push_str(&inside);
-                    }
-                    inside.clear();
-                    continue;
-                }
-            }
-            _ => {}
-        }
-        match depth {
-            0 => outside.push(character),
-            _ => inside.push(character),
+/// Asks one addon every query the matcher offers, in order, and stops at the first whose
+/// answer holds a row that really is the recording. A source that throws gets no second
+/// chance: that is its server having a problem, not its filing, and asking it again
+/// differently will not fix it.
+async fn ask(
+    addon: &Addon,
+    queries: &[String],
+    target: &matcher::Target,
+) -> Result<Vec<AddonTrack>> {
+    for query in queries {
+        let rows = addon
+            .client
+            .search_within(query, Tier::HiRes, UPGRADE_SEARCH)
+            .await?;
+        let ranked: Vec<AddonTrack> = matcher::ranked(&rows, target)
+            .into_iter()
+            .cloned()
+            .collect();
+        if !ranked.is_empty() {
+            return Ok(ranked);
         }
     }
-    let base = cut_features(&outside);
-    let key = word_key(&format!("{base} {kept}"));
-    // `Seven - Explicit Ver.` is the same recording as `Seven`; the edit markers every service
-    // spells its own way carry no meaning once the words are compared. A title made only of
-    // one of them keeps it, so a song actually called `Clean` is not left with no name.
-    let trimmed = key
-        .split(' ')
-        .filter(|word| !matches!(*word, "explicit" | "clean" | "ver"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    match trimmed.is_empty() {
-        true => key,
-        false => trimmed,
-    }
-}
-
-/// Whether a bracketed qualifier names a different recording. A qualifier with none of these
-/// words is a credit or a note and does not distinguish one rendition from another.
-const VERSION_WORDS: &[&str] = &[
-    "remix",
-    "rmx",
-    "mix",
-    "bootleg",
-    "mashup",
-    "edit",
-    "extended",
-    "slowed",
-    "sped",
-    "nightcore",
-    "reverb",
-    "instrumental",
-    "karaoke",
-    "cover",
-    "live",
-    "acoustic",
-    "unplugged",
-    "demo",
-    "radio",
-    "club",
-];
-
-/// Whether any word of `text` is one of [`VERSION_WORDS`].
-fn is_version_qualifier(text: &str) -> bool {
-    text.split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .any(|word| VERSION_WORDS.contains(&word))
-}
-
-/// A title cut at the first featuring or production credit, which is how services credit the
-/// same recording rather than a different one.
-fn cut_features(text: &str) -> &str {
-    let mut cut = text.len();
-    for marker in [
-        " feat",
-        " ft.",
-        " ft ",
-        " featuring",
-        " with ",
-        " prod.",
-        " produced by",
-    ] {
-        if let Some(index) = text.find(marker) {
-            cut = cut.min(index);
-        }
-    }
-    &text[..cut]
-}
-
-/// A text as lowercase words with the punctuation dropped, so `Yo-Sea` and `yo sea` compare
-/// equal and a stray hyphen does not hide a match.
-fn word_key(text: &str) -> String {
-    let mut key = String::with_capacity(text.len());
-    for character in text.chars().flat_map(char::to_lowercase) {
-        match character.is_alphanumeric() {
-            true => key.push(character),
-            false if !key.ends_with(' ') && !key.is_empty() => key.push(' '),
-            false => {}
-        }
-    }
-    key.trim_end().to_owned()
+    Ok(Vec::new())
 }
 
 #[cfg(test)]
