@@ -666,9 +666,9 @@ impl Aside {
         let press_uid = uid.clone();
         let current = position == QueuePosition::Current;
         let title = match position {
-            QueuePosition::Past(_) => theme.muted_foreground,
+            QueuePosition::Past(_) => theme.primary.opacity(PAST),
             QueuePosition::Current => theme.primary,
-            QueuePosition::Upcoming(_) => theme.foreground,
+            QueuePosition::Upcoming(_) => theme.primary.opacity(AHEAD),
         };
         let pin = track.pin();
         let menu_track = track.clone();
@@ -709,7 +709,7 @@ impl Aside {
                         SharedString::from(format!("queue-track-artist-{key}")),
                         track.artist_refs.clone(),
                         track.artists.clone(),
-                        theme.muted_foreground,
+                        theme.primary.opacity(PAST),
                     )
                     .text_size(theme.text(Text::Small))
                     .truncate(),
@@ -1022,7 +1022,7 @@ impl Aside {
             lane: lane_size,
             scripts: romanization_scripts,
             theme,
-            karaoke_tint: theme.foreground,
+            karaoke_tint: theme.primary,
             lift: 1.,
             from: gpui::point(0., 0.5),
             mirrored,
@@ -1284,11 +1284,13 @@ impl Aside {
                     let line_has_ended = active_line.is_some_and(|active| index < active)
                         || line_has_passed(line, position);
                     let worded = karaoke_effects && line.worded() && line.words.is_some();
+                    // The lyrics follow the same accent the player bar wears, so the active
+                    // line reads in the cover's hue and the others dim from it.
                     let shade = |singing: bool| match (singing, line_has_ended) {
-                        (true, _) if worded => theme.muted_foreground,
-                        (true, _) => theme.foreground,
-                        (false, true) => theme.muted_foreground.opacity(PAST),
-                        (false, false) => theme.muted_foreground.opacity(AHEAD),
+                        (true, _) if worded => theme.primary,
+                        (true, _) => theme.primary,
+                        (false, true) => theme.primary.opacity(PAST),
+                        (false, false) => theme.primary.opacity(AHEAD),
                     };
                     let tint = shade(Some(index) == active_line);
 
@@ -1541,7 +1543,7 @@ impl Aside {
                                 .gap_1()
                                 .text_size(plain_size)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.foreground)
+                                .text_color(theme.primary)
                                 .when(sung.mirrored, |this| this.text_right())
                                 .map(|this| match (&rows, romanized.is_some()) {
                                     (None, false) => this.child(SharedString::from(text.clone())),
@@ -2114,10 +2116,10 @@ pub(crate) fn verse(
     let ended = line_has_passed(line, position);
     let worded = karaoke && line.worded() && line.words.is_some();
     let tint = match (look.active, ended) {
-        (true, _) if worded => theme.muted_foreground,
-        (true, _) => theme.foreground,
-        (false, true) => theme.muted_foreground.opacity(PAST),
-        (false, false) => theme.muted_foreground.opacity(AHEAD),
+        (true, _) if worded => theme.primary,
+        (true, _) => theme.primary,
+        (false, true) => theme.primary.opacity(PAST),
+        (false, false) => theme.primary.opacity(AHEAD),
     };
     let mirrored = right_to_left(&line.text);
     let sung = Sung {
@@ -2126,7 +2128,7 @@ pub(crate) fn verse(
         scripts: look.scripts,
         theme,
         karaoke_tint: mix(
-            theme.foreground,
+            theme.primary,
             tint,
             primary_karaoke_fade(line, look.active, position),
         ),
@@ -2414,10 +2416,10 @@ fn secondary_lyrics_lane(
             secondary_karaoke_visible(lane, singing, position) && sung.karaoke && lane.worded();
 
         match (active, passed, karaoke) {
-            (_, _, true) => theme.muted_foreground,
-            (true, _, false) => theme.foreground,
-            (false, true, false) => theme.muted_foreground.opacity(PAST),
-            (false, false, false) => theme.muted_foreground.opacity(AHEAD),
+            (_, _, true) => theme.primary,
+            (true, _, false) => theme.primary,
+            (false, true, false) => theme.primary.opacity(PAST),
+            (false, false, false) => theme.primary.opacity(AHEAD),
         }
     };
     // a lane only shows under the line being sung
@@ -2513,7 +2515,7 @@ fn font_key(font: &str) -> u64 {
 fn romanized_lyrics_lane(text: String, size: Pixels, theme: &ui::Theme) -> Div {
     div()
         .text_size(size)
-        .text_color(theme.muted_foreground)
+        .text_color(theme.primary.opacity(AHEAD))
         .child(SharedString::from(text))
 }
 
@@ -3181,12 +3183,8 @@ fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme)
         .children((0..3).map(|index| {
             let note_progress = (progress * 3. - index as f32).clamp(0., 1.);
             let tint = match past {
-                true => theme.muted_foreground.opacity(PAST),
-                false => mix(
-                    theme.muted_foreground.opacity(AHEAD),
-                    theme.primary,
-                    note_progress,
-                ),
+                true => theme.primary.opacity(PAST),
+                false => mix(theme.primary.opacity(AHEAD), theme.primary, note_progress),
             };
             div()
                 .size(note_size)

@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use ui::{
-    ActiveTheme as _, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin, PinKind,
-    Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy, drop_gap,
-    drop_into, drop_marker,
+    ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel,
+    Picker, Pin, PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text,
+    Vacancy, drop_gap, drop_into, drop_marker,
 };
 
 use gpui::accesskit::Role;
@@ -19,7 +19,8 @@ use router::{
     open_settings,
 };
 use state::{
-    AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
+    AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, SessionState, Shelf,
+    Sonora,
 };
 
 use crate::shared::menus::{ItemMenu, item_menu};
@@ -76,6 +77,11 @@ const HINT_HEIGHT: Pixels = px(42.);
 const VACANCY_HEIGHT: Pixels = px(88.);
 /// How far the pin mark on a library row falls back from the accent.
 const PIN_MARK: f32 = 0.7;
+/// How far a navigation row that is not the current one dims the accent, so the rows still read
+/// in order while both wear the colour the player bar wears.
+const ROW_DIM: f32 = 0.75;
+/// The account mark that heads the sidebar.
+const ACCOUNT_MARK: Pixels = px(24.);
 /// The space between two pinned entries, the same as the `gap_1` between the rows above them.
 const ROW_GAP: Pixels = px(4.);
 
@@ -298,6 +304,39 @@ impl SidebarLeft {
             }
         }
         rows
+    }
+
+    /// The row that heads the sidebar: the signed-in account's mark and name, which opens the
+    /// accounts page. Nothing is drawn while no account is signed in, so the navigation then
+    /// starts the panel as it did before.
+    fn account(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = *cx.theme();
+        let (name, avatar) = match self.session.read(cx).state() {
+            SessionState::SignedIn(profile) => {
+                (profile.display_name.clone(), profile.avatar.clone())
+            }
+            _ => return None,
+        };
+        let mark = match avatar {
+            Some(avatar) => Avatar::new(Some(avatar))
+                .size(ACCOUNT_MARK)
+                .into_any_element(),
+            None => Initials::new(name.clone(), ACCOUNT_MARK).into_any_element(),
+        };
+
+        Some(
+            Button::new("sidebar-account")
+                .ghost()
+                .justify_start()
+                .gap_2p5()
+                .leading(mark)
+                .label(name)
+                .tint(theme.foreground)
+                .hover(move |style| style.bg(theme.sidebar_accent))
+                .active(move |style| style.bg(theme.sidebar_accent))
+                .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
+                .into_any_element(),
+        )
     }
 
     /// The pinned section: its header, and its entries once it is expanded. The entries are a
@@ -596,9 +635,12 @@ impl SidebarLeft {
             Some(group) => Group::of(&current) == Some(group),
             None => destination.same_section(&current),
         };
+        // The rows wear the accent the player bar wears, so the sidebar follows the cover with
+        // the rest of the app. The one that is not current is dimmed, so the current one still
+        // reads as the current one.
         let tint = match active {
-            true => theme.foreground,
-            false => theme.muted_foreground,
+            true => theme.primary,
+            false => theme.primary.opacity(ROW_DIM),
         };
         let row = nav_row(index, key, tint, accent).icon(icon);
 
@@ -628,8 +670,8 @@ impl SidebarLeft {
         let tab = |id: ElementId, key: &'static str, destination: Destination| {
             let chosen = destination == current;
             let tint = match chosen {
-                true => theme.foreground,
-                false => theme.muted_foreground,
+                true => theme.primary,
+                false => theme.primary.opacity(ROW_DIM),
             };
 
             nav_row(id, key, tint, accent)
@@ -789,6 +831,7 @@ impl Render for SidebarLeft {
             .when(overlaid, |this| {
                 this.occlude().absolute().left_0().top_0().bottom_0()
             })
+            .child(self.header(frosted, window, cx))
             .child(
                 div()
                     .relative()
@@ -810,6 +853,9 @@ impl Render for SidebarLeft {
                                     // Leave the last row somewhere to go, clear of the
                                     // button that floats over the bottom.
                                     .pb(ui::perch_room(cx))
+                                    .when_some(self.account(cx), |this, account| {
+                                        this.child(div().mb_2().child(account))
+                                    })
                                     .children(rows),
                             ),
                     )
