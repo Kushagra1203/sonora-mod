@@ -339,6 +339,41 @@ impl SidebarLeft {
         )
     }
 
+    /// Account row for the header bar: no pill shape, full-width, text truncates.
+    fn header_account(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = *cx.theme();
+        let (name, avatar) = match self.session.read(cx).state() {
+            SessionState::SignedIn(profile) => {
+                (profile.display_name.clone(), profile.avatar.clone())
+            }
+            _ => return None,
+        };
+        let mark = match avatar {
+            Some(avatar) => Avatar::new(Some(avatar))
+                .size(ACCOUNT_MARK)
+                .into_any_element(),
+            None => Initials::new(name.clone(), ACCOUNT_MARK).into_any_element(),
+        };
+
+        Some(
+            div()
+                .id("sidebar-header-account")
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .w_full()
+                .min_w_0()
+                .px_1()
+                .py_1()
+                .text_color(theme.primary)
+                .child(mark)
+                .child(div().min_w_0().truncate().child(name))
+                .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
+                .cursor_pointer()
+                .into_any_element(),
+        )
+    }
+
     /// The header that aligns with the right sidebar's eyebrow: a frosted bar with the account
     /// row when signed in, otherwise empty space of the same height so the navigation starts at
     /// the same line as the centre and right columns.
@@ -355,7 +390,7 @@ impl SidebarLeft {
             .h(height)
             .px_2()
             .when(frosted, |this| this.border_b_1().border_color(theme.border))
-            .when_some(self.account(cx), |this, account| this.child(account))
+            .when_some(self.header_account(cx), |this, account| this.child(account))
             .into_any_element()
     }
 
@@ -873,9 +908,6 @@ impl Render for SidebarLeft {
                                     // Leave the last row somewhere to go, clear of the
                                     // button that floats over the bottom.
                                     .pb(ui::perch_room(cx))
-                                    .when_some(self.account(cx), |this, account| {
-                                        this.child(div().mb_2().child(account))
-                                    })
                                     .children(rows),
                             ),
                     )
