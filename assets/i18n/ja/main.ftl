@@ -928,6 +928,8 @@ settings-romanized-lyrics = ローマ字歌詞
 settings-romanized-lyrics-detail = 選択した文字体系の発音表記を、このデバイス上で生成して表示する
 settings-romanization-writing-systems = 文字体系
 settings-lyrics-priority = 提供元の優先順位
+settings-lyrics-prioritize-words = 単語ごとの歌詞を優先
+settings-lyrics-prioritize-words-detail = 行ごとの同期が見つかった後も検索を続け、単語ごとの歌詞を探します
 settings-lyrics-providers-detail = 歌詞を検索するサービスを選ぶ
 settings-lyrics-providers-selected = { $count ->
    *[other] { $count }件を選択

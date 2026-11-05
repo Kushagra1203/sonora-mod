@@ -956,6 +956,8 @@ settings-romanized-lyrics = Latin harfli şarkı sözleri
 settings-romanized-lyrics-detail = Seçilen yazı sistemleri için yerel olarak üretilen okunuşu göster
 settings-romanization-writing-systems = Yazı sistemleri
 settings-lyrics-priority = Servis önceliği
+settings-lyrics-prioritize-words = Kelime kelime şarkı sözlerini önceliklendir
+settings-lyrics-prioritize-words-detail = Satır satır eşleşmeden sonra kelime kelime şarkı sözleri için aramaya devam eder
 settings-lyrics-providers-detail = Şarkı sözü aranacak servisleri seç
 settings-lyrics-providers-selected = { $count ->
    *[other] { $count } seçili

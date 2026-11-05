@@ -1015,6 +1015,8 @@ settings-romanized-lyrics = Latynizacja tekstu
 settings-romanized-lyrics-detail = Pokazuj wymowę generowaną lokalnie dla wybranych systemów pisma
 settings-romanization-writing-systems = Systemy pisma
 settings-lyrics-priority = Priorytet serwisów
+settings-lyrics-prioritize-words = Priorytetuj tekst słowo po słowie
+settings-lyrics-prioritize-words-detail = Szuka dalej po znalezieniu tekstu zsynchronizowanego wierszami, aby znaleźć tekst słowo po słowie
 settings-lyrics-providers-detail = Wybierz serwisy do wyszukiwania tekstów piosenek
 settings-lyrics-providers-selected = { $count ->
     [one] Wybrano { $count } źródło

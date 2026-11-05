@@ -980,6 +980,8 @@ settings-romanized-lyrics = Lirik romanisasi
 settings-romanized-lyrics-detail = Tampilkan panduan pelafalan latin untuk sistem aksara tertentu
 settings-romanization-writing-systems = Sistem aksara
 settings-lyrics-priority = Prioritas sumber
+settings-lyrics-prioritize-words = Prioritaskan lirik per suku kata
+settings-lyrics-prioritize-words-detail = Terus mencari melewati lirik yang sinkron per baris untuk lirik kata per kata
 settings-lyrics-providers-detail = Pilih layanan yang dicari untuk lirik
 settings-lyrics-providers-selected = { $count ->
     [one] { $count } dipilih

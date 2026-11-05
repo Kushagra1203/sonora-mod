@@ -11,7 +11,7 @@ use ui::{
 };
 
 use super::rows::drill;
-use super::{Group, SettingsView, Slot};
+use super::{Group, Row, SettingsView, Slot};
 
 /// A lyrics source being dragged within the priority list. It draws as a chip under the cursor
 /// and changes the saved order only when dropped.
@@ -33,8 +33,11 @@ impl SettingsView {
                 Slot::PanelLyricsSize,
                 Slot::FullscreenLyricsSize,
             ]),
-            Group::new("settings-group-sources", "icons/list-music.svg")
-                .rows([Slot::LyricsSources, Slot::LyricsForLocal]),
+            Group::new("settings-group-sources", "icons/list-music.svg").rows([
+                Slot::LyricsWords,
+                Slot::LyricsSources,
+                Slot::LyricsForLocal,
+            ]),
         ]
     }
 
@@ -343,6 +346,26 @@ impl SettingsView {
                 }))
                 .into_any_element(),
         )
+    }
+
+    /// Whether a word-by-word sheet is preferred over a line-synced one, so a search carries on
+    /// past a line-synced match until a word-by-word one turns up.
+    pub(super) fn lyrics_prioritize_words_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).lyrics_prioritize_words();
+
+        Row::new(
+            t!("settings-lyrics-prioritize-words"),
+            Switch::new("lyrics-prioritize-words", on)
+                .name(t!("settings-lyrics-prioritize-words"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings.update(cx, |settings, cx| {
+                        settings.set_lyrics_prioritize_words(!on, cx);
+                    });
+                }))
+                .into_any_element(),
+        )
+        .detail(t!("settings-lyrics-prioritize-words-detail"))
+        .into_any_element()
     }
 
     pub(super) fn blur_lyrics_row(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -29,17 +29,19 @@ const TRUNCATED: u32 = 500;
 const TRUSTED: u32 = 25;
 
 pub fn rank(query: &LyricsQuery, hits: Vec<LyricsHit>) -> Vec<LyricsHit> {
-    rank_with_priority(query, hits, &[])
+    rank_with_priority(query, hits, &[], false)
 }
 
-/// Ranks hits best first and removes duplicates. Synced lyrics beat plain ones, which beat
-/// cut-short ones. Within one of those kinds the source earlier in `priority` wins, and the match
-/// score, which favours word-by-word timing, settles the rest. Sources missing from `priority`
-/// come after the rest.
+/// Ranks hits best first and removes duplicates. Word-by-word lyrics beat line-synced ones when
+/// `prioritize_words` is set, and line-synced lyrics beat plain ones, which beat cut-short
+/// ones. Within one of those kinds the source earlier in `priority` wins, and the match score,
+/// which favours word-by-word timing, settles the rest. Sources missing from `priority` come
+/// after the rest.
 pub fn rank_with_priority(
     query: &LyricsQuery,
     hits: Vec<LyricsHit>,
     priority: &[String],
+    prioritize_words: bool,
 ) -> Vec<LyricsHit> {
     let position = |source: &str| {
         priority
@@ -52,7 +54,7 @@ pub fn rank_with_priority(
         .filter(|hit| eligible(query, hit))
         .map(|hit| {
             (
-                grade(query, &hit.lyrics),
+                grade(query, &hit.lyrics, prioritize_words),
                 position(hit.source),
                 score(query, &hit),
                 hit,
@@ -160,18 +162,32 @@ pub fn score(query: &LyricsQuery, hit: &LyricsHit) -> i64 {
     score
 }
 
-/// Whether a sheet is synced and runs the length of the track, the best kind a source can offer.
-/// Once the preferred source has one, no later answer outranks it.
-pub fn fully_synced(query: &LyricsQuery, lyrics: &Lyrics) -> bool {
-    grade(query, lyrics) == 2
+/// Whether a sheet is the best kind the setting asks for: word-by-word when the words are
+/// prioritized, and line-synced otherwise. Once a sheet of that kind has turned up, no later
+/// answer outranks it, so a line-synced match does not stop the search when the words are
+/// prioritized.
+pub fn complete(query: &LyricsQuery, lyrics: &Lyrics, prioritize_words: bool) -> bool {
+    grade(query, lyrics, prioritize_words) >= best_grade(prioritize_words)
 }
 
-/// What kind of lyrics a sheet is, for ranking: 2 synced, 1 plain. A sheet that ends well before
-/// the track does counts as 0 whatever its timing.
-fn grade(query: &LyricsQuery, lyrics: &Lyrics) -> u8 {
+/// The kind of sheet nothing can beat: word-by-word when the words are prioritized, and
+/// line-synced otherwise.
+fn best_grade(prioritize_words: bool) -> u8 {
+    match prioritize_words {
+        true => 3,
+        false => 2,
+    }
+}
+
+/// What kind of lyrics a sheet is, for ranking: 3 word-by-word, 2 synced, 1 plain. A sheet that
+/// ends well before the track does counts as 0 whatever its timing.
+fn grade(query: &LyricsQuery, lyrics: &Lyrics, prioritize_words: bool) -> u8 {
     match (truncated(lyrics, query.duration), lyrics.synced()) {
         (true, _) => 0,
-        (false, true) => 2,
+        (false, true) => match (prioritize_words, lyrics.worded()) {
+            (true, true) => 3,
+            _ => 2,
+        },
         (false, false) => 1,
     }
 }

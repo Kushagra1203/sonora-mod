@@ -984,6 +984,8 @@ settings-romanized-lyrics = Paroles romanisées
 settings-romanized-lyrics-detail = Afficher une prononciation générée localement pour les systèmes d'écriture choisis
 settings-romanization-writing-systems = Systèmes d'écriture
 settings-lyrics-priority = Priorité des services
+settings-lyrics-prioritize-words = Prioriser les paroles syllabe par syllabe
+settings-lyrics-prioritize-words-detail = Continue la recherche après une synchronisation ligne par ligne pour trouver des paroles mot à mot
 settings-lyrics-providers-detail = Choisissez les services dans lesquels chercher les paroles
 settings-lyrics-providers-selected = { $count ->
     [one] { $count } sélectionné

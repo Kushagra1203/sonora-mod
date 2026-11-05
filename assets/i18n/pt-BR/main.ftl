@@ -980,6 +980,8 @@ settings-romanized-lyrics = Letras romanizadas
 settings-romanized-lyrics-detail = Mostrar pronúncia gerada localmente para sistemas de escrita selecionados
 settings-romanization-writing-systems = Sistemas de escrita
 settings-lyrics-priority = Prioridade dos serviços
+settings-lyrics-prioritize-words = Priorizar letras por sílaba
+settings-lyrics-prioritize-words-detail = Continua buscando depois de uma letra sincronizada por linhas para encontrar letras palavra por palavra
 settings-lyrics-providers-detail = Escolha em quais serviços buscar letras
 settings-lyrics-providers-selected = { $count ->
     [one] { $count } selecionado

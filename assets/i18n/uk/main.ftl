@@ -1014,6 +1014,8 @@ settings-romanized-lyrics = Романізація тексту
 settings-romanized-lyrics-detail = Показувати локально зібрану вимову для вибраних систем письма
 settings-romanization-writing-systems = Системи письма
 settings-lyrics-priority = Пріоритет джерел
+settings-lyrics-prioritize-words = Пріоритет: текст по словах
+settings-lyrics-prioritize-words-detail = Пошук триває після синхронізації за рядками, щоб знайти текст по словах
 settings-lyrics-providers-detail = Виберіть сервіси для пошуку текстів пісень
 settings-lyrics-providers-selected = { $count ->
     [one] Вибрано { $count } джерело

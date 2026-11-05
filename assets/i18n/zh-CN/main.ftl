@@ -980,6 +980,8 @@ settings-romanized-lyrics = 罗马化歌词
 settings-romanized-lyrics-detail = 为选定的书写系统显示本地生成的发音
 settings-romanization-writing-systems = 书写系统
 settings-lyrics-priority = 来源优先级
+settings-lyrics-prioritize-words = 优先逐字歌词
+settings-lyrics-prioritize-words-detail = 匹配到逐行歌词后仍继续搜索逐字歌词
 settings-lyrics-providers-detail = 选择要搜索歌词的服务
 settings-lyrics-providers-selected = { $count ->
     [one] 已选择 { $count } 个

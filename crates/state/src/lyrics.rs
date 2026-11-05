@@ -44,6 +44,9 @@ pub struct Lyrics {
     /// The order of the sources the answer on show was ranked by. A new order looks the track
     /// up again, from what is held, so the source now ranked first is the one shown.
     priority: Vec<String>,
+    /// Whether word-by-word lyrics are preferred over line-synced ones. A new preference looks
+    /// the track up again, from what is held, so the answer is ranked the new way.
+    prioritize_words: bool,
     playback: Entity<Playback>,
     session: Entity<Session>,
     settings: Entity<AppSettings>,
@@ -76,11 +79,16 @@ impl Lyrics {
             let settings = settings.read(cx);
             let enabled = settings.lyrics_providers();
             let priority = settings.lyrics_provider_priority();
-            if enabled == this.enabled_providers && priority == this.priority {
+            let prioritize_words = settings.lyrics_prioritize_words();
+            if enabled == this.enabled_providers
+                && priority == this.priority
+                && prioritize_words == this.prioritize_words
+            {
                 return;
             }
             this.enabled_providers = enabled.to_vec();
             this.priority = priority;
+            this.prioritize_words = prioritize_words;
             this.task = None;
             this.ahead = None;
             this.ahead_of = None;
@@ -90,6 +98,7 @@ impl Lyrics {
         .detach();
         let enabled_providers = settings.read(cx).lyrics_providers().to_vec();
         let priority = settings.read(cx).lyrics_provider_priority();
+        let prioritize_words = settings.read(cx).lyrics_prioritize_words();
         let store = Sheets::new(storage::Cache::standard());
         let moving = store.clone();
         let migration = cx
@@ -109,6 +118,7 @@ impl Lyrics {
             providers,
             enabled_providers,
             priority,
+            prioritize_words,
             playback,
             session,
             settings,
@@ -203,10 +213,11 @@ impl Lyrics {
             .cloned()
             .collect();
         let priority = settings.lyrics_provider_priority();
+        let prioritize_words = settings.lyrics_prioritize_words();
         let instrumental = music::lyrics::instrumental(query, &hits);
         self.task = None;
         self.settled = true;
-        self.hits = ordered(query, hits, &priority);
+        self.hits = ordered(query, hits, &priority, prioritize_words);
         self.state = state_for(&self.hits, instrumental);
         cx.notify();
         self.prefetch(cx);
@@ -359,6 +370,7 @@ impl Lyrics {
     fn fetch(&mut self, id: String, track: Track, cx: &mut Context<Self>) -> Task<()> {
         let settings = self.settings.read(cx);
         let priority = settings.lyrics_provider_priority();
+        let prioritize_words = settings.lyrics_prioritize_words();
         let enabled: Vec<&'static str> = self
             .providers
             .iter()
@@ -426,7 +438,7 @@ impl Lyrics {
             while let Some((from, mut found)) = incoming.recv().await {
                 pending.retain(|name| Some(*name) != from);
                 hits.append(&mut found);
-                let ranked = ordered(&ranking, hits.clone(), &priority);
+                let ranked = ordered(&ranking, hits.clone(), &priority, prioritize_words);
                 let Some(best) = ranked.first().cloned() else {
                     continue;
                 };
@@ -435,9 +447,14 @@ impl Lyrics {
                     displayed = Some(best);
                 }
                 // Full synced lyrics can only lose to a source ranked higher, anything else to
-                // whichever source answers next.
+                // whichever source answers next. A line-synced sheet is not complete while the
+                // words are prioritized, so the search carries on for a word-by-word one.
                 let waiting = displayed.as_ref().is_some_and(|displayed| {
-                    let place = match music::lyrics::fully_synced(&ranking, &displayed.lyrics) {
+                    let place = match music::lyrics::complete(
+                        &ranking,
+                        &displayed.lyrics,
+                        prioritize_words,
+                    ) {
                         true => rank_in(&priority, displayed.source),
                         false => usize::MAX,
                     };
@@ -463,7 +480,7 @@ impl Lyrics {
                         this.keep(id, cached, &hits, answered, cx);
                         if current {
                             let instrumental = music::lyrics::instrumental(&ranking, &hits);
-                            let ranked = ordered(&ranking, hits, &priority);
+                            let ranked = ordered(&ranking, hits, &priority, prioritize_words);
                             this.settle(ranked, displayed.as_ref(), instrumental, cx);
                         }
                     }
@@ -649,8 +666,13 @@ fn same(left: &LyricsHit, right: &LyricsHit) -> bool {
         && left.lyrics.worded() == right.lyrics.worded()
 }
 
-fn ordered(query: &LyricsQuery, hits: Vec<LyricsHit>, priority: &[String]) -> Vec<LyricsHit> {
-    let mut ranked = music::lyrics::rank_with_priority(query, hits, priority);
+fn ordered(
+    query: &LyricsQuery,
+    hits: Vec<LyricsHit>,
+    priority: &[String],
+    prioritize_words: bool,
+) -> Vec<LyricsHit> {
+    let mut ranked = music::lyrics::rank_with_priority(query, hits, priority, prioritize_words);
     music::lyrics::reshape(&mut ranked);
     ranked
 }

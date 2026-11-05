@@ -1013,6 +1013,8 @@ settings-romanized-lyrics = Romanizované texty
 settings-romanized-lyrics-detail = Zobrazuje místně vytvořenou výslovnost pro vybrané písmové systémy
 settings-romanization-writing-systems = Písmové systémy
 settings-lyrics-priority = Priorita poskytovatelů
+settings-lyrics-prioritize-words = Upřednostnit text po slově
+settings-lyrics-prioritize-words-detail = Vyhledávání pokračuje i po nalezení textu synchronizovaného po řádcích, aby našel text po slově
 settings-lyrics-providers-detail = Vyber služby, ve kterých se mají hledat texty písní
 settings-lyrics-providers-selected = { $count ->
     [one] Vybrán { $count } poskytovatel

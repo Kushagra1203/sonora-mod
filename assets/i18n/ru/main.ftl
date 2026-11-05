@@ -1038,6 +1038,8 @@ settings-romanized-lyrics = Романизация текста
 settings-romanized-lyrics-detail = Показывать локально собранное произношение для выбранных систем письма
 settings-romanization-writing-systems = Системы письма
 settings-lyrics-priority = Приоритет источников
+settings-lyrics-prioritize-words = Приоритет: текст по словам
+settings-lyrics-prioritize-words-detail = Поиск продолжается после нахождения текста с синхронизацией по строкам, чтобы найти текст по словам
 settings-lyrics-providers-detail = Выберите сервисы для поиска текстов песен
 settings-lyrics-providers-selected = { $count ->
     [one] Выбран { $count } источник

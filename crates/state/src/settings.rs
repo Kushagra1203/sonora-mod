@@ -445,6 +445,9 @@ struct Values {
     /// Every known lyrics source, the preferred one first. Lyrics of the same kind from two
     /// sources go to the one listed higher.
     lyrics_provider_priority: Vec<String>,
+    /// Whether word-by-word lyrics are preferred over line-synced ones, so a search carries on
+    /// past a line-synced match until a word-by-word sheet turns up.
+    lyrics_prioritize_words: bool,
     karaoke_lyrics: bool,
     blur_lyrics: bool,
     romanized_lyrics: bool,
@@ -648,6 +651,7 @@ impl Default for Values {
             subsonic_lyrics_offered: false,
             new_lyrics_sources_offered: false,
             lyrics_provider_priority: lyrics_priority(&[]),
+            lyrics_prioritize_words: true,
             // Musixmatch and NetEase, the old catalogue sources, start switched off; the new
             // PaxSenix: Musixmatch and PaxSenix: Spotify cover their catalogues. Track-scoped
             // sources (Local, Subsonic, Spotify) are enabled and sorted to the end of the priority.
@@ -1190,6 +1194,12 @@ impl AppSettings {
             .lyrics_providers
             .iter()
             .any(|name| name == provider)
+    }
+
+    /// Whether word-by-word lyrics are preferred over line-synced ones, so a search carries on
+    /// past a line-synced match until a word-by-word sheet turns up.
+    pub fn lyrics_prioritize_words(&self) -> bool {
+        self.values.lyrics_prioritize_words
     }
 
     pub fn karaoke_lyrics(&self) -> bool {
@@ -1779,6 +1789,11 @@ impl AppSettings {
 
     pub fn set_karaoke_lyrics(&mut self, karaoke: bool, cx: &mut Context<Self>) {
         self.values.karaoke_lyrics = karaoke;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_lyrics_prioritize_words(&mut self, prioritize: bool, cx: &mut Context<Self>) {
+        self.values.lyrics_prioritize_words = prioritize;
         self.schedule_save(cx);
     }
 

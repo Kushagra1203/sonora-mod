@@ -980,6 +980,8 @@ settings-romanized-lyrics = Romanisierter Songtext
 settings-romanized-lyrics-detail = Lokal erzeugte Aussprache für ausgewählte Schriftsysteme anzeigen
 settings-romanization-writing-systems = Schriftsysteme
 settings-lyrics-priority = Priorität der Anbieter
+settings-lyrics-prioritize-words = Wortweise Texte bevorzugen
+settings-lyrics-prioritize-words-detail = Die Suche läuft weiter, wenn nur eine zeilenweise Synchronisation gefunden wurde, um Wort-für-Wort-Texte zu finden
 settings-lyrics-providers-detail = Wähle, welche Dienste nach Songtexten durchsucht werden
 settings-lyrics-providers-selected = { $count ->
     [one] { $count } ausgewählt
