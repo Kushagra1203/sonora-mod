@@ -178,6 +178,18 @@ impl Fetch for Addons {
     /// bytes past the preroll are still arriving, so this only reads the header, and a source
     /// of unknown length stays forward-only.
     fn open(&self, id: &str, loaded: &Loaded, at: Duration) -> Option<Self::Source> {
+        self.open_near(id, loaded, at).map(|(source, _)| source)
+    }
+
+    /// Opens a decoder at `at` and says where it really starts. A copy that could not be placed
+    /// is reported from its own beginning rather than from the place asked for, so a hand-over
+    /// to it can tell that the song would start again.
+    fn open_near(
+        &self,
+        id: &str,
+        loaded: &Loaded,
+        at: Duration,
+    ) -> Option<(Self::Source, Duration)> {
         let total = loaded.stream.total();
         let mut builder = rodio::Decoder::builder()
             .with_symphonia_decoder::<Aac>()
@@ -193,6 +205,7 @@ impl Fetch for Addons {
                 return None;
             }
         };
+        let mut base = at;
         if !at.is_zero()
             && let Err(error) = rodio::Source::try_seek(&mut decoder, at)
         {
@@ -200,8 +213,9 @@ impl Fetch for Addons {
                 "playback: cannot start the addon track {id} at {}s: {error}",
                 at.as_secs()
             );
+            base = Duration::ZERO;
         }
-        Some(decoder)
+        Some((decoder, base))
     }
 
     /// A decoder opened before the whole track arrived can only read forward, so every seek

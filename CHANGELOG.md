@@ -27,6 +27,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Sound settings.
 - Lossless upgrades match catalogue rows more carefully, including Japanese titles, featuring
   credits and packaging in the title, so the wrong recording is far less likely to play.
+- A "Prioritize syllable lyrics" setting on the Lyrics page keeps the search going past a
+  line-synced match until word-by-word lyrics turn up.
 
 ### Changed
 
@@ -57,6 +59,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A Jam's queue is no longer cleared when a song starts playing.
 - A losslessly upgraded song keeps playing when the output reopens at its sample rate, and pause,
   resume and seek keep working across the reopen.
+- A song swapped to a lossless addon copy no longer pauses or stutters on the way: the copy is
+  waited for until it has arrived, the original keeps playing until the copy is heard, and the
+  output is left alone rather than reopened at the copy's own sample rate.
 
 ## [0.46.0] - 2026-10-31
 
