@@ -39,6 +39,7 @@ pub struct Rail {
     base: Div,
     children: Vec<AnyElement>,
     arrows_at: Option<Pixels>,
+    show_arrows: bool,
 }
 
 /// What a rail keeps between frames: where it is scrolled to, the glide that eases the wheel and
@@ -57,6 +58,7 @@ impl Rail {
             base: div(),
             children: Vec::new(),
             arrows_at: None,
+            show_arrows: true,
         }
     }
 
@@ -65,6 +67,12 @@ impl Rail {
     /// set.
     pub fn arrows_at(mut self, y: Pixels) -> Self {
         self.arrows_at = Some(y);
+        self
+    }
+
+    /// Whether to show the navigation arrows at the ends of the rail. Defaults to true.
+    pub fn show_arrows(mut self, show: bool) -> Self {
+        self.show_arrows = show;
         self
     }
 }
@@ -88,6 +96,7 @@ impl RenderOnce for Rail {
             mut base,
             children,
             arrows_at,
+            show_arrows,
         } = self;
 
         let view = window.current_view();
@@ -154,13 +163,18 @@ impl RenderOnce for Rail {
             );
         row.style().refine(&overrides);
 
-        let arrows = [false, true]
-            .into_iter()
-            .filter(|forward| seen[usize::from(*forward)])
-            .map(|forward| {
-                let wanted = wanted[usize::from(forward)];
-                arrow(&id, forward, wanted, arrows_at, &scroll, &glide, cx)
-            });
+        let arrows = if show_arrows {
+            [false, true]
+                .into_iter()
+                .filter(|forward| seen[usize::from(*forward)])
+                .map(|forward| {
+                    let wanted = wanted[usize::from(forward)];
+                    arrow(&id, forward, wanted, arrows_at, &scroll, &glide, cx)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
 
         div().relative().child(row).children(arrows)
     }

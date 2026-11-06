@@ -324,6 +324,7 @@ impl ArtistView {
             .pending(artist.is_none() && self.detail.read(cx).is_loading())
             .pin(None)
             .cover(None)
+            .art(px(0.))
             .title_size(cx.theme().text(Text::Display) * 1.9)
             .when_some(facts, |hero, facts| hero.meta(facts))
             .actions(actions)
@@ -1226,6 +1227,7 @@ impl ArtistView {
         let body = match tracks.is_empty() && !loading {
             true => ui::vacant(i18n::lookup("artist-popular-empty", None), cx).into_any_element(),
             false => Carousel::new("artist-popular-rail")
+                .show_arrows(false)
                 .children(columns)
                 .into_any_element(),
         };
