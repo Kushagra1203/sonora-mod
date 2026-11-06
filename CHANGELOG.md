@@ -17,6 +17,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the page under the name. Artists without a banner get a soft wash of their photo's colours.
 - YouTube Music artist pages show the artist's monthly listeners and subscriber count, the
   playlists they are featured on, the playlists they keep, and the artists their fans also like.
+  Their popular songs carry the full ranking behind "Show all", with play counts on every row.
 - Local songs read word-by-word lyrics from a `.ttml` file beside them or from TTML in their
   lyrics tag.
 - The Now playing preview in Appearance settings draws the visualizer style you pick.

@@ -237,6 +237,61 @@ fn related(item: &Value) -> Option<RelatedArtist> {
     })
 }
 
+/// Where the "Show all" link under the top songs shelf leads, with the params the page asks for
+/// alongside the id.
+pub fn top_songs_endpoint(page: &Value) -> Option<(String, Option<String>)> {
+    let shelf = parse::find_renderer(page, "musicShelfRenderer")?;
+    let browse = shelf.at(&["bottomEndpoint", "browseEndpoint"])?;
+    Some((
+        browse.str_at(&["browseId"])?.to_owned(),
+        browse.str_at(&["params"]).map(str::to_owned),
+    ))
+}
+
+/// The songs on an artist's top songs page, in the order the page ranks them, each with the
+/// play count its row reports.
+pub fn top_songs(page: &Value) -> Vec<Track> {
+    let mut tracks = Vec::new();
+    for shelf in parse::find_renderers(page, "musicPlaylistShelfRenderer") {
+        collect_songs(shelf.items(&["contents"]), &mut tracks);
+    }
+    tracks
+}
+
+/// The play counts of the five songs on the artist page's own shelf, in shelf order.
+pub fn shelf_plays(page: &Value) -> Vec<Option<u64>> {
+    let Some(shelf) = parse::find_renderer(page, "musicShelfRenderer") else {
+        return Vec::new();
+    };
+    shelf.items(&["contents"]).iter().map(plays).collect()
+}
+
+fn collect_songs(items: &[Value], tracks: &mut Vec<Track>) {
+    for item in items {
+        let Some(source) = parse::list_item_track(item) else {
+            continue;
+        };
+        let index = tracks.len() as u32;
+        let mut track = track(source, index);
+        track.playcount = plays(item);
+        tracks.push(track);
+    }
+}
+
+/// A row's "9.6B plays" caption as a number.
+fn plays(item: &Value) -> Option<u64> {
+    let renderer = item
+        .at(&["musicResponsiveListItemRenderer"])
+        .unwrap_or(item);
+    renderer
+        .items(&["flexColumns"])
+        .iter()
+        .flat_map(|column| column.runs(&["musicResponsiveListItemFlexColumnRenderer", "text"]))
+        .filter_map(|run| run.str_at(&["text"]))
+        .find(|text| text.ends_with(" plays"))
+        .and_then(|text| count_of(Some(text)))
+}
+
 /// Reads a count the way a page writes it, such as "288M monthly audience" or "1.2M plays",
 /// scaling by the suffix. A count the format is not known for is simply left out.
 fn count_of(text: Option<&str>) -> Option<u64> {

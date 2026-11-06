@@ -59,6 +59,20 @@ impl YouTubeClient {
             }
         }
     }
+
+    /// The songs on the artist's "Top songs" page, which the artist page links to under its own
+    /// five-song shelf.
+    async fn top_songs(&self, browse_id: &str, params: Option<&str>) -> Result<Vec<Track>> {
+        let mut payload = serde_json::json!({ "browseId": browse_id });
+        if let Some(params) = params {
+            payload["params"] = serde_json::Value::String(params.to_owned());
+        }
+        let page = self
+            .api
+            .execute("browse", ytmusic::Client::Music, payload)
+            .await?;
+        Ok(wire::top_songs(&page))
+    }
 }
 
 #[async_trait]
@@ -90,9 +104,45 @@ impl MusicApi for YouTubeClient {
                 serde_json::json!({ "browseId": artist_id }),
             ),
         );
-        let mut artist = base?;
-        self.hydrate_durations(&mut artist.top_tracks).await;
-        let mut mapped = wire::artist(artist);
+        let mut base = base?;
+        // The shelf's "Show all" leads to the artist's full top-songs list. The page itself only
+        // carries five songs without lengths, so the full list is preferred and the crate's
+        // per-song duration requests run only when it cannot be read.
+        let full = match &page {
+            Ok(page) => match wire::top_songs_endpoint(page) {
+                Some((browse_id, params)) => {
+                    match self.top_songs(&browse_id, params.as_deref()).await {
+                        Ok(tracks) if !tracks.is_empty() => Some(tracks),
+                        Ok(_) => None,
+                        Err(error) => {
+                            log::debug!(
+                                "artist: cannot read all top songs of {artist_id}: {error:#}"
+                            );
+                            None
+                        }
+                    }
+                }
+                None => None,
+            },
+            Err(_) => None,
+        };
+        if full.is_none() {
+            self.hydrate_durations(&mut base.top_tracks).await;
+        }
+        let mut mapped = wire::artist(base);
+        match full {
+            Some(tracks) => mapped.top_tracks = tracks,
+            None => {
+                if let Ok(page) = &page {
+                    let plays = wire::shelf_plays(page);
+                    if plays.len() == mapped.top_tracks.len() {
+                        for (track, playcount) in mapped.top_tracks.iter_mut().zip(plays) {
+                            track.playcount = playcount;
+                        }
+                    }
+                }
+            }
+        }
         match page {
             Ok(page) => wire::artist_page(&mut mapped, &page),
             Err(error) => log::debug!("artist: cannot read the shelves of {artist_id}: {error:#}"),

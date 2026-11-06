@@ -41,7 +41,6 @@ const SECTION: &str = "artist";
 const SHELVES: usize = 4;
 const RELEASE_ROWS: usize = 2;
 const LISTED: usize = 5;
-const LISTED_MAX: usize = 10;
 /// The width of the `border_1` around the popular table, which pushes its rows and head below
 /// the box the page measures the scroll from.
 const TABLE_BORDER: Pixels = px(1.);
@@ -1105,7 +1104,8 @@ impl ArtistView {
     fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let expanded = self.shown.get() > LISTED;
-        let more = (self.popular.len() > LISTED).then(|| {
+        let total = self.popular.len();
+        let more = (total > LISTED).then(|| {
             Button::new("artist-popular-more")
                 .label(match expanded {
                     true => t!("artist-popular-less"),
@@ -1118,7 +1118,7 @@ impl ArtistView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.shown.set(match expanded {
                         true => LISTED,
-                        false => LISTED_MAX,
+                        false => total,
                     });
                     this.rebuild(cx);
                     cx.notify();

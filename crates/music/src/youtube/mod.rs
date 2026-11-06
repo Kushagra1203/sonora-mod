@@ -155,7 +155,7 @@ impl YouTubeProvider {
             shape: Shape::Saved,
             authenticated: true,
             capabilities: Capabilities {
-                playcounts: false,
+                playcounts: true,
                 playlist_covers: true,
                 qualities: playback::QUALITIES,
                 ..Capabilities::ALL
@@ -175,7 +175,7 @@ impl YouTubeProvider {
             shape: Shape::Saved,
             authenticated: false,
             capabilities: Capabilities {
-                playcounts: false,
+                playcounts: true,
                 qualities: playback::QUALITIES,
                 ..Capabilities::ALL
             },
