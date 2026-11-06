@@ -22,6 +22,8 @@ const COVER_LIMITS: CoverLimits = CoverLimits {
     bytes: 1024 * 1024,
 };
 const EPISODES: &str = "SE";
+/// How many popular songs an artist page lists, even though its top songs page carries more.
+const POPULAR: usize = 20;
 
 pub struct YouTubeClient {
     api: Arc<YtMusic>,
@@ -130,18 +132,8 @@ impl MusicApi for YouTubeClient {
             self.hydrate_durations(&mut base.top_tracks).await;
         }
         let mut mapped = wire::artist(base);
-        match full {
-            Some(tracks) => mapped.top_tracks = tracks,
-            None => {
-                if let Ok(page) = &page {
-                    let plays = wire::shelf_plays(page);
-                    if plays.len() == mapped.top_tracks.len() {
-                        for (track, playcount) in mapped.top_tracks.iter_mut().zip(plays) {
-                            track.playcount = playcount;
-                        }
-                    }
-                }
-            }
+        if let Some(tracks) = full {
+            mapped.top_tracks = tracks.into_iter().take(POPULAR).collect();
         }
         match page {
             Ok(page) => wire::artist_page(&mut mapped, &page),
