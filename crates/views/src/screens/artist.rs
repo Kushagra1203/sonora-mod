@@ -1407,6 +1407,20 @@ impl Render for ArtistView {
                 let mut div = div().relative().pt(height * HERO_TOP).child(head);
                 div
             })
+            // Top fade gradient: content fades out before reaching the hero controls at the top.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(100.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(theme.background, 0.),
+                        linear_color_stop(theme.background.opacity(0.), 1.),
+                    )),
+            )
             .child(tracks)
             .children(grid)
             .children(rails)
