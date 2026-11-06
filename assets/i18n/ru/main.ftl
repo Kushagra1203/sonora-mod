@@ -424,6 +424,15 @@ artist-monthly-listeners = { $count ->
     [few] { $value } слушателя в месяц
    *[other] { $value } слушателей в месяц
 }
+artist-subscribers = { $count ->
+    [one] { $value } подписчик
+    [few] { $value } подписчика
+   *[other] { $value } подписчиков
+}
+artist-featured-on = Рекомендуем в
+artist-playlists = Плейлисты исполнителя
+artist-playlists-by = Плейлисты { $name }
+artist-fans-also-like = Поклонникам также нравится
 artist-play = Слушать
 artist-popular = Популярное
 artist-popular-eyebrow = Знакомство с исполнителем

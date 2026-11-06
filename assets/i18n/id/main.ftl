@@ -381,6 +381,14 @@ artist-monthly-listeners = { $count ->
     [one] { $value } pendengar bulanan
    *[other] { $value } pendengar bulanan
 }
+artist-subscribers = { $count ->
+    [one] { $value } pelanggan
+   *[other] { $value } pelanggan
+}
+artist-featured-on = Ditampilkan di
+artist-playlists = Playlist artis
+artist-playlists-by = Playlist oleh { $name }
+artist-fans-also-like = Penggemar juga menyukai
 artist-play = Putar sekarang
 artist-popular = Populer
 artist-popular-eyebrow = Jelajahi karya artis ini

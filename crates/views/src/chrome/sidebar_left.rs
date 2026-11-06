@@ -1,9 +1,9 @@
 use std::rc::Rc;
 
 use ui::{
-    ActiveTheme as _, Avatar, Button, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel,
-    Picker, Pin, PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text,
-    Vacancy, drop_gap, drop_into, drop_marker, snapped,
+    ActiveTheme as _, Avatar, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel, Picker, Pin,
+    PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy,
+    drop_gap, drop_into, drop_marker, snapped,
 };
 
 use gpui::accesskit::Role;
@@ -304,39 +304,6 @@ impl SidebarLeft {
             }
         }
         rows
-    }
-
-    /// The row that heads the sidebar: the signed-in account's mark and name, which opens the
-    /// accounts page. Nothing is drawn while no account is signed in, so the navigation then
-    /// starts the panel as it did before.
-    fn account(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let theme = *cx.theme();
-        let (name, avatar) = match self.session.read(cx).state() {
-            SessionState::SignedIn(profile) => {
-                (profile.display_name.clone(), profile.avatar.clone())
-            }
-            _ => return None,
-        };
-        let mark = match avatar {
-            Some(avatar) => Avatar::new(Some(avatar))
-                .size(ACCOUNT_MARK)
-                .into_any_element(),
-            None => Initials::new(name.clone(), ACCOUNT_MARK).into_any_element(),
-        };
-
-        Some(
-            Button::new("sidebar-account")
-                .ghost()
-                .justify_start()
-                .gap_2p5()
-                .leading(mark)
-                .label(name)
-                .tint(theme.primary)
-                .hover(move |style| style.bg(theme.sidebar_accent))
-                .active(move |style| style.bg(theme.sidebar_accent))
-                .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
-                .into_any_element(),
-        )
     }
 
     /// Account row for the header bar: no pill shape, full-width, text truncates.

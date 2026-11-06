@@ -24,7 +24,7 @@ use serde_json::value::RawValue;
 
 use crate::{
     Album, Artist, ArtistProfile, ArtistRef, PinTarget, PinTargetKind, Playlist, ReleaseType,
-    SavedArtist, Track, calendar,
+    SavedArtist, Shelves, Track, calendar,
 };
 
 /// The size artwork is asked to render at, and the larger one for a page header.
@@ -948,6 +948,8 @@ pub fn artist(value: &Resource) -> Option<Artist> {
             .or_else(|| text(&notes.standard))
             .or_else(|| text(&attributes.artist_bio)),
         monthly_listeners: None,
+        subscribers: None,
+        shelves: Shelves::default(),
         top_tracks: view(value, "top-songs").iter().filter_map(song).collect(),
         albums: newest_first(
             DISCOGRAPHY

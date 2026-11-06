@@ -322,8 +322,37 @@ pub struct Artist {
     pub banner: Option<String>,
     pub biography: Option<String>,
     pub monthly_listeners: Option<u64>,
+    /// The provider's subscriber count, where it keeps one apart from the listeners. YouTube
+    /// Music counts channel subscribers beside its monthly audience.
+    pub subscribers: Option<u64>,
     pub top_tracks: Vec<Track>,
     pub albums: Vec<Album>,
+    /// What the page carries below the releases: the shelves a provider puts under an artist.
+    pub shelves: Shelves,
+}
+
+/// The shelves an artist page carries under its releases, each a row of cards in its own right.
+/// A provider fills the ones it has and leaves the rest empty, so a shelf with nothing in it
+/// is simply not drawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shelves {
+    /// The curated or editorial playlists the artist is on, "Featured on" on YouTube Music
+    /// and "Discovered on" on Spotify.
+    pub featured_on: Vec<Playlist>,
+    /// Playlists the artist keeps themself.
+    pub artist: Vec<Playlist>,
+    /// Artists close to this one, "Fans might also like".
+    pub fans: Vec<RelatedArtist>,
+}
+
+/// An artist a provider names as close to another, with the listeners its own shelf reports
+/// beside them when it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelatedArtist {
+    pub id: String,
+    pub name: String,
+    pub cover: Option<String>,
+    pub listeners: Option<u64>,
 }
 
 /// What an artist page fills in once its overview is already on screen. Every list

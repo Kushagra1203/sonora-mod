@@ -37,6 +37,8 @@ use crate::shared::tracks::{PlaybackStatus, TrackSource, Tracks, drop_picked, pl
 use crate::shared::trouble;
 
 const SECTION: &str = "artist";
+/// How many shelves the page draws under the releases, each with a rail of its own.
+const SHELVES: usize = 4;
 const RELEASE_ROWS: usize = 2;
 const LISTED: usize = 5;
 const LISTED_MAX: usize = 10;
@@ -338,12 +340,27 @@ impl ArtistView {
         let title = artist
             .map(|artist| SharedString::from(artist.name.clone()))
             .unwrap_or_default();
-        let listeners = artist
-            .and_then(|artist| artist.monthly_listeners)
-            .map(|count| {
+        // Both counts the page reports: the listeners a month and, where the provider keeps one,
+        // the subscriber count beside it.
+        let facts = artist.and_then(|artist| {
+            let mut facts = HeroMetaStrip::new();
+            let mut any = false;
+            if let Some(count) = artist.monthly_listeners {
                 let value = cells::count(count);
-                t!("artist-monthly-listeners", count = count, value = &value)
-            });
+                facts = facts.text(t!(
+                    "artist-monthly-listeners",
+                    count = count,
+                    value = &value
+                ));
+                any = true;
+            }
+            if let Some(count) = artist.subscribers {
+                let value = cells::count(count);
+                facts = facts.text(t!("artist-subscribers", count = count, value = &value));
+                any = true;
+            }
+            any.then_some(facts)
+        });
         let overflow = self.saved_artist(cx).map(|artist| {
             Picker::icon("artist-overflow", &self.popovers, "icons/ellipsis.svg")
                 .tooltip("common-more")
@@ -386,9 +403,7 @@ impl ArtistView {
             .pending(artist.is_none() && self.detail.read(cx).is_loading())
             .pin(pin)
             .cover(cover)
-            .when_some(listeners, |hero, listeners| {
-                hero.meta(HeroMetaStrip::new().text(listeners))
-            })
+            .when_some(facts, |hero, facts| hero.meta(facts))
             .actions(actions)
             .circle()
             .into_any_element()
@@ -877,8 +892,15 @@ impl ArtistView {
         let detail = self.detail.read(cx);
         let filling = detail.is_filling();
         let appears = detail.appears_on().len();
+        let shelves = detail.artist().map(|artist| &artist.shelves);
+        let featured = shelves.map_or(0, |shelves| shelves.featured_on.len());
+        let kept = shelves.map_or(0, |shelves| shelves.artist.len());
+        let fans = shelves.map_or(0, |shelves| shelves.fans.len());
+        let name = detail.artist().map(|artist| artist.name.clone());
+        let mut rails = Vec::new();
 
-        vec![match appears {
+        // What the artist guests on, which only the catalogue fill knows.
+        rails.push(match appears {
             0 if filling => Some(Rail::pending(
                 t!("artist-appears-on"),
                 card,
@@ -921,11 +943,163 @@ impl ArtistView {
                     },
                 ))
             }
-        }]
-        .into_iter()
-        .flatten()
-        .map(|rail| div().pt_6().child(rail).into_any_element())
-        .collect()
+        });
+
+        // The playlists the artist is featured on, editorial ones from the provider.
+        rails.push(match featured {
+            0 => None,
+            _ => {
+                let opened = self.me.clone();
+                Some(self.rails[1].render(
+                    RailSpec {
+                        tag: "artist-featured",
+                        place: 1,
+                        title: t!("artist-featured-on"),
+                        count: featured,
+                        tile: card,
+                        columns,
+                        tabs: None,
+                    },
+                    window,
+                    cx,
+                    notify,
+                    move |index, _, cx| {
+                        let Some(view) = opened.upgrade() else {
+                            return div().into_any_element();
+                        };
+                        let held = view.read(cx);
+                        let Some(playlist) = held
+                            .detail
+                            .read(cx)
+                            .artist()
+                            .and_then(|artist| artist.shelves.featured_on.get(index))
+                        else {
+                            return div().into_any_element();
+                        };
+                        let id = SharedString::from(format!("artist-featured-{}", playlist.id));
+                        cards::playlist_card(id, playlist, &held.playback, cx)
+                            .tile(card)
+                            .flat()
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(featured)
+                            .into_any_element()
+                    },
+                ))
+            }
+        });
+
+        // The playlists the artist keeps themself.
+        rails.push(match kept {
+            0 => None,
+            _ => {
+                let opened = self.me.clone();
+                let title = match &name {
+                    Some(name) => t!("artist-playlists-by", name = name.as_str()),
+                    None => t!("artist-playlists"),
+                };
+                Some(self.rails[2].render(
+                    RailSpec {
+                        tag: "artist-playlists",
+                        place: 2,
+                        title,
+                        count: kept,
+                        tile: card,
+                        columns,
+                        tabs: None,
+                    },
+                    window,
+                    cx,
+                    notify,
+                    move |index, _, cx| {
+                        let Some(view) = opened.upgrade() else {
+                            return div().into_any_element();
+                        };
+                        let held = view.read(cx);
+                        let Some(playlist) = held
+                            .detail
+                            .read(cx)
+                            .artist()
+                            .and_then(|artist| artist.shelves.artist.get(index))
+                        else {
+                            return div().into_any_element();
+                        };
+                        let id = SharedString::from(format!("artist-playlists-{}", playlist.id));
+                        cards::playlist_card(id, playlist, &held.playback, cx)
+                            .tile(card)
+                            .flat()
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(kept)
+                            .into_any_element()
+                    },
+                ))
+            }
+        });
+
+        // The artists close to this one, with the listeners their own captions report.
+        rails.push(match fans {
+            0 => None,
+            _ => {
+                let opened = self.me.clone();
+                Some(self.rails[3].render(
+                    RailSpec {
+                        tag: "artist-fans",
+                        place: 3,
+                        title: t!("artist-fans-also-like"),
+                        count: fans,
+                        tile: card,
+                        columns,
+                        tabs: None,
+                    },
+                    window,
+                    cx,
+                    notify,
+                    move |index, _, cx| {
+                        let Some(view) = opened.upgrade() else {
+                            return div().into_any_element();
+                        };
+                        let held = view.read(cx);
+                        let Some(fan) = held
+                            .detail
+                            .read(cx)
+                            .artist()
+                            .and_then(|artist| artist.shelves.fans.get(index))
+                        else {
+                            return div().into_any_element();
+                        };
+                        let saved = SavedArtist {
+                            id: fan.id.clone(),
+                            name: fan.name.clone(),
+                            cover: fan.cover.clone(),
+                            added_at: None,
+                        };
+                        let id = SharedString::from(format!("artist-fan-{}", fan.id));
+                        let card = cards::artist_card(id, &saved, &held.playback, cx)
+                            .tile(card)
+                            .flat()
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(fans);
+                        match fan.listeners {
+                            Some(count) => {
+                                let value = cells::count(count);
+                                card.meta(t!(
+                                    "artist-monthly-listeners",
+                                    count = count,
+                                    value = &value
+                                ))
+                            }
+                            None => card,
+                        }
+                        .into_any_element()
+                    },
+                ))
+            }
+        });
+
+        rails
+            .into_iter()
+            .flatten()
+            .map(|rail| div().pt_6().child(rail).into_any_element())
+            .collect()
     }
 
     fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1191,7 +1365,9 @@ impl Render for ArtistView {
         };
         let grid = self.releases(window, cx);
         let about = self.about(cx);
-        while self.rails.is_empty() {
+        // One rail per shelf the page can carry: what the artist guests on, the playlists it is
+        // featured on and keeps, and the artists close to it.
+        while self.rails.len() < SHELVES {
             self.rails.push(Rail::new(cx.entity_id()));
         }
         for rail in &self.rails {

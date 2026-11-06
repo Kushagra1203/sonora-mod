@@ -405,6 +405,15 @@ artist-monthly-listeners = { $count ->
     [few] { $value } měsíční posluchači
    *[other] { $value } měsíčních posluchačů
 }
+artist-subscribers = { $count ->
+    [one] { $value } odběratel
+    [few] { $value } odběratelé
+   *[other] { $value } odběratelů
+}
+artist-featured-on = Doporučeno v
+artist-playlists = Playlisty interpreta
+artist-playlists-by = Playlisty od { $name }
+artist-fans-also-like = Fanoušci si také oblíbili
 artist-play = Přehrát nyní
 artist-popular = Populární
 artist-popular-eyebrow = Prozkoumej tohoto interpreta

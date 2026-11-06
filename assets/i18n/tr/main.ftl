@@ -360,6 +360,14 @@ artist-monthly-listeners =
     { $count ->
        *[other] { $value } aylık dinleyici
     }
+artist-subscribers =
+    { $count ->
+       *[other] { $value } abone
+    }
+artist-featured-on = Öne çıkanlar
+artist-playlists = Sanatçı çalma listeleri
+artist-playlists-by = { $name } tarafından oluşturulan listeler
+artist-fans-also-like = Hayranlar bunları da seviyor
 artist-play = Şimdi çal
 artist-popular = Popüler
 artist-popular-eyebrow = Bu sanatçıyı keşfet

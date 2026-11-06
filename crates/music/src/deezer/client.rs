@@ -20,7 +20,8 @@ use crate::engine::Loudness;
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, ArtistRef, Encoding, Genre,
     GenreDetail, GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Offer, Playlist,
-    PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, Track, UserProfile, distinct_covers, escape,
+    PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, Shelves, Track, UserProfile,
+    distinct_covers, escape,
 };
 
 const GATEWAY: &str = "https://www.deezer.com/ajax/gw-light.php";
@@ -873,6 +874,8 @@ impl MusicApi for DeezerClient {
             banner: None,
             biography: None,
             monthly_listeners: wire::number(&detail, &["nb_fan"]),
+            subscribers: None,
+            shelves: Shelves::default(),
             top_tracks: top.map(|page| wire::track_list(&page)).unwrap_or_default(),
             albums: albums
                 .map(|page| {

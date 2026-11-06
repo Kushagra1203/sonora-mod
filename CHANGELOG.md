@@ -15,6 +15,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Hide the Sessions button, or run Sessions through a server of your own, from the Playback settings. Save keeps a server only once it answers, and a toast says how it went while the field turns red until a save goes through.
 - An artist page shows the artist's banner behind its header, sharp at the top and blurring into
   the page under the name. Artists without a banner get a soft wash of their photo's colours.
+- YouTube Music artist pages show the artist's monthly listeners and subscriber count, the
+  playlists they are featured on, the playlists they keep, and the artists their fans also like.
 - Local songs read word-by-word lyrics from a `.ttml` file beside them or from TTML in their
   lyrics tag.
 - The Now playing preview in Appearance settings draws the visualizer style you pick.

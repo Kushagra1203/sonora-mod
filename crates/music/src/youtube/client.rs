@@ -79,9 +79,25 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn artist(&self, artist_id: &str) -> Result<Artist> {
-        let mut artist = self.api.artist(artist_id).await?;
+        // The crate reads the releases, the top songs and the header's texts. The page's own
+        // response carries the counts and the shelves beside them, so it is read here too, side
+        // by side with the crate's reading of the same page.
+        let (base, page) = tokio::join!(
+            self.api.artist(artist_id),
+            self.api.execute(
+                "browse",
+                ytmusic::Client::Music,
+                serde_json::json!({ "browseId": artist_id }),
+            ),
+        );
+        let mut artist = base?;
         self.hydrate_durations(&mut artist.top_tracks).await;
-        Ok(wire::artist(artist))
+        let mut mapped = wire::artist(artist);
+        match page {
+            Ok(page) => wire::artist_page(&mut mapped, &page),
+            Err(error) => log::debug!("artist: cannot read the shelves of {artist_id}: {error:#}"),
+        }
+        Ok(mapped)
     }
 
     /// The whole discography, since the artist page `artist` reads holds only ten albums and

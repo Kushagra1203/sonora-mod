@@ -10,7 +10,9 @@ use protobuf::{EnumOrUnknown, Message as _};
 use crate::spotify::collection2::SavedItem;
 use crate::spotify::pace::paced;
 use crate::spotify::{albums, collection, collection2, pathfinder, wire};
-use crate::{Album, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SavedArtist, Track};
+use crate::{
+    Album, Artist, ArtistCatalogue, ArtistProfile, ReleaseType, SavedArtist, Shelves, Track,
+};
 
 const ARTIST_PREFIX: &str = "spotify:artist:";
 const ALBUM_PREFIX: &str = "spotify:album:";
@@ -85,6 +87,8 @@ async fn overview_artist(session: &Session, overview: pathfinder::Overview) -> R
             .map(|biography| plain_text(&biography))
             .filter(|biography| !biography.is_empty()),
         monthly_listeners: overview.monthly_listeners,
+        subscribers: None,
+        shelves: Shelves::default(),
         top_tracks,
         albums: overview.albums,
     })
@@ -302,6 +306,8 @@ fn artist_from(artist: &ArtistMessage, top_tracks: Vec<Track>, albums: Vec<Album
         banner: None,
         biography: profile.biography,
         monthly_listeners: None,
+        subscribers: None,
+        shelves: Shelves::default(),
         top_tracks,
         albums,
     }

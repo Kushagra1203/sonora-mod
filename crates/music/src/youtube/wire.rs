@@ -1,8 +1,12 @@
 use std::time::Duration;
 
+use serde_json::Value;
+use ytmusic::nav::Nav as _;
+use ytmusic::parse;
+
 use crate::models::{
-    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, Playlist, PlaylistDetail, ReleaseType,
-    Track, UserProfile,
+    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, Playlist, PlaylistDetail, RelatedArtist,
+    ReleaseType, Shelves, Track, UserProfile,
 };
 
 /// The longer edge of a large cover, wide enough for the fullscreen player on a 2x display.
@@ -157,9 +161,94 @@ pub fn artist(source: ytmusic::Artist) -> Artist {
         banner: banner(&source.thumbnails),
         biography: source.description,
         monthly_listeners: None,
+        subscribers: None,
+        shelves: Shelves::default(),
         top_tracks,
         albums,
     }
+}
+
+/// Reads what an artist page carries beyond the releases and the top songs: the header's real
+/// counts and the shelves under them, which are the playlists the artist is featured on, the
+/// playlists it keeps and the artists close to it. The crate reads none of this, so it is read
+/// straight off the page's own response. Anything the page does not carry is left as it was.
+pub fn artist_page(artist: &mut Artist, page: &Value) {
+    let header = parse::find_renderer(page, "musicImmersiveHeaderRenderer")
+        .or_else(|| parse::find_renderer(page, "musicVisualHeaderRenderer"))
+        .or_else(|| parse::find_renderer(page, "musicHeaderRenderer"));
+    if let Some(header) = header {
+        artist.monthly_listeners = count_of(header.run_text(&["monthlyListenerCount"]).as_deref());
+        artist.subscribers = count_of(
+            header
+                .run_text(&[
+                    "subscriptionButton",
+                    "subscribeButtonRenderer",
+                    "longSubscriberCountText",
+                ])
+                .as_deref(),
+        );
+    }
+
+    for shelf in parse::find_renderers(page, "musicCarouselShelfRenderer") {
+        let title = shelf
+            .run_text(&["header", "musicCarouselShelfBasicHeaderRenderer", "title"])
+            .unwrap_or_default();
+        let items = shelf.items(&["contents"]);
+        match title.as_str() {
+            "Featured on" => {
+                artist.shelves.featured_on = items
+                    .iter()
+                    .filter_map(parse::two_row_playlist)
+                    .map(|source| playlist(source, false, true))
+                    .collect();
+            }
+            // The shelf is titled for the artist it belongs to, so it is told apart by name.
+            title if title.starts_with("Playlists by ") => {
+                artist.shelves.artist = items
+                    .iter()
+                    .filter_map(parse::two_row_playlist)
+                    .map(|source| playlist(source, false, true))
+                    .collect();
+            }
+            "Fans might also like" => {
+                artist.shelves.fans = items.iter().filter_map(related).collect();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One artist off a "fans also like" shelf, with the listeners its caption reports beside it.
+fn related(item: &Value) -> Option<RelatedArtist> {
+    let renderer = item.at(&["musicTwoRowItemRenderer"]).unwrap_or(item);
+    let id = renderer
+        .str_at(&["navigationEndpoint", "browseEndpoint", "browseId"])?
+        .to_owned();
+
+    Some(RelatedArtist {
+        id,
+        name: renderer.run_text(&["title"])?,
+        cover: cover(&parse::thumbnails(renderer)),
+        listeners: renderer
+            .runs(&["subtitle"])
+            .iter()
+            .filter_map(|run| run.str_at(&["text"]))
+            .find_map(|text| count_of(Some(text))),
+    })
+}
+
+/// Reads a count the way a page writes it, such as "288M monthly audience" or "1.2M plays",
+/// scaling by the suffix. A count the format is not known for is simply left out.
+fn count_of(text: Option<&str>) -> Option<u64> {
+    let head = text?.split_whitespace().next()?.to_owned();
+    let (digits, scale) = match head.chars().last()? {
+        'K' => (&head[..head.len() - 1], 1_000_u64),
+        'M' => (&head[..head.len() - 1], 1_000_000),
+        'B' => (&head[..head.len() - 1], 1_000_000_000),
+        _ => (head.as_str(), 1),
+    };
+    let value: f64 = digits.replace([',', '\u{a0}', ' '], "").parse().ok()?;
+    Some((value * scale as f64).round() as u64)
 }
 
 pub fn artist_profile(source: &ytmusic::Artist) -> ArtistProfile {

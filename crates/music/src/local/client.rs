@@ -10,7 +10,7 @@ use crate::cover::{self, CoverLimits};
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, GenreItem, GenreSection, HomeFeed,
     ImportedPlaylist, MediaKind, MusicApi, Playlist, PlaylistDetail, SUGGESTIONS, SavedArtist,
-    Track, TrackTags, UserProfile, distinct_covers,
+    Shelves, Track, TrackTags, UserProfile, distinct_covers,
 };
 
 use super::index::Index;
@@ -239,6 +239,8 @@ impl MusicApi for LocalClient {
             banner: None,
             biography: None,
             monthly_listeners: None,
+            subscribers: None,
+            shelves: Shelves::default(),
             top_tracks: scanned
                 .tracks
                 .iter()

@@ -337,6 +337,13 @@ artist-eyebrow = アーティスト
 artist-monthly-listeners = { $count ->
    *[other] 月間リスナー { $value }人
 }
+artist-subscribers = { $count ->
+   *[other] チャンネル登録者 { $value }人
+}
+artist-featured-on = おすすめのプレイリスト
+artist-playlists = アーティストのプレイリスト
+artist-playlists-by = { $name } のプレイリスト
+artist-fans-also-like = ファンに人気
 artist-play = 今すぐ再生
 artist-popular = 人気の曲
 artist-popular-eyebrow = このアーティストを知る

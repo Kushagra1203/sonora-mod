@@ -381,6 +381,14 @@ artist-monthly-listeners = { $count ->
     [one] { $value } dëgjues mujor
    *[other] { $value } dëgjues mujorë
 }
+artist-subscribers = { $count ->
+    [one] { $value } abonent
+   *[other] { $value } abonentë
+}
+artist-featured-on = E veçuar në
+artist-playlists = Listat e artistit
+artist-playlists-by = Lista nga { $name }
+artist-fans-also-like = Fansat pëlqejnë gjithashtu
 artist-play = Luaj tani
 artist-popular = Popullore
 artist-popular-eyebrow = Eksploro këtë artist

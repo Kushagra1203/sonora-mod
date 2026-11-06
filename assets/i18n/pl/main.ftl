@@ -401,6 +401,15 @@ artist-monthly-listeners = { $count ->
     [few] { $value } słuchaczy miesięcznie
    *[other] { $value } słuchaczy miesięcznie
 }
+artist-subscribers = { $count ->
+    [one] { $value } subskrybent
+    [few] { $value } subskrybentów
+   *[other] { $value } subskrybentów
+}
+artist-featured-on = Polecane w
+artist-playlists = Playlisty artysty
+artist-playlists-by = Playlisty od { $name }
+artist-fans-also-like = Fani też lubią
 artist-play = Odtwórz
 artist-popular = Popularne
 artist-popular-eyebrow = Poznaj tego wykonawcę

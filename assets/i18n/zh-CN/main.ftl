@@ -381,6 +381,14 @@ artist-monthly-listeners = { $count ->
     [one] { $value } 位每月听众
    *[other] { $value } 位每月听众
 }
+artist-subscribers = { $count ->
+    [one] { $value } 位订阅者
+   *[other] { $value } 位订阅者
+}
+artist-featured-on = 精选于
+artist-playlists = 歌手播放列表
+artist-playlists-by = { $name } 的播放列表
+artist-fans-also-like = 粉丝也喜欢
 artist-play = 立即播放
 artist-popular = 热门
 artist-popular-eyebrow = 探索这位歌手

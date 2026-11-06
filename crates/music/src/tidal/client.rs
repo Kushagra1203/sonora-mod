@@ -27,8 +27,8 @@ use crate::tidal::{lock, wire};
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Encoding, Genre,
     GenreDetail, GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Offer, Page, Pages,
-    Playlist, PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, SignInFailure, SignInProblem,
-    Track, UserProfile, distinct_covers, escape,
+    Playlist, PlaylistDetail, Quality, SUGGESTIONS, SavedArtist, Shelves, SignInFailure,
+    SignInProblem, Track, UserProfile, distinct_covers, escape,
 };
 
 const V1: &str = "https://api.tidal.com/v1";
@@ -1127,6 +1127,8 @@ impl MusicApi for TidalClient {
             banner: None,
             biography,
             monthly_listeners: None,
+            subscribers: None,
+            shelves: Shelves::default(),
             top_tracks: top.map(|page| wire::track_list(&page)).unwrap_or_default(),
             albums: wire::distinct(albums.unwrap_or_default()),
         })

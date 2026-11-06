@@ -18,7 +18,8 @@ use crate::subsonic::wire;
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistProfile, Codec, Genre, GenreDetail,
     GenreItem, GenreSection, HomeFeed, MediaKind, MusicApi, Playlist, PlaylistDetail, Report,
-    SUGGESTIONS, SavedArtist, Track, Transcode, UserProfile, distinct_covers, iso_8601_to_epoch,
+    SUGGESTIONS, SavedArtist, Shelves, Track, Transcode, UserProfile, distinct_covers,
+    iso_8601_to_epoch,
 };
 
 const PORTRAIT_LIMIT: usize = 24;
@@ -405,6 +406,8 @@ impl MusicApi for SubsonicClient {
             banner: None,
             biography,
             monthly_listeners: None,
+            subscribers: None,
+            shelves: Shelves::default(),
             top_tracks,
             albums,
         })

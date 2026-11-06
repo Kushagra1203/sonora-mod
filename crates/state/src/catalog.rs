@@ -527,6 +527,8 @@ mod tests {
                 banner: None,
                 biography: None,
                 monthly_listeners: None,
+                subscribers: None,
+                shelves: music::Shelves::default(),
                 top_tracks: Vec::new(),
                 albums: Vec::new(),
             })
