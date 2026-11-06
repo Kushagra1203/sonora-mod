@@ -22,6 +22,7 @@ use ui::{
 use crate::chrome::{
     Busy, JamInvite, ThemeInvite, TitleBar, TitleBarEvent, TitleBarOptions, Toolbar, Tooled,
 };
+use crate::screens::artist::ArtistEvent;
 use crate::screens::detail::DetailEvent;
 use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
@@ -394,6 +395,35 @@ impl Root {
             )
         });
         let view = cx.new(|cx| ArtistView::new(detail.clone(), self.playback.clone(), cx));
+        // Observe the detail for cover changes to drive the page wash.
+        let detail_for_wash = detail.clone();
+        cx.observe(&detail_for_wash, move |this, detail, cx| {
+            if !matches!(router::trail(cx).read(cx).current(), Destination::Artist(_)) {
+                return;
+            }
+            let artist = detail.read(cx).artist();
+            let cover = artist
+                .and_then(|a| a.banner.clone())
+                .or_else(|| artist.and_then(|a| a.cover_large.clone()));
+            if this.page_wash_cover != cover {
+                this.page_wash_cover = cover;
+                cx.notify();
+            }
+        })
+        .detach();
+        // The page's own controls stand in for the title bar, so their two sidebar toggles
+        // land on the shell the bar would have told.
+        cx.subscribe(&view, |this, _, event, cx| match event {
+            ArtistEvent::ToggleSidebar => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+            ArtistEvent::ToggleSidebarRight => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+        })
+        .detach();
         self.screens.artist = Some(view.clone());
         self.screens.artist_detail = Some(detail.clone());
         (view, detail)
@@ -657,13 +687,13 @@ impl Root {
         options
     }
 
-    /// Whether the current page runs to the window's top edge with no title bar: an album or a
-    /// playlist, whose own floating controls take the bar's place.
+    /// Whether the current page runs to the window's top edge with no title bar: an album, a
+    /// playlist, or an artist page, whose own floating controls take the bar's place.
     fn fullbleed(&self, cx: &App) -> bool {
         match self.view {
             RootView::Workspace => matches!(
                 router::trail(cx).read(cx).current(),
-                Destination::Album(_) | Destination::Playlist(_)
+                Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
             ),
             RootView::Fullscreen => false,
         }
@@ -1014,7 +1044,8 @@ impl Root {
             Destination::Artist(id) => {
                 let (artist, detail) = self.artist(cx);
                 detail.update(cx, |artist, cx| artist.open(&id, cx));
-                toolbar = Some(artist.read(cx).toolbar());
+                // Fullbleed page — no title bar, floating controls stand in.
+                toolbar = None;
                 artist.into()
             }
             Destination::Genre(id) => {

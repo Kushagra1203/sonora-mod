@@ -23,7 +23,7 @@ const COVER_LIMITS: CoverLimits = CoverLimits {
 };
 const EPISODES: &str = "SE";
 /// How many popular songs an artist page lists, even though its top songs page carries more.
-const POPULAR: usize = 20;
+const POPULAR: usize = 12;
 
 pub struct YouTubeClient {
     api: Arc<YtMusic>,

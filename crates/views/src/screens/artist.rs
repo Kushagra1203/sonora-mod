@@ -4,55 +4,69 @@ use std::rc::Rc;
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Pixels, Point, Render, ScrollHandle,
-    ScrollWheelEvent, SharedString, WeakEntity, Window, div, linear_color_stop, linear_gradient,
-    point, px, relative,
+    AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Pixels, Render,
+    ScrollHandle, ScrollWheelEvent, SharedString, SpringAnimation, WeakEntity, Window, div,
+    linear_color_stop, linear_gradient, point, px, relative,
 };
 
 use crate::chrome::Chrome;
 use crate::shared::cells;
 use i18n::t;
 use music::{SavedArtist, Track};
-use state::{AppSettings, ArtistDetail, Origin, Playback, Sonora};
+use router::trail;
+use state::{ArtistDetail, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
-use ui::Listing as _;
+use ui::motion::Springs;
 use ui::{
-    Artwork, Button, Card, Deck, MIN_CONTENT, Mode, Pending, Picker, Pin, PinKind, Popovers, Popup,
-    Scrollbar, Scroller, TableDelegate, TableEvent, TableState, Text, effects, scrolled, snapped,
-    table,
+    Artwork, Button, Card, Deck, MIN_CONTENT, Picker, Pin, PinKind, Popovers, Scrollbar, Scroller,
+    Text, effects, liquid_capsule, scrolled, snapped,
 };
 
-use crate::chrome::tools;
-use crate::chrome::{Toolbar, Tooled};
 use crate::shared::about::{AboutArtist, about_modal};
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards::{self, ReleaseFilter};
 use crate::shared::confirm::Confirm;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
-use crate::shared::menus::{ItemMenu, artist_menu};
-use crate::shared::page;
-use crate::shared::picks::{Picks, Shape};
+use crate::shared::menus::artist_menu;
 use crate::shared::shelves::{Rail, RailSpec};
-use crate::shared::tracks::{PlaybackStatus, TrackSource, Tracks, drop_picked, playback_status};
+use crate::shared::track_card::{StartHandler, TrackCard};
+use crate::shared::tracks::{PlaybackStatus, playback_status};
 use crate::shared::trouble;
+use input::Refresh;
+use ui::Rail as Carousel;
 
 const SECTION: &str = "artist";
+
+/// What the floating controls ask of the window: the two sidebars, which a page cannot reach
+/// on its own. The title bar carries the same two on every other screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtistEvent {
+    ToggleSidebar,
+    ToggleSidebarRight,
+}
+
+impl EventEmitter<ArtistEvent> for ArtistView {}
+
 /// How many shelves the page draws under the releases, each with a rail of its own.
 const SHELVES: usize = 4;
 const RELEASE_ROWS: usize = 2;
-const LISTED: usize = 5;
-/// The width of the `border_1` around the popular table, which pushes its rows and head below
-/// the box the page measures the scroll from.
-const TABLE_BORDER: Pixels = px(1.);
-/// The least and the most room the banner adds above the hero, as shares of the cover's edge.
-/// In between, the banner box keeps `BANNER_BOX` as its aspect, so a narrow page lifts the
-/// hero less.
-const BANNER_RISE_LEAST: f32 = 0.35;
-const BANNER_RISE_MOST: f32 = 1.;
-const BANNER_BOX: f32 = 2.7;
-/// The room above the hero when only a blurred portrait stands in for the banner. The wash has
-/// no proportions to keep, so it stays this tall at any width.
-const BANNER_RISE_WASH: f32 = 0.6;
+/// The popular songs grid: 3 rows x 4 columns = 12 songs. Borderless, horizontal rail when narrow.
+const POPULAR_ROWS: usize = 4;
+const POPULAR_COLUMNS: usize = 3;
+const POPULAR_SONGS: usize = POPULAR_ROWS * POPULAR_COLUMNS;
+const POPULAR_GAP: Pixels = px(12.);
+/// The narrowest a popular column may get before the section scrolls sideways instead.
+const POPULAR_COLUMN: Pixels = px(260.);
+/// The artwork each popular row wears, and the space above and below it. The rows are the page's
+/// main shelf, so they are larger and airier than a table row rather than packed into it.
+const POPULAR_ART: Pixels = px(80.);
+const POPULAR_ROW_PAD: Pixels = px(8.);
+/// Where the artist's name sits down the hero, as a share of the page's height, and where the
+/// frost begins. The photograph stays sharp above the frost and blurs through the lower half.
+const HERO_TOP: f32 = 0.46;
+const FROST_START: f32 = 0.45;
+const FROST_END: f32 = 0.55;
+const FROST_TRANSITION: f32 = FROST_END - FROST_START;
 /// The aspect the banner picture is drawn at. Spotify's banners are this wide, and the box is
 /// a little wider still, so the picture loses a strip at its top and bottom but never its sides.
 const BANNER_ASPECT: f32 = 2.33;
@@ -68,52 +82,56 @@ const BANNER_SIDE_FADE: f32 = 0.2;
 /// How much wider than the page the banner is drawn, so it still reaches both edges while the
 /// page width it was measured from lags a resize by a frame.
 const BANNER_SLACK: f32 = 0.06;
-/// The blurs the banner steps through on its way down, each with the share of the stretch from
-/// the hero's top to the banner's bottom at which it has fully taken over from the one above.
-/// Everything above the hero stays sharp, wherever the page width puts it, and the blur grows
-/// slowly at first so it has no visible start.
-const BANNER_BLURS: [(f32, Pixels); 7] = [
-    (0.25, px(1.)),
-    (0.375, px(2.5)),
-    (0.5, px(4.5)),
-    (0.625, px(7.5)),
-    (0.75, px(11.5)),
-    (0.875, px(17.)),
-    (1., px(24.)),
+/// The blurs the banner steps through on its way down, each with the share of the banner's
+/// height at which it has fully taken over from the one above. The first begins a little above
+/// the middle, so the top stays sharp and the bottom half reads as frosted glass.
+const BANNER_BLURS: [(f32, Pixels); 6] = [
+    (0.48, px(4.)),
+    (0.56, px(8.)),
+    (0.64, px(13.)),
+    (0.73, px(19.)),
+    (0.83, px(26.)),
+    (0.94, px(34.)),
 ];
-/// How far above its own mark each banner blur starts fading in, as a share of the same
-/// stretch. It is longer than the gap between marks, so each blur is still fading in when the
+/// How far above its own mark each banner blur starts fading in, as a share of the banner's
+/// height. It is longer than the gap between marks, so each blur is still fading in when the
 /// next starts.
-const BANNER_RAMP: f32 = 0.25;
+const BANNER_RAMP: f32 = 0.08;
 /// How much of the page colour lies over the whole banner, so it sits back behind the page.
-const BANNER_DIM: f32 = 0.3;
+const BANNER_DIM: f32 = 0.18;
 /// The shade that deepens toward the banner's bottom on top of `BANNER_DIM`: where it starts, as
-/// a share of the way down to the hero's top, and how much of the page colour it reaches at the
-/// bottom. The banner also fades out from the hero's top and is gone at its bottom.
-const BANNER_SHADE_FROM: f32 = 0.5;
-const BANNER_SHADE: f32 = 0.85;
+/// a share of the way down the banner, and how much of the page colour it reaches at the bottom.
+/// Light enough that the picture still tints the frost under the songs instead of going black.
+const BANNER_SHADE_FROM: f32 = 0.28;
+const BANNER_SHADE: f32 = 0.62;
+/// The share of the banner's height over which its bottom fades into the page.
+const BANNER_FADE_BOTTOM: f32 = 0.08;
 /// The blur over a portrait standing in for a missing banner, enough to leave only its colours.
 const BANNER_WASH: Pixels = px(48.);
 
-struct ArtistTracks {
-    detail: Entity<ArtistDetail>,
-    shown: Rc<Cell<usize>>,
+/// The picture and the box both the still backdrop and the scrolling frost are drawn from.
+struct BannerStage {
+    url: String,
+    /// How hard a portrait standing in for a missing banner is blurred, or none when the artist
+    /// has a real banner.
+    wash: Option<Pixels>,
+    width: Pixels,
+    height: Pixels,
+    bleed: Pixels,
+    spread: Pixels,
 }
 
-impl Tracks for ArtistTracks {
-    fn tracks<'a>(&self, cx: &'a App) -> &'a [Track] {
-        let tracks = self.detail.read(cx).tracks();
-        &tracks[..self.shown.get().min(tracks.len())]
-    }
-
-    fn is_loading(&self, cx: &App) -> bool {
-        self.detail.read(cx).is_loading()
-    }
-
-    /// As many rows as the list shows before it is expanded.
-    fn pending(&self, cx: &App) -> Option<Pending> {
-        self.is_loading(cx).then_some(Pending::Rows(LISTED))
-    }
+/// One copy of the banner picture, sized to the full window so `overlay()` covers it completely,
+/// cropping any aspect ratio to fill edge-to-edge.
+fn banner_picture(stage: &BannerStage, top: Pixels) -> Artwork {
+    Artwork::new(Some(stage.url.clone()))
+        .size(stage.width + stage.spread * 2.)
+        .wide(stage.height + stage.spread * 2.)
+        .overlay()
+        .absolute()
+        .left(relative(0.5))
+        .ml(-(stage.width / 2. + stage.spread))
+        .top(-top - stage.spread)
 }
 
 pub(crate) struct ArtistView {
@@ -129,16 +147,9 @@ pub(crate) struct ArtistView {
     scrollbar: Entity<Scrollbar>,
     about_bar: Entity<Scrollbar>,
     about_open: bool,
-    table: Entity<TableState<TrackSource>>,
-    shown: Rc<Cell<usize>>,
-    mode: Mode,
+    /// The songs the popular grid shows: the provider caps the list at `POPULAR_SONGS`, so the
+    /// grid and the play buttons above it both work from the same run.
     popular: Rc<Vec<Track>>,
-    popular_page: usize,
-    popular_columns: usize,
-    track_menu: ItemMenu,
-    track_context: Option<(usize, Point<Pixels>)>,
-    settings: Entity<AppSettings>,
-    toolbar: Entity<Toolbar>,
     me: WeakEntity<Self>,
     popovers: Popovers,
     /// Where the releases grid's leading edge landed last frame, in window coordinates, or
@@ -162,48 +173,6 @@ impl ArtistView {
         let width = MIN_CONTENT;
         let id = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id));
-        let playlist_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
-        let settings = Sonora::global(cx).settings.clone();
-        let saved = settings.read(cx).table(SECTION);
-        let sorting = settings.read(cx).sorting(SECTION);
-        let mode = settings.read(cx).view_or(SECTION, Mode::List);
-        let columns = crate::shared::tracks::artist_columns(
-            Sonora::global(cx)
-                .session
-                .read(cx)
-                .capabilities()
-                .playcounts,
-        );
-        let scroll = scrollbar.read(cx).scroll().clone();
-        let shown = Rc::new(Cell::new(LISTED));
-        let table = cx.new(|cx| {
-            let menu_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
-            crate::shared::tracks::follow_downloads(cx);
-            let source = TrackSource::new(
-                columns,
-                ArtistTracks {
-                    detail: detail.clone(),
-                    shown: shown.clone(),
-                },
-                playback.clone(),
-                menu_scrollbar,
-                cx,
-            )
-            .from({
-                let detail = detail.clone();
-                move |cx: &App| {
-                    let detail = detail.read(cx);
-                    let name = detail.artist()?.name.clone();
-                    Some(Origin::artist(detail.id()?).named(name))
-                }
-            })
-            .with_liked(Sonora::global(cx).library.clone());
-            let source = source.table(cx.weak_entity());
-            let mut delegate = TableDelegate::new(source, width, cx);
-            delegate.set_layout(saved, cx);
-            delegate.set_sorting(sorting.flatten(), cx);
-            TableState::new(delegate, cx).follow(scroll)
-        });
 
         cx.subscribe(&detail, |_, _, event, cx| {
             let state::ArtistDetailEvent::Gone(id) = event;
@@ -225,17 +194,20 @@ impl ArtistView {
                 this.release_padding_offset = Pixels::ZERO;
                 this.about_open = false;
                 this.rails.clear();
-                this.shown.set(LISTED);
                 this.scrollbar.update(cx, |bar, cx| {
                     bar.set_max_offset(None, cx);
                     bar.scroll().set_offset(gpui::Point::default());
                 });
             }
-            this.popular = Rc::new(detail.read(cx).tracks().to_vec());
-            this.popular_page = 0;
-            this.track_menu.reset(cx);
-            this.track_context = None;
-            this.rebuild(cx);
+            this.popular = Rc::new(
+                detail
+                    .read(cx)
+                    .tracks()
+                    .iter()
+                    .take(POPULAR_SONGS)
+                    .cloned()
+                    .collect(),
+            );
             cx.notify();
         })
         .detach();
@@ -243,11 +215,7 @@ impl ArtistView {
         cx.observe(&chrome, |_, _, cx| cx.notify()).detach();
 
         let library = Sonora::global(cx).library.clone();
-        cx.observe(&library, |this, _, cx| {
-            this.table.update(cx, |table, cx| table.refresh(cx));
-            cx.notify();
-        })
-        .detach();
+        cx.observe(&library, |_, _, cx| cx.notify()).detach();
         let current_playback = playback_status(&playback, cx);
         let artist_id = detail.read(cx).id().map(str::to_owned);
         cx.observe(&playback, |this, playback, cx| {
@@ -256,27 +224,22 @@ impl ArtistView {
                 return;
             }
             this.playback_status = current;
-            this.table.update(cx, |table, cx| table.refresh(cx));
             cx.notify();
-        })
-        .detach();
-        cx.subscribe(&table, |this, _, event, cx| match event {
-            TableEvent::DoubleClicked(display) => {
-                page::play(&this.table, &this.playback, *display, cx)
-            }
-            TableEvent::Activated(display) => {
-                page::play_or_toggle(&this.table, &this.playback, *display, cx)
-            }
-            TableEvent::Removed => drop_picked(&this.table, cx),
-            _ => this.persist(cx),
         })
         .detach();
 
         let me = cx.entity();
-        let toolbar = Toolbar::tooled(&me, cx);
 
         Self {
-            popular: Rc::new(detail.read(cx).tracks().to_vec()),
+            popular: Rc::new(
+                detail
+                    .read(cx)
+                    .tracks()
+                    .iter()
+                    .take(POPULAR_SONGS)
+                    .cloned()
+                    .collect(),
+            ),
             detail,
             playback,
             playback_status: current_playback,
@@ -289,15 +252,6 @@ impl ArtistView {
             scrollbar,
             about_bar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             about_open: false,
-            table,
-            shown,
-            mode,
-            popular_page: 0,
-            popular_columns: 0,
-            track_menu: ItemMenu::new(playlist_scrollbar, cx),
-            track_context: None,
-            settings,
-            toolbar,
             me: me.downgrade(),
             popovers: Popovers::default(),
             release_lead: Rc::new(Cell::new(None)),
@@ -307,35 +261,9 @@ impl ArtistView {
         }
     }
 
-    fn persist(&mut self, cx: &mut Context<Self>) {
-        page::store(
-            &self.settings.clone(),
-            &self.table.clone(),
-            SECTION,
-            SECTION,
-            cx,
-        );
-    }
-
-    fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.table.update(cx, |table, cx| {
-            table.rebuild(cx);
-        });
-    }
-
-    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        self.mode = mode;
-        if mode == Mode::List {
-            self.table.clone().set_width(self.width, cx);
-        }
-        self.track_context = None;
-        self.settings
-            .update(cx, |settings, cx| settings.set_view(SECTION, mode, cx));
-        cx.notify();
-    }
-
     fn header(&self, cx: &Context<Self>) -> AnyElement {
         let artist = self.detail.read(cx).artist();
+        let theme = *cx.theme();
         let title = artist
             .map(|artist| SharedString::from(artist.name.clone()))
             .unwrap_or_default();
@@ -391,21 +319,149 @@ impl ArtistView {
             .children(self.favorite_button(cx))
             .children(overflow);
 
-        let cover = artist.and_then(|artist| artist.cover_large.clone());
-        let pin = self
-            .detail
-            .read(cx)
-            .id()
-            .map(|id| Pin::new(PinKind::Artist, id, title.clone()).cover(cover.clone()));
-
+        // The banner is the hero here — no square avatar, just name, stats and play buttons on the artwork.
         PageHero::new("artist-hero", title)
             .pending(artist.is_none() && self.detail.read(cx).is_loading())
-            .pin(pin)
-            .cover(cover)
+            .pin(None)
+            .cover(None)
+            .title_size(cx.theme().text(Text::Display) * 1.9)
             .when_some(facts, |hero, facts| hero.meta(facts))
             .actions(actions)
-            .circle()
             .into_any_element()
+    }
+
+    /// The static backdrop image that fills the entire window behind the page.
+    /// It never moves — it's the fixed background.
+    fn backdrop(&self, inset: Pixels, height: Pixels, cx: &App) -> Option<AnyElement> {
+        let artist = self.detail.read(cx).artist()?;
+        let (url, wash) = match &artist.banner {
+            Some(banner) => (banner.clone(), None),
+            None if effects() => (artist.cover_large.clone()?, Some(BANNER_WASH)),
+            None => return None,
+        };
+        let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
+        let theme = cx.theme();
+        let bleed = wash.unwrap_or(BANNER_BLURS[BANNER_BLURS.len() - 1].1) * 2.;
+        let spread = BANNER_WASH * 2.;
+
+        Some(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(height)
+                .overflow_hidden()
+                .map(|this| match wash {
+                    Some(wash) => this.child(
+                        Artwork::new(Some(url.clone()))
+                            .size(width + spread * 2.)
+                            .wide(height + spread * 2.)
+                            .overlay()
+                            .absolute()
+                            .left(relative(0.5))
+                            .ml(-(width / 2. + spread))
+                            .top(-spread)
+                            .blur(wash),
+                    ),
+                    None => this
+                        .when(effects(), |this| {
+                            this.child(
+                                Artwork::new(Some(url.clone()))
+                                    .size(width + spread * 2.)
+                                    .wide(height + spread * 2.)
+                                    .overlay()
+                                    .absolute()
+                                    .left(relative(0.5))
+                                    .ml(-(width / 2. + spread))
+                                    .top(-spread)
+                                    .blur(BANNER_WASH),
+                            )
+                        })
+                        .child(
+                            Artwork::new(Some(url))
+                                .size(width + spread * 2.)
+                                .wide(height + spread * 2.)
+                                .overlay()
+                                .absolute()
+                                .left(relative(0.5))
+                                .ml(-(width / 2. + spread))
+                                .top(-spread),
+                        ),
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(theme.background.opacity(BANNER_DIM)),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The frost layer that scrolls with the page.
+    /// It starts at 45% of viewport, has a 10% transition zone (45%-55%),
+    /// and moves up as the user scrolls.
+    fn frost(&self, inset: Pixels, height: Pixels, offset: Pixels, cx: &App) -> Option<AnyElement> {
+        let artist = self.detail.read(cx).artist()?;
+        let (url, wash) = match &artist.banner {
+            Some(banner) => (banner.clone(), None),
+            None if effects() => (artist.cover_large.clone()?, Some(BANNER_WASH)),
+            None => return None,
+        };
+        let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
+        let theme = cx.theme();
+        let bleed = wash.unwrap_or(BANNER_BLURS[BANNER_BLURS.len() - 1].1) * 2.;
+        let spread = BANNER_WASH * 2.;
+
+        // The frost edge starts at FROST_START and moves up with scroll.
+        // offset is how far the page has scrolled (positive = scrolled down).
+        let transition_start = height * FROST_START - offset;
+        let transition_height = height * FROST_TRANSITION;
+
+        // One blurred copy of the backdrop — constant blur strength.
+        let frosted_picture = Artwork::new(Some(url))
+            .size(width + spread * 2.)
+            .wide(height + spread * 2.)
+            .overlay()
+            .absolute()
+            .left(relative(0.5))
+            .ml(-(width / 2. + spread))
+            .top(-spread)
+            .blur(match wash {
+                Some(w) => w,
+                None => BANNER_BLURS[BANNER_BLURS.len() - 1].1,
+            });
+
+        let shade = div().absolute().inset_0().bg(linear_gradient(
+            180.,
+            linear_color_stop(theme.background.opacity(0.), BANNER_SHADE_FROM),
+            linear_color_stop(theme.background.opacity(BANNER_SHADE), 1.),
+        ));
+
+        Some(
+            div()
+                .absolute()
+                .top(transition_start)
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .overflow_hidden()
+                // Fade in over the transition zone so the edge is soft.
+                .fade_edges(height * FROST_TRANSITION, Pixels::ZERO)
+                .child(
+                    div()
+                        .absolute()
+                        .top(-transition_start)
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .overflow_hidden()
+                        .when(effects(), |this| this.child(frosted_picture))
+                        .child(shade),
+                )
+                .into_any_element(),
+        )
     }
 
     /// The artist's banner behind the hero, `height` tall and bled past the page's `inset` to
@@ -1101,44 +1157,6 @@ impl ArtistView {
             .collect()
     }
 
-    fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = *cx.theme();
-        let expanded = self.shown.get() > LISTED;
-        let total = self.popular.len();
-        let more = (total > LISTED).then(|| {
-            Button::new("artist-popular-more")
-                .label(match expanded {
-                    true => t!("artist-popular-less"),
-                    false => t!("artist-popular-more"),
-                })
-                .trailing(chevron(expanded))
-                .small()
-                .ghost()
-                .aria_expanded(expanded)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.shown.set(match expanded {
-                        true => LISTED,
-                        false => total,
-                    });
-                    this.rebuild(cx);
-                    cx.notify();
-                }))
-        });
-
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                table(&self.table)
-                    .rounded(theme.radius)
-                    .border_1()
-                    .border_color(theme.border),
-            )
-            .children(more)
-            .into_any_element()
-    }
-
     fn playing_from(&self, cx: &App) -> Option<Origin> {
         let detail = self.detail.read(cx);
         let name = detail.artist()?.name.clone();
@@ -1146,52 +1164,90 @@ impl ArtistView {
         Some(Origin::artist(detail.id()?).named(name))
     }
 
-    fn popular(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The popular songs as a borderless grid, three rows by four columns, that turns into a rail
+    /// when the page is too narrow to hold all four columns. Nothing frames the rows: no card
+    /// border, no separators, just the songs over the frost.
+    fn popular(&self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
+        let theme = *cx.theme();
         let tracks = self.popular.clone();
         let from = self.playing_from(cx);
-        let pages = Shape::new(self.width, tracks.len()).pages;
-        let queued = tracks.clone();
         let playback = self.playback.clone();
-        let opened = cx.entity().downgrade();
+        let loading = self.detail.read(cx).is_loading();
+        let column = ((width - POPULAR_GAP * (POPULAR_COLUMNS - 1) as f32)
+            / POPULAR_COLUMNS as f32)
+            .max(POPULAR_COLUMN);
 
-        Picks::new(
-            "artist-popular",
-            tracks,
-            self.playback.clone(),
-            self.width,
-            self.popular_page,
-        )
-        .title("artist-popular")
-        .eyebrow(i18n::lookup("artist-popular-eyebrow", None))
-        .vacancy("artist-popular-empty")
-        .detailed()
-        .loading(self.detail.read(cx).is_loading())
-        .on_previous(cx.listener(|this, _, _, cx| {
-            this.popular_page = this.popular_page.saturating_sub(1);
-            this.track_context = None;
-            cx.notify();
-        }))
-        .on_next(cx.listener(move |this, _, _, cx| {
-            this.popular_page = (this.popular_page + 1).min(pages.saturating_sub(1));
-            this.track_context = None;
-            cx.notify();
-        }))
-        .on_context_menu(move |place, event, _, cx| {
-            let Some(view) = opened.upgrade() else {
-                return;
-            };
-            view.update(cx, |this, cx| {
-                this.track_menu.reset(cx);
-                this.track_context = Some((place, event.position));
-                cx.notify();
-            });
-        })
-        .on_start(move |place, cx| {
-            playback.update(cx, |playback, cx| {
-                playback.start(queued.as_ref().clone(), place, from.clone(), cx)
-            });
-        })
-        .into_any_element()
+        let mut columns = Vec::with_capacity(POPULAR_COLUMNS);
+        for column_index in 0..POPULAR_COLUMNS {
+            let mut rows = Vec::with_capacity(POPULAR_ROWS);
+            for row_index in 0..POPULAR_ROWS {
+                // Row-major, so the first row reads as the artist's first four songs.
+                let place = row_index * POPULAR_COLUMNS + column_index;
+                if place >= tracks.len() {
+                    if loading {
+                        rows.push(
+                            Card::skeleton(("artist-popular-skeleton", place))
+                                .art(POPULAR_ART)
+                                .py(POPULAR_ROW_PAD)
+                                .into_any_element(),
+                        );
+                    }
+                    continue;
+                }
+                let queued = tracks.clone();
+                let origin = from.clone();
+                let player = playback.clone();
+                let start: StartHandler = Rc::new(move |place, cx| {
+                    player.update(cx, |playback, cx| {
+                        playback.start(queued.as_ref().clone(), place, origin.clone(), cx)
+                    });
+                });
+                rows.push(
+                    TrackCard::new("artist-popular", place, tracks.clone(), playback.clone())
+                        .detailed(true)
+                        .start(Some(start))
+                        .render(cx)
+                        .art(POPULAR_ART)
+                        .py(POPULAR_ROW_PAD)
+                        .into_any_element(),
+                );
+            }
+            columns.push(
+                div()
+                    .flex()
+                    .flex_none()
+                    .flex_col()
+                    .w(column)
+                    .children(rows)
+                    .into_any_element(),
+            );
+        }
+
+        let body = match tracks.is_empty() && !loading {
+            true => ui::vacant(i18n::lookup("artist-popular-empty", None), cx).into_any_element(),
+            false => Carousel::new("artist-popular-rail")
+                .children(columns)
+                .into_any_element(),
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .pt_4()
+            .child({
+                let label = t!("artist-popular");
+                div()
+                    .id("artist-popular-heading")
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(label.clone())
+                    .text_size(theme.text(Text::Title))
+                    .font_weight(FontWeight::BOLD)
+                    .child(label)
+            })
+            .child(body)
+            .into_any_element()
     }
 
     fn about(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1276,20 +1332,6 @@ impl ArtistView {
     }
 }
 
-impl Tooled for ArtistView {
-    fn toolbar(&self) -> Entity<Toolbar> {
-        self.toolbar.clone()
-    }
-
-    fn tools(&self, _cx: &App) -> Vec<AnyElement> {
-        let viewed = self.me.clone();
-
-        vec![tools::views(&self.popovers, self.mode, move |mode, cx| {
-            viewed.update(cx, |view, cx| view.set_mode(mode, cx)).ok();
-        })]
-    }
-}
-
 impl Render for ArtistView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(failure) = self.failure(cx) {
@@ -1305,64 +1347,37 @@ impl Render for ArtistView {
         let theme = *cx.theme();
         let inset = theme.metrics.inset;
         let previous = self.width;
-        page::resize(&self.table, &mut self.width, inset, window, cx);
+        // Update width for releases grid
+        let available = (window.viewport_size().width - inset * 2.).max(MIN_CONTENT);
+        if (available - self.width).abs() >= px(0.5) {
+            self.width = available;
+        }
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
-        self.settle_release_padding(scrolled(&scroll));
+        let offset = scrolled(&scroll);
+        self.settle_release_padding(offset);
         self.hold_releases(window, cx);
         if self.width != previous {
             self.scrollbar
                 .update(cx, |bar, cx| bar.set_max_offset(None, cx));
         }
-        let columns = Shape::new(self.width, self.popular.len()).columns;
-        if self.popular_columns != columns {
-            self.popular_columns = columns;
-            self.popular_page = 0;
-        }
-        if self.mode == Mode::List {
-            self.table.claim(cx);
-            let mut viewport = page::viewport(&scroll, inset, window);
-            viewport.top = (viewport.top - TABLE_BORDER).max(Pixels::ZERO);
-            self.table
-                .update(cx, |table, _| table.set_viewport(viewport));
-        }
 
-        let picked = self.track_context.and_then(|(place, position)| {
-            self.popular
-                .get(place)
-                .cloned()
-                .map(|track| (track, position))
-        });
-        let track_menu = picked.map(|(track, position)| {
-            Popup::new(position, self.track_menu.for_track(&track, cx)).on_close(cx.listener(
-                |this, _, _, cx| {
-                    this.track_context = None;
-                    cx.notify();
-                },
-            ))
-        });
-
-        let listed = self.mode == Mode::List;
         let release_padding = self.release_padding;
         let head = self.header(cx);
-        let cover = theme.metrics.cover;
-        let banner_shown = self
-            .detail
+        // The hero is only as tall as the name and play buttons.
+        // The full artist image is the static backdrop behind everything.
+        let bar = match Sonora::global(cx)
+            .settings
             .read(cx)
-            .artist()
-            .is_some_and(|artist| artist.banner.is_some());
-        let rise = match banner_shown {
-            true => ((self.width + inset * 2.) / BANNER_BOX - inset - cover)
-                .max(cover * BANNER_RISE_LEAST)
-                .min(cover * BANNER_RISE_MOST),
-            false => cover * BANNER_RISE_WASH,
+            .player_bar_translucent()
+        {
+            true => Pixels::ZERO,
+            false => crate::chrome::PlayerBar::height(window, cx),
         };
-        let rise = snapped(rise, window);
-        let banner = self.banner(inset, inset + rise + cover, inset + rise, cx);
-        let tracks = match self.mode {
-            Mode::Grid => self.popular(cx),
-            Mode::List => self.listed(cx),
-        };
+        let height = snapped((window.viewport_size().height - bar).max(px(320.)), window);
+        let backdrop = self.backdrop(inset, height, cx);
+        let frost = self.frost(inset, height, offset, cx);
+        let tracks = self.popular(self.width, cx);
         let grid = self.releases(window, cx);
         let about = self.about(cx);
         // One rail per shelf the page can carry: what the artist guests on, the playlists it is
@@ -1378,43 +1393,167 @@ impl Render for ArtistView {
             weak.update(cx, |_, cx| cx.notify()).ok();
         });
         let rails = self.recommended(window, &notify, cx);
-        let page =
-            Scroller::new("artist-page", &self.scrollbar)
-                .bottom_inset(crate::chrome::Chrome::bottom(cx))
-                .px(inset)
-                .pt(inset)
-                .pb(inset)
-                .on_scroll_wheel(cx.listener(Self::release_scroll))
-                .child(div().relative().pt(rise).children(banner).child(head).when(
-                    listed,
-                    |this| {
-                        let label = t!("artist-popular");
-                        this.child(
-                            div()
-                                .id("artist-popular-heading")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(label.clone())
-                                .pb_3()
-                                .text_size(theme.text(Text::Title))
-                                .font_weight(FontWeight::BOLD)
-                                .child(label),
-                        )
-                    },
-                ))
-                .child(tracks)
-                .children(grid)
-                .children(rails)
-                .children(about)
-                .when(release_padding > Pixels::ZERO, |this| {
-                    this.child(div().h(release_padding).flex_none())
-                });
+        let page = Scroller::new("artist-page", &self.scrollbar)
+            .bottom_inset(crate::chrome::Chrome::bottom(cx))
+            .px(inset)
+            .pt(inset)
+            .pb(inset)
+            .on_scroll_wheel(cx.listener(Self::release_scroll))
+            // The hero content starts at HERO_TOP (46% of viewport).
+            // The frost layer begins at FROST_START (45%) and moves with scroll.
+            .child({
+                let mut div = div().relative().pt(height * HERO_TOP).child(head);
+                div
+            })
+            .child(tracks)
+            .children(grid)
+            .children(rails)
+            .children(about)
+            .when(release_padding > Pixels::ZERO, |this| {
+                this.child(div().h(release_padding).flex_none())
+            });
+
+        // Floating hero controls at the very top of the page (like album/playlist pages),
+        // standing in for the title bar on this fullbleed page.
+        let hero_controls = {
+            let theme = *cx.theme();
+            let navigation = trail(cx);
+            let (can_back, can_forward) = {
+                let navigation = navigation.read(cx);
+                (navigation.can_go_back(), navigation.can_go_forward())
+            };
+            let settings = Sonora::global(cx).settings.clone();
+            let (sidebar_open, queue_open) = {
+                let settings = settings.read(cx);
+                (settings.sidebar_open(), settings.sidebar_right_open())
+            };
+
+            let back = navigation.clone();
+            let forward = navigation.clone();
+            let history = liquid_capsule(cx)
+                .flex()
+                .items_center()
+                .child(
+                    Button::new("artist-back")
+                        .ghost()
+                        .icon("icons/chevron-left.svg")
+                        .tooltip("nav-back")
+                        .size_10()
+                        .px_0()
+                        .rounded_full()
+                        .disabled(!can_back)
+                        .on_click(move |_, _, cx| back.update(cx, |nav, cx| nav.back(cx))),
+                )
+                .child(div().flex_none().w(px(1.)).h(px(14.)).bg(theme.border))
+                .child(
+                    Button::new("artist-forward")
+                        .ghost()
+                        .icon("icons/chevron-right.svg")
+                        .tooltip("nav-forward")
+                        .size_10()
+                        .px_0()
+                        .rounded_full()
+                        .disabled(!can_forward)
+                        .on_click(move |_, _, cx| forward.update(cx, |nav, cx| nav.forward(cx))),
+                )
+                .child(div().flex_none().w(px(1.)).h(px(14.)).bg(theme.border))
+                .child(
+                    Button::new("artist-refresh")
+                        .ghost()
+                        .icon("icons/refresh-cw.svg")
+                        .tooltip("app-refresh")
+                        .size_10()
+                        .px_0()
+                        .rounded_full()
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(input::Refresh), cx)
+                        }),
+                );
+
+            let sidebar = liquid_capsule(cx).child(
+                Button::new("artist-sidebar")
+                    .ghost()
+                    .icon(match sidebar_open {
+                        true => "icons/panel-left-close.svg",
+                        false => "icons/panel-left-open.svg",
+                    })
+                    .tooltip("nav-sidebar")
+                    .size_10()
+                    .px_0()
+                    .rounded_full()
+                    .aria_expanded(sidebar_open)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ArtistEvent::ToggleSidebar)))
+                    .with_spring(
+                        "artist-sidebar-swing",
+                        SpringAnimation::new(Springs::RESPONSIVE)
+                            .to(match sidebar_open {
+                                true => 1.,
+                                false => 0.,
+                            })
+                            .with_epsilon(0.01),
+                        |button, t| button.turned(t * (1. - t)),
+                    ),
+            );
+            let queue = liquid_capsule(cx).child(
+                Button::new("artist-sidebar-right")
+                    .ghost()
+                    .icon(match queue_open {
+                        true => "icons/panel-right-close.svg",
+                        false => "icons/panel-right-open.svg",
+                    })
+                    .tooltip("nav-sidebar-right")
+                    .size_10()
+                    .px_0()
+                    .rounded_full()
+                    .aria_expanded(queue_open)
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ArtistEvent::ToggleSidebarRight)))
+                    .with_spring(
+                        "artist-sidebar-right-swing",
+                        SpringAnimation::new(Springs::RESPONSIVE)
+                            .to(match queue_open {
+                                true => 1.,
+                                false => 0.,
+                            })
+                            .with_epsilon(0.01),
+                        |button, t| button.turned(t * (1. - t)),
+                    ),
+            );
+
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(sidebar)
+                        .child(history),
+                )
+                .child(queue)
+                .into_any_element()
+        };
 
         div()
             .relative()
             .size_full()
+            // The backdrop is static — it never moves.
+            .children(backdrop)
+            // The frost scrolls with the page.
+            .children(frost)
+            // Hero controls float at the very top, over the backdrop.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .px(inset)
+                    .pt(inset)
+                    .child(hero_controls),
+            )
             .child(page)
-            .when_some(track_menu, |this, menu| this.child(menu))
             .children(self.about_dialog(cx))
             .into_any_element()
     }

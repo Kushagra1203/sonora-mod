@@ -785,9 +785,12 @@ impl Render for SidebarLeft {
         let sidebar_border = theme.sidebar_border;
 
         let current = self.trail.read(cx).current();
-        // On an album or playlist the panel frosts the page wash instead of sitting beside
+        // On an album, playlist, or artist page the panel frosts the page wash instead of sitting beside
         // it: the artwork's colours diffuse through, with the panel's own colour over them.
-        let frosted = matches!(current, Destination::Album(_) | Destination::Playlist(_));
+        let frosted = matches!(
+            current,
+            Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
+        );
         self.follow(&current);
         self.adapt(super::Chrome::reserved_right(cx), window, cx);
 

@@ -170,11 +170,11 @@ impl Render for SidebarRight {
         }
 
         let theme = *cx.theme();
-        // On an album or playlist the panel frosts the page wash instead of sitting beside
+        // On an album, playlist, or artist page the panel frosts the page wash instead of sitting beside
         // it: the artwork's colours diffuse through, with the panel's own colour over them.
         let frosted = matches!(
             router::trail(cx).read(cx).current(),
-            Destination::Album(_) | Destination::Playlist(_)
+            Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
         );
 
         Panel::new("sidebar-right", Side::Right, self.width)
