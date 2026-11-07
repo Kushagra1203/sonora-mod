@@ -103,6 +103,10 @@ impl MusicApi for YouTubeClient {
         Ok(wire::profile(self.api.profile().await?))
     }
 
+    async fn song_behind(&self, track: Track) -> Result<Track> {
+        Ok(wire::audio_only_playing(&self.resolver, track).await)
+    }
+
     async fn artist(&self, artist_id: &str) -> Result<Artist> {
         // The crate reads the releases, the top songs and the header's texts. The page's own
         // response carries the counts and the shelves beside them, so it is read here too, side

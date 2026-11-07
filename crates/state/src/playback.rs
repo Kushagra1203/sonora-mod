@@ -529,6 +529,11 @@ pub struct Playback {
     fetch: Option<Task<()>>,
     enqueue: Option<Task<()>>,
     suggest: Option<Task<()>>,
+    /// The lookup of the song behind a video row, held so a new pick cancels it.
+    resolving: Option<Task<()>>,
+    /// The video rows already asked about, so one with no song behind it is not asked again
+    /// every time it loads.
+    asked: HashSet<String>,
     /// The track the engine was asked to fetch ahead, so it is asked once.
     preloaded: Option<Preloaded>,
     /// When the user last skipped, for telling a burst of skips from one.
@@ -706,6 +711,8 @@ impl Playback {
             fetch: None,
             enqueue: None,
             suggest: None,
+            resolving: None,
+            asked: HashSet::new(),
             preloaded: None,
             skipped: None,
             blocked_until: None,
@@ -1103,7 +1110,47 @@ impl Playback {
     }
 
     fn load_after(&mut self, track: &Track, start: Start, cx: &mut Context<Self>) {
-        self.load_from(track, Duration::ZERO, start, cx);
+        self.resolve_first(track.clone(), Duration::ZERO, start, cx);
+    }
+
+    /// Asks the provider for the song behind a video row before loading it, so a row that
+    /// reached the queue before its listing was resolved still plays its audio version. The
+    /// provider answers from what it already found, so a row resolved with its listing costs no
+    /// request. Anything else, and the track loads as it is.
+    fn resolve_first(&mut self, track: Track, at: Duration, start: Start, cx: &mut Context<Self>) {
+        let Some(id) = track.id.clone().filter(|_| track.is_video) else {
+            return self.load_from(&track, at, start, cx);
+        };
+        let Some(client) = self.client_for(&id, cx) else {
+            return self.load_from(&track, at, start, cx);
+        };
+        // A row with no song behind it is asked about once: the provider remembers that answer,
+        // and asking again on every load would only cost a request each time.
+        if !self.asked.insert(id.clone()) {
+            return self.load_from(&track, at, start, cx);
+        }
+        let wanted = id.clone();
+        self.resolving = Some(Io::global(cx).load(
+            async move { client.song_behind(track).await },
+            move |this, resolved, cx| {
+                // Another track may have been picked while this one was looked up.
+                let current = this
+                    .queue
+                    .read(cx)
+                    .current()
+                    .and_then(|track| track.id.clone());
+                if current.as_deref() != Some(wanted.as_str()) {
+                    return;
+                }
+                match resolved {
+                    Ok(track) => this.load_from(&track, at, start, cx),
+                    Err(error) => {
+                        log::warn!("playback: cannot find the song behind {wanted}: {error:#}")
+                    }
+                }
+            },
+            cx,
+        ));
     }
 
     /// Loads a track to play from `at`, after the debounce `start` asks for. The state reads

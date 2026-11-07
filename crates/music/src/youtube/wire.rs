@@ -80,6 +80,19 @@ pub(crate) async fn audio_only(resolver: &Arc<Resolver>, tracks: Vec<Track>) -> 
         .collect()
 }
 
+/// The same swap for one row a listener asked for, where a video that already runs the song's
+/// audio is left alone. See [`Resolver::for_playing`].
+pub(crate) async fn audio_only_playing(resolver: &Arc<Resolver>, track: Track) -> Track {
+    if !track.is_video {
+        return track;
+    }
+    let song = resolver.for_playing(source_of(&track)).await;
+    match song.is_video() {
+        true => track,
+        false => resolved(track, song),
+    }
+}
+
 /// Takes the song's playable id and runtime onto the listing's row.
 fn resolved(mut track: Track, song: ytmusic::Track) -> Track {
     if let Some(id) = song.video_id {

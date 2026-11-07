@@ -147,6 +147,14 @@ pub trait MusicApi: Send + Sync {
 
     async fn artist(&self, artist_id: &str) -> Result<Artist>;
 
+    /// The song behind a video row, when the provider has one. A listing resolves its videos as
+    /// it loads, so this is the safety net for a row that reached the queue first: playing it
+    /// asks here, and the provider answers from what it already found when it can. The default
+    /// hands the track back, which is what a provider whose rows are already songs wants.
+    async fn song_behind(&self, track: Track) -> Result<Track> {
+        Ok(track)
+    }
+
     /// The rest of an artist page, fetched once `artist` has put the overview up: the whole
     /// discography and the popular tracks that only the discography can rank. `known` is the
     /// top tracks already on the page, so the provider can rank around them. A provider whose

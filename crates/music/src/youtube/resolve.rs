@@ -29,6 +29,9 @@ use ytmusic::{Track, TrackKind, YtMusic};
 const AT_ONCE: usize = 2;
 /// The least time between two search requests, so even the two in flight stay a few a second.
 const GAP: Duration = Duration::from_millis(250);
+/// How much longer than its own listing promised a video may run and still be playing the song's
+/// audio. Past this it carries something the song does not.
+const TOLERANCE: Duration = Duration::from_secs(2);
 /// How many searches in a row may fail before the resolver stops asking for a while.
 const PATIENCE: u32 = 4;
 /// How long it stays quiet after that, long enough for a challenge to lapse.
@@ -142,23 +145,88 @@ impl Resolver {
         ytmusic::dedup::best_song_match(track, vec![song.clone()]).map(Some)
     }
 
+    /// The song behind a video row the listener asked for. A video whose real runtime is the one
+    /// the listing showed already plays the song's audio — YouTube's own listings put the song's
+    /// runtime under the video — so it is left alone; asking a search and pointing it at another
+    /// upload would only risk a different recording. A video that really runs longer carries
+    /// something the song does not, an intro or a spoken passage, and plays the song instead.
+    pub async fn for_playing(self: &Arc<Self>, track: Track) -> Track {
+        if !track.is_video() || track.video_id.is_none() {
+            return track;
+        }
+        if let Some(known) = self.cached(&track) {
+            return match known {
+                Some(song) => applied(track, song),
+                None => track,
+            };
+        }
+        let song = match self.ask(&track).await {
+            Answer::Song(song) => *song,
+            Answer::None => {
+                self.record(&track, None);
+                return track;
+            }
+            Answer::Failed => return track,
+        };
+        // Hold the song to the runtime the video really has. A video no longer than its song is
+        // playing the song's audio already — a lyric video, a visualizer, an "official audio" —
+        // and pointing it at another upload would only risk a different recording. One that runs
+        // longer carries something the song has not, so what plays is the song.
+        let longer = match (song.duration, self.video_duration(&track).await) {
+            (Some(song), Some(video)) => video.saturating_sub(song) > TOLERANCE,
+            _ => true,
+        };
+        match longer {
+            true => {
+                self.record(&track, Some(song.clone()));
+                applied(track, song)
+            }
+            false => {
+                log::debug!(
+                    "youtube: {} runs no longer than its song, playing it as it is",
+                    track.title
+                );
+                self.record(&track, None);
+                track
+            }
+        }
+    }
+
+    /// The runtime YouTube serves a video at. Its own listings do not always tell it — an album
+    /// shows the song's runtime under the video — so this asks, and answers `None` when it
+    /// cannot be read.
+    async fn video_duration(&self, track: &Track) -> Option<Duration> {
+        let _permit = self.turn().await;
+        self.api.track_duration(track.video_id.as_deref()?).await
+    }
+
+    /// Waits for this request's turn: at most [`AT_ONCE`] in flight, and at least [`GAP`] apart.
+    /// The permit is held for the length of the request it was taken for.
+    async fn turn(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
+        let permit = self.permits.acquire().await.ok()?;
+        let mut start = self.start.lock().await;
+        let wait = (*start + GAP).saturating_duration_since(Instant::now());
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        *start = Instant::now();
+        Some(permit)
+    }
+
     /// Searches for the song behind `track`, paced and with the guest credit stripped if the
     /// exact title finds nothing.
     async fn ask(&self, track: &Track) -> Answer {
         if self.quiet() {
             return Answer::Failed;
         }
-        let Ok(_permit) = self.permits.acquire().await else {
+        let Some(_permit) = self.turn().await else {
             return Answer::Failed;
         };
-        {
-            let mut start = self.start.lock().await;
-            let wait = (*start + GAP).saturating_duration_since(Instant::now());
-            if !wait.is_zero() {
-                tokio::time::sleep(wait).await;
-            }
-            *start = Instant::now();
-        }
+        self.ask_now(track).await
+    }
+
+    /// The search itself, for a caller that has already waited its turn.
+    async fn ask_now(&self, track: &Track) -> Answer {
         match self.search_song(track).await {
             Ok(Some(song)) => {
                 self.landed();
