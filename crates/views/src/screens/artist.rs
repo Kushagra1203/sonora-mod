@@ -1,12 +1,11 @@
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::accesskit::{Role, Toggled};
 use gpui::prelude::*;
 use gpui::{
     AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Pixels, Render,
-    ScrollHandle, ScrollWheelEvent, SharedString, SpringAnimation, WeakEntity, Window, div,
-    linear_color_stop, linear_gradient, point, px, relative,
+    ScrollHandle, SharedString, SpringAnimation, WeakEntity, Window, div, linear_color_stop,
+    linear_gradient, px, relative,
 };
 
 use crate::chrome::Chrome;
@@ -18,8 +17,8 @@ use state::{ArtistDetail, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
 use ui::motion::Springs;
 use ui::{
-    Artwork, Button, Card, Deck, MIN_CONTENT, Picker, Pin, PinKind, Popovers, Scrollbar, Scroller,
-    Text, effects, liquid_capsule, scrolled, snapped,
+    Artwork, Button, Card, MIN_CONTENT, Picker, Popovers, Scrollbar, Scroller, Text, effects,
+    liquid_capsule, scrolled, snapped,
 };
 
 use crate::shared::about::{AboutArtist, about_modal};
@@ -32,10 +31,7 @@ use crate::shared::shelves::{Rail, RailSpec};
 use crate::shared::track_card::{StartHandler, TrackCard};
 use crate::shared::tracks::{PlaybackStatus, playback_status};
 use crate::shared::trouble;
-use input::Refresh;
 use ui::Rail as Carousel;
-
-const SECTION: &str = "artist";
 
 /// What the floating controls ask of the window: the two sidebars, which a page cannot reach
 /// on its own. The title bar carries the same two on every other screen.
@@ -49,7 +45,8 @@ impl EventEmitter<ArtistEvent> for ArtistView {}
 
 /// How many shelves the page draws under the releases, each with a rail of its own.
 const SHELVES: usize = 4;
-const RELEASE_ROWS: usize = 2;
+/// How many release placeholders the rail shows while the discography is still loading.
+const RELEASE_SKELETONS: usize = 6;
 /// The popular songs grid: 3 rows x 4 columns = 12 songs. Borderless, horizontal rail when narrow.
 const POPULAR_ROWS: usize = 4;
 const POPULAR_COLUMNS: usize = 3;
@@ -64,27 +61,20 @@ const POPULAR_ROW_PAD: Pixels = px(8.);
 /// Where the artist's name sits down the hero, as a share of the page's height, and where the
 /// frost begins. The photograph stays sharp above the frost and blurs through the lower half.
 const HERO_TOP: f32 = 0.46;
+/// The band along the top of the page kept clear for the floating controls, and how far below it
+/// the page's content fades away as it scrolls up. The content is gone by the top of the band and
+/// only the artwork behind it shows.
+const TOP_CLEAR: Pixels = px(72.);
+const TOP_FADE: Pixels = px(150.);
 const FROST_START: f32 = 0.45;
 const FROST_END: f32 = 0.55;
 const FROST_TRANSITION: f32 = FROST_END - FROST_START;
-/// The aspect the banner picture is drawn at. Spotify's banners are this wide, and the box is
-/// a little wider still, so the picture loses a strip at its top and bottom but never its sides.
-const BANNER_ASPECT: f32 = 2.33;
-/// How much of what the banner box cannot show is cut off above rather than below. Banners keep
-/// their subject a little above the middle.
-const BANNER_ANCHOR: f32 = 0.35;
-/// The tallest the banner picture grows, as a share of the banner's height. On a page wide enough
-/// to grow it further it keeps this size in the middle, and both its sides fade into a washed out
-/// copy over the room beside it, up to `BANNER_SIDE_FADE` of its width, so faces are never blown
-/// up past the box.
-const BANNER_OVERFLOW: f32 = 1.25;
-const BANNER_SIDE_FADE: f32 = 0.2;
 /// How much wider than the page the banner is drawn, so it still reaches both edges while the
 /// page width it was measured from lags a resize by a frame.
 const BANNER_SLACK: f32 = 0.06;
 /// The blurs the banner steps through on its way down, each with the share of the banner's
-/// height at which it has fully taken over from the one above. The first begins a little above
-/// the middle, so the top stays sharp and the bottom half reads as frosted glass.
+/// height at which it has fully taken over from the one above. The top stays sharp and the
+/// bottom half reads as frosted glass.
 const BANNER_BLURS: [(f32, Pixels); 6] = [
     (0.48, px(4.)),
     (0.56, px(8.)),
@@ -93,46 +83,14 @@ const BANNER_BLURS: [(f32, Pixels); 6] = [
     (0.83, px(26.)),
     (0.94, px(34.)),
 ];
-/// How far above its own mark each banner blur starts fading in, as a share of the banner's
-/// height. It is longer than the gap between marks, so each blur is still fading in when the
-/// next starts.
-const BANNER_RAMP: f32 = 0.08;
 /// How much of the page colour lies over the whole banner, so it sits back behind the page.
 const BANNER_DIM: f32 = 0.18;
 /// The shade that deepens toward the banner's bottom on top of `BANNER_DIM`: where it starts, as
 /// a share of the way down the banner, and how much of the page colour it reaches at the bottom.
-/// Light enough that the picture still tints the frost under the songs instead of going black.
 const BANNER_SHADE_FROM: f32 = 0.28;
 const BANNER_SHADE: f32 = 0.62;
-/// The share of the banner's height over which its bottom fades into the page.
-const BANNER_FADE_BOTTOM: f32 = 0.08;
 /// The blur over a portrait standing in for a missing banner, enough to leave only its colours.
 const BANNER_WASH: Pixels = px(48.);
-
-/// The picture and the box both the still backdrop and the scrolling frost are drawn from.
-struct BannerStage {
-    url: String,
-    /// How hard a portrait standing in for a missing banner is blurred, or none when the artist
-    /// has a real banner.
-    wash: Option<Pixels>,
-    width: Pixels,
-    height: Pixels,
-    bleed: Pixels,
-    spread: Pixels,
-}
-
-/// One copy of the banner picture, sized to the full window so `overlay()` covers it completely,
-/// cropping any aspect ratio to fill edge-to-edge.
-fn banner_picture(stage: &BannerStage, top: Pixels) -> Artwork {
-    Artwork::new(Some(stage.url.clone()))
-        .size(stage.width + stage.spread * 2.)
-        .wide(stage.height + stage.spread * 2.)
-        .overlay()
-        .absolute()
-        .left(relative(0.5))
-        .ml(-(stage.width / 2. + stage.spread))
-        .top(-top - stage.spread)
-}
 
 pub(crate) struct ArtistView {
     detail: Entity<ArtistDetail>,
@@ -140,9 +98,6 @@ pub(crate) struct ArtistView {
     playback_status: PlaybackStatus,
     artist_id: Option<String>,
     release_filter: ReleaseFilter,
-    releases_expanded: bool,
-    release_padding: Pixels,
-    release_padding_offset: Pixels,
     width: Pixels,
     scrollbar: Entity<Scrollbar>,
     about_bar: Entity<Scrollbar>,
@@ -152,14 +107,6 @@ pub(crate) struct ArtistView {
     popular: Rc<Vec<Track>>,
     me: WeakEntity<Self>,
     popovers: Popovers,
-    /// Where the releases grid's leading edge landed last frame, in window coordinates, or
-    /// none until it has been laid out once. `hold_releases` needs it to tell how deep the
-    /// page is scrolled into the grid.
-    release_lead: Rc<Cell<Option<Pixels>>>,
-    /// The packing the grid was laid out with last frame, so a change of width can hold its
-    /// place rather than slide the cards under the user.
-    release_columns: usize,
-    release_tile: Pixels,
     /// The recommendation rails under the releases, in page order: appears-on.
     rails: Vec<Rail>,
 }
@@ -189,9 +136,6 @@ impl ArtistView {
             if this.artist_id != artist_id {
                 this.artist_id = artist_id;
                 this.release_filter = ReleaseFilter::All;
-                this.releases_expanded = false;
-                this.release_padding = Pixels::ZERO;
-                this.release_padding_offset = Pixels::ZERO;
                 this.about_open = false;
                 this.rails.clear();
                 this.scrollbar.update(cx, |bar, cx| {
@@ -245,25 +189,18 @@ impl ArtistView {
             playback_status: current_playback,
             artist_id,
             release_filter: ReleaseFilter::All,
-            releases_expanded: false,
-            release_padding: Pixels::ZERO,
-            release_padding_offset: Pixels::ZERO,
             width,
             scrollbar,
             about_bar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             about_open: false,
             me: me.downgrade(),
             popovers: Popovers::default(),
-            release_lead: Rc::new(Cell::new(None)),
-            release_columns: 0,
-            release_tile: Pixels::ZERO,
             rails: Vec::new(),
         }
     }
 
     fn header(&self, cx: &Context<Self>) -> AnyElement {
         let artist = self.detail.read(cx).artist();
-        let theme = *cx.theme();
         let title = artist
             .map(|artist| SharedString::from(artist.name.clone()))
             .unwrap_or_default();
@@ -342,7 +279,6 @@ impl ArtistView {
         };
         let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
         let theme = cx.theme();
-        let bleed = wash.unwrap_or(BANNER_BLURS[BANNER_BLURS.len() - 1].1) * 2.;
         let spread = BANNER_WASH * 2.;
 
         Some(
@@ -412,13 +348,11 @@ impl ArtistView {
         };
         let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
         let theme = cx.theme();
-        let bleed = wash.unwrap_or(BANNER_BLURS[BANNER_BLURS.len() - 1].1) * 2.;
         let spread = BANNER_WASH * 2.;
 
         // The frost edge starts at FROST_START and moves up with scroll.
         // offset is how far the page has scrolled (positive = scrolled down).
         let transition_start = height * FROST_START - offset;
-        let transition_height = height * FROST_TRANSITION;
 
         // One blurred copy of the backdrop — constant blur strength.
         let frosted_picture = Artwork::new(Some(url))
@@ -461,109 +395,6 @@ impl ArtistView {
                         .when(effects(), |this| this.child(frosted_picture))
                         .child(shade),
                 )
-                .into_any_element(),
-        )
-    }
-
-    /// The artist's banner behind the hero, `height` tall and bled past the page's `inset` to
-    /// its edges, with the hero's top `hero` below its own. It is dimmed throughout and stays sharp
-    /// above the hero, then blurs, darkens and fades harder until it is gone at its bottom.
-    /// Without a banner the portrait stands in, blurred to a wash of its colours so it does not
-    /// repeat the cover beside it. None when the artist has neither, or has only a portrait
-    /// while blurs are off.
-    fn banner(&self, inset: Pixels, height: Pixels, hero: Pixels, cx: &App) -> Option<AnyElement> {
-        let artist = self.detail.read(cx).artist()?;
-        let (url, wash) = match &artist.banner {
-            Some(banner) => (banner.clone(), None),
-            None if effects() => (artist.cover_large.clone()?, Some(BANNER_WASH)),
-            None => return None,
-        };
-        // The box stretches to the page's edges at once, while the width measured here arrives a
-        // frame later, so a window being resized would show the box's edge past the picture.
-        // Everything is drawn a little wider than the box, centred in it, and the box clips the
-        // rest.
-        let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
-        let theme = cx.theme();
-        let shade = div()
-            .absolute()
-            .inset_0()
-            .bg(theme.background.opacity(BANNER_DIM))
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                180.,
-                linear_color_stop(
-                    theme.background.opacity(0.),
-                    hero / height * BANNER_SHADE_FROM,
-                ),
-                linear_color_stop(theme.background.opacity(BANNER_SHADE), 1.),
-            )));
-        // Every copy reaches past the box by twice the widest blur, so no blur pulls in the
-        // transparent edge, and they all share one geometry so they line up.
-        let bleed = wash.unwrap_or(BANNER_BLURS[BANNER_BLURS.len() - 1].1) * 2.;
-        let natural = width / BANNER_ASPECT;
-        let tall = match wash {
-            Some(_) => natural,
-            None => natural.min(height * BANNER_OVERFLOW),
-        }
-        .max(height);
-        let across = (tall * BANNER_ASPECT).min(width);
-        // The fade grows from nothing with the room either side, so a page whose width sits near
-        // the point where the picture stops filling it does not flick the fade on and off.
-        let side = bleed + ((width - across) / 2.).min(across * BANNER_SIDE_FADE);
-        let lifted = (tall - height) * BANNER_ANCHOR;
-        // The same picture lies under the banner across the whole box, washed out like a missing
-        // banner's portrait, so a picture narrower than the page has its colours either side.
-        let spread = BANNER_WASH * 2.;
-        let backdrop = Artwork::new(Some(url.clone()))
-            .size(width + spread * 2.)
-            .wide(height + spread * 2.)
-            .overlay()
-            .absolute()
-            .left(relative(0.5))
-            .ml(-(width / 2. + spread))
-            .top(-spread)
-            .blur(BANNER_WASH);
-        let picture = |top: Pixels| {
-            Artwork::new(Some(url.clone()))
-                .size(across + bleed * 2.)
-                .wide(tall + bleed * 2.)
-                .overlay()
-                .absolute()
-                .left(relative(0.5))
-                .ml(-(across / 2. + bleed))
-                .top(-top - lifted - bleed)
-                .fade_sides(side, side)
-        };
-        let below = height - hero;
-        let steps = BANNER_BLURS.iter().map(|&(mark, blur)| {
-            let top = hero + below * (mark - BANNER_RAMP);
-            div()
-                .absolute()
-                .left_0()
-                .right_0()
-                .top(top)
-                .bottom_0()
-                .overflow_hidden()
-                .fade_edges(below * BANNER_RAMP, Pixels::ZERO)
-                .child(picture(top).blur(blur))
-        });
-
-        Some(
-            div()
-                .absolute()
-                .top(-inset)
-                .left(-inset)
-                .right(-inset)
-                .h(height)
-                .overflow_hidden()
-                .fade_edges(Pixels::ZERO, below)
-                .map(|this| match wash {
-                    Some(wash) => this.child(picture(Pixels::ZERO).blur(wash)),
-                    None => this
-                        .when(effects(), |this| this.child(backdrop))
-                        .child(picture(Pixels::ZERO))
-                        .when(effects(), |this| this.children(steps)),
-                })
-                .child(shade)
                 .into_any_element(),
         )
     }
@@ -623,152 +454,9 @@ impl ArtistView {
         )
     }
 
-    fn release_height(
-        &self,
-        filter: ReleaseFilter,
-        expanded: bool,
-        columns: usize,
-        window: &Window,
-        cx: &App,
-    ) -> Pixels {
-        let count = self
-            .detail
-            .read(cx)
-            .albums()
-            .iter()
-            .filter(|album| filter.matches(album.release_type))
-            .count();
-        let visible = match expanded {
-            true => count,
-            false => count.min(columns * RELEASE_ROWS),
-        };
-        let rows = visible.div_ceil(columns.max(1));
-        if rows == 0 {
-            return Pixels::ZERO;
-        }
-
-        let grid = CardGrid::layout(self.width);
-        let card = Card::tile_height(grid.card, window, cx);
-        card * rows as f32 + release_gap(window) * rows.saturating_sub(1) as f32
-    }
-
-    fn set_release_view(
-        &mut self,
-        filter: ReleaseFilter,
-        expanded: bool,
-        columns: usize,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) {
-        let old = self.release_height(
-            self.release_filter,
-            self.releases_expanded,
-            columns,
-            window,
-            cx,
-        );
-        let new = self.release_height(filter, expanded, columns, window, cx);
-        let offset = scrolled(self.scrollbar.read(cx).scroll());
-        self.release_padding = match old > new {
-            true => self.release_padding + (old - new).min(offset),
-            false => (self.release_padding - (new - old)).max(Pixels::ZERO),
-        };
-        self.release_padding_offset = offset;
-        self.release_filter = filter;
-        self.releases_expanded = expanded;
-        cx.notify();
-    }
-
-    fn settle_release_padding(&mut self, offset: Pixels) {
-        if offset < self.release_padding_offset {
-            self.release_padding =
-                (self.release_padding - (self.release_padding_offset - offset)).max(Pixels::ZERO);
-        }
-        self.release_padding_offset = offset;
-    }
-
-    fn release_scroll(
-        &mut self,
-        event: &ScrollWheelEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let upward = event.delta.pixel_delta(window.line_height()).y;
-        if upward <= Pixels::ZERO || self.release_padding <= Pixels::ZERO {
-            return;
-        }
-        cx.notify();
-    }
-
-    /// How many releases the grid lists at a given packing: every one that passes the filter
-    /// while it is expanded, and the first two rows of them while it is not.
-    fn shown_releases(&self, columns: usize, cx: &App) -> usize {
-        let count = self
-            .detail
-            .read(cx)
-            .albums()
-            .iter()
-            .filter(|album| self.release_filter.matches(album.release_type))
-            .count();
-
-        match self.releases_expanded {
-            true => count,
-            false => count.min(columns * RELEASE_ROWS),
-        }
-    }
-
-    /// Holds the releases grid still when the page changes width. A narrower page packs the
-    /// cards into fewer columns and more rows, which slides whatever the user was looking at
-    /// down the page; this moves the scroll by as much as the row under the top edge moved,
-    /// so the same releases stay where they were. The row heights are uniform here, so the
-    /// anchor is the first card of that row and nothing but the packing has to be remembered.
-    fn hold_releases(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let grid = CardGrid::layout(self.width);
-        let columns = grid.columns.max(1);
-        let tile = Card::tile_height(grid.card, window, cx);
-        let (was_columns, was_tile) = (self.release_columns, self.release_tile);
-        self.release_columns = columns;
-        self.release_tile = tile;
-        if was_columns == 0 || (was_columns == columns && (was_tile - tile).abs() < px(0.5)) {
-            return;
-        }
-        let Some(lead) = self.release_lead.get() else {
-            return;
-        };
-
-        let scroll = self.scrollbar.read(cx).scroll().clone();
-        let depth = scroll.bounds().origin.y - lead;
-        if depth <= Pixels::ZERO {
-            return;
-        }
-        let gap = release_gap(window);
-        let before = self.shown_releases(was_columns, cx).div_ceil(was_columns);
-        let (row, into) = Deck::at(&vec![was_tile; before], gap, depth);
-        let share = match was_tile > Pixels::ZERO {
-            true => into / was_tile,
-            false => 0.,
-        };
-
-        let after = self.shown_releases(columns, cx).div_ceil(columns);
-        let landed = (row * was_columns / columns).min(after.saturating_sub(1));
-        let top = Deck::tops(&vec![tile; after], gap)
-            .get(landed)
-            .copied()
-            .unwrap_or_default();
-        let moved = top + tile * share - depth;
-        if moved.abs() < px(0.5) {
-            return;
-        }
-
-        let at = (-scroll.offset().y + moved).max(Pixels::ZERO);
-        scroll.set_offset(point(Pixels::ZERO, -at));
-    }
-
-    /// The Releases grid. The rows go into a `Deck`, so an artist with a long discography
-    /// builds only the rows on screen once the list is expanded, and the section still takes
-    /// the height `release_height` reports, which is what the collapse padding is measured
-    /// against.
-    fn releases(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The Releases shelf: every release that passes the filter, in one row that scrolls
+    /// sideways like the page's other shelves. Nothing frames the cards.
+    fn releases(&self, _window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = *cx.theme();
         let detail = self.detail.read(cx);
         let albums = detail.albums();
@@ -782,75 +470,34 @@ impl ArtistView {
             true => Vec::new(),
             false => cards::release_filters(local, albums.iter().map(|album| album.release_type)),
         };
+        let tile = CardGrid::layout(self.width).card;
 
-        let grid = CardGrid::layout(self.width);
-        let gap = release_gap(window);
-        let releases = match loading {
-            true => div()
-                .flex()
-                .flex_col()
-                .gap(gap)
-                .children((0..RELEASE_ROWS).map(|row| {
-                    CardGrid::new(self.width).children((0..grid.columns).map(move |column| {
-                        let index = row * grid.columns + column;
-                        Card::skeleton(("artist-release-skeleton", index))
-                            .tile(grid.card)
-                            .into_any_element()
-                    }))
+        let shelf = match loading {
+            true => Carousel::new("artist-releases-rail")
+                .show_arrows(false)
+                .children((0..RELEASE_SKELETONS).map(|index| {
+                    Card::skeleton(("artist-release-skeleton", index))
+                        .tile(tile)
+                        .into_any_element()
                 }))
                 .into_any_element(),
             false => {
-                let columns = grid.columns.max(1);
-                let shown: Rc<[usize]> = albums
+                let shown: Vec<&music::Album> = albums
                     .iter()
-                    .enumerate()
-                    .filter(|(_, album)| self.release_filter.matches(album.release_type))
-                    .map(|(index, _)| index)
-                    .take(match self.releases_expanded {
-                        true => usize::MAX,
-                        false => columns * RELEASE_ROWS,
-                    })
+                    .filter(|album| self.release_filter.matches(album.release_type))
                     .collect();
-                let rows = shown.len().div_ceil(columns);
                 let total = shown.len();
-                let height = Card::tile_height(grid.card, window, cx);
-                let width = self.width;
-                let card = grid.card;
-                let opened = cx.entity().downgrade();
-                let lead = self.release_lead.clone();
-
-                Deck::new("artist-releases-deck")
-                    .rows(std::iter::repeat_n(height, rows))
-                    .gap(gap)
-                    .on_measure(move |top, _, _| lead.set(Some(top)))
-                    .draw(move |row, _, cx| {
-                        let Some(view) = opened.upgrade() else {
-                            return div().into_any_element();
-                        };
-                        let start = row * columns;
-                        let end = (start + columns).min(shown.len());
-                        // The cards are built straight off the shelf's albums. A row is
-                        // rebuilt on every frame a scroll asks for, so cloning a release,
-                        // its credits and all of its strings to get here would be the whole
-                        // cost of scrolling a long discography.
-                        let held = view.read(cx);
-                        let listed = held.detail.read(cx).albums();
-                        let cards = (start..end).filter_map(|seat| {
-                            let album = listed.get(shown[seat])?;
-                            let id = SharedString::from(format!("artist-release-{}", album.id));
-
-                            Some(
-                                cards::album_card(id, album, &held.playback, cx)
-                                    .tile(card)
-                                    .flat()
-                                    .aria_position_in_set(seat + 1)
-                                    .aria_size_of_set(total)
-                                    .into_any_element(),
-                            )
-                        });
-
-                        CardGrid::new(width).children(cards).into_any_element()
-                    })
+                Carousel::new("artist-releases-rail")
+                    .show_arrows(false)
+                    .children(shown.into_iter().enumerate().map(|(index, album)| {
+                        let id = SharedString::from(format!("artist-release-{}", album.id));
+                        cards::album_card(id, album, &self.playback, cx)
+                            .tile(tile)
+                            .flat()
+                            .aria_position_in_set(index + 1)
+                            .aria_size_of_set(total)
+                            .into_any_element()
+                    }))
                     .into_any_element()
             }
         };
@@ -884,53 +531,18 @@ impl ArtistView {
                                     .outline()
                                     .selected(self.release_filter == filter)
                                     .aria_toggled(Toggled::from(self.release_filter == filter))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         if this.release_filter == filter {
                                             return;
                                         }
-                                        this.set_release_view(
-                                            filter,
-                                            false,
-                                            grid.columns,
-                                            window,
-                                            cx,
-                                        );
+                                        this.release_filter = filter;
+                                        cx.notify();
                                     }))
                             })),
                     )
                 })
-                .child(releases)
-                .children(self.release_toggle(grid.columns, cx))
+                .child(shelf)
                 .into_any_element(),
-        )
-    }
-
-    fn release_toggle(&self, columns: usize, cx: &mut Context<Self>) -> Option<Button> {
-        let count = self
-            .detail
-            .read(cx)
-            .albums()
-            .iter()
-            .filter(|album| self.release_filter.matches(album.release_type))
-            .count();
-        if count <= columns * RELEASE_ROWS {
-            return None;
-        }
-        let expanded = self.releases_expanded;
-
-        Some(
-            Button::new("artist-releases-more")
-                .label(match expanded {
-                    true => t!("artist-releases-less"),
-                    false => t!("artist-releases-more"),
-                })
-                .trailing(chevron(expanded))
-                .small()
-                .ghost()
-                .aria_expanded(expanded)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.set_release_view(this.release_filter, !expanded, columns, window, cx);
-                })),
         )
     }
 
@@ -1357,14 +969,11 @@ impl Render for ArtistView {
 
         let scroll = self.scrollbar.read(cx).scroll().clone();
         let offset = scrolled(&scroll);
-        self.settle_release_padding(offset);
-        self.hold_releases(window, cx);
         if self.width != previous {
             self.scrollbar
                 .update(cx, |bar, cx| bar.set_max_offset(None, cx));
         }
 
-        let release_padding = self.release_padding;
         let head = self.header(cx);
         // The hero is only as tall as the name and play buttons.
         // The full artist image is the static backdrop behind everything.
@@ -1397,37 +1006,33 @@ impl Render for ArtistView {
         let rails = self.recommended(window, &notify, cx);
         let page = Scroller::new("artist-page", &self.scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .px(inset)
+            .pl(inset)
             .pt(inset)
             .pb(inset)
-            .on_scroll_wheel(cx.listener(Self::release_scroll))
             // The hero content starts at HERO_TOP (46% of viewport).
             // The frost layer begins at FROST_START (45%) and moves with scroll.
-            .child({
-                let mut div = div().relative().pt(height * HERO_TOP).child(head);
-                div
-            })
-            // Top fade gradient: content fades out before reaching the hero controls at the top.
             .child(
                 div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(100.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(theme.background, 0.),
-                        linear_color_stop(theme.background.opacity(0.), 1.),
-                    )),
+                    .relative()
+                    .pt((height * HERO_TOP - TOP_CLEAR).max(Pixels::ZERO))
+                    .child(head),
             )
             .child(tracks)
             .children(grid)
             .children(rails)
-            .children(about)
-            .when(release_padding > Pixels::ZERO, |this| {
-                this.child(div().h(release_padding).flex_none())
-            });
+            .children(about);
+
+        // The band along the top kept clear for the floating controls: the page starts below it
+        // and its content fades in under that, so nothing ever reads over the controls. Only the
+        // artwork behind shows through the cleared band.
+        let page = div()
+            .absolute()
+            .top(TOP_CLEAR)
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .fade_edges(TOP_FADE, Pixels::ZERO)
+            .child(page);
 
         // Floating hero controls at the very top of the page (like album/playlist pages),
         // standing in for the title bar on this fullbleed page.
@@ -1572,16 +1177,5 @@ impl Render for ArtistView {
             .child(page)
             .children(self.about_dialog(cx))
             .into_any_element()
-    }
-}
-
-fn release_gap(window: &Window) -> Pixels {
-    snapped(window.rem_size() * 1.5, window)
-}
-
-fn chevron(expanded: bool) -> &'static str {
-    match expanded {
-        true => "icons/chevron-up.svg",
-        false => "icons/chevron-down.svg",
     }
 }

@@ -28,7 +28,7 @@ use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
-use crate::shared::wash::PageWash;
+use crate::shared::wash::{ARTIST_SHADE, PageWash};
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -1248,6 +1248,9 @@ impl Render for Root {
         let ambient = matches!(self.view, RootView::Fullscreen) && ambient::shown(cx);
         // An album or playlist drops the title bar and draws its own controls over its artwork.
         let fullbleed = self.fullbleed(cx);
+        // The artist page's own artwork reaches the fold, so its wash keeps its colours rather
+        // than darkening toward the bottom: the frosted sidebars then show the artwork itself.
+        let artist_page = matches!(router::trail(cx).read(cx).current(), Destination::Artist(_));
 
         // The shell enters the way a page enters the workspace. An opaque window fades it
         // under a scrim of the page colour, which leaves the workspace's cached views alone,
@@ -1361,12 +1364,14 @@ impl Render for Root {
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.
             .when(self.page_wash_cover.is_some(), |this| {
-                this.child(
-                    PageWash::new(self.page_wash_cover.clone()).top(match fullbleed {
-                        true => Pixels::ZERO,
-                        false => theme.metrics.title_bar,
-                    }),
-                )
+                let wash = PageWash::new(self.page_wash_cover.clone()).top(match fullbleed {
+                    true => Pixels::ZERO,
+                    false => theme.metrics.title_bar,
+                });
+                this.child(match artist_page {
+                    true => wash.settle(false).shade(ARTIST_SHADE),
+                    false => wash,
+                })
             })
             // The bar only changes when it is told to, so a frame drawn for the lyrics or the
             // progress bar replays it rather than building it again. An album or playlist draws

@@ -8,7 +8,6 @@ pub(crate) mod confirm;
 pub(crate) mod device_code;
 pub(crate) mod equalizer;
 pub(crate) mod hero;
-pub(crate) mod hero_controls;
 pub(crate) mod local;
 pub(crate) mod menus;
 pub(crate) mod nav;

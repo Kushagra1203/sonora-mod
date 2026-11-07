@@ -10,9 +10,9 @@ use crate::models::{
 };
 
 /// The longer edge of a large cover, wide enough for the fullscreen player on a 2x display.
-const COVER_LARGE: u32 = 1200;
+const COVER_LARGE: u32 = 1440;
 /// The longer edge of an artist banner, which spans the whole page.
-const BANNER: u32 = 2160;
+const BANNER: u32 = 1440;
 
 pub fn track(source: ytmusic::Track, index: u32) -> Track {
     let artists = source
@@ -313,25 +313,30 @@ pub fn cover(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
     thumbnails.last().map(|thumb| thumb.url.clone())
 }
 
-/// The largest thumbnail, asked of Google's image server at `COVER_LARGE` on its longer edge
-/// when the api offers less. YouTube Music hands out 544 pixels at most, though the server
-/// scales the same picture to any size.
-pub fn cover_large(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
+/// The largest of `thumbnails`, however the api happened to order them.
+fn widest(thumbnails: &[ytmusic::Thumbnail]) -> Option<&ytmusic::Thumbnail> {
     thumbnails
-        .last()
-        .map(|thumb| resized(&thumb.url, COVER_LARGE))
+        .iter()
+        .max_by_key(|thumb| thumb.width.max(thumb.height))
+}
+
+/// The largest thumbnail, asked of Google's image server at `COVER_LARGE` on its longer edge.
+/// YouTube Music hands out 544 pixels at most, though the server scales the same picture to any
+/// size.
+pub fn cover_large(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
+    widest(thumbnails).map(|thumb| resized(&thumb.url, COVER_LARGE))
 }
 
 /// The artist header picture when it is the wide one an immersive header carries. A visual header
 /// only has the square portrait, which makes no banner.
 pub fn banner(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
-    let widest = thumbnails.last()?;
+    let widest = widest(thumbnails)?;
     (widest.width > widest.height).then(|| resized(&widest.url, BANNER))
 }
 
-/// Rewrites the `=w<width>-h<height>` options of a googleusercontent url so its longer edge is
-/// at least `edge`, keeping the aspect and every other option. Any other url, or one already
-/// that large, comes back unchanged.
+/// Rewrites the sizing options of a googleusercontent url so its longer edge is `edge`, keeping
+/// the aspect and every other option. Handles both the `=w<width>-h<height>` form and the `=s<n>`
+/// one, which the server reads as the longer edge of a square. Any other url comes back as it is.
 fn resized(url: &str, edge: u32) -> String {
     let Some((base, options)) = url.rsplit_once('=') else {
         return url.to_owned();
@@ -344,19 +349,24 @@ fn resized(url: &str, edge: u32) -> String {
             .split('-')
             .find_map(|option| option.strip_prefix(prefix)?.parse::<u32>().ok())
     };
-    let (Some(width), Some(height)) = (size('w'), size('h')) else {
-        return url.to_owned();
-    };
-    let longer = width.max(height);
-    if longer == 0 || longer >= edge {
-        return url.to_owned();
-    }
-    let scale = |side: u32| u64::from(side) * u64::from(edge) / u64::from(longer);
     let numeric = |option: &str, prefix: char| {
         option
             .strip_prefix(prefix)
             .is_some_and(|value| value.parse::<u32>().is_ok())
     };
+    let (width, height) = match (size('w'), size('h')) {
+        (Some(width), Some(height)) => (width, height),
+        // A plain `=s<n>` url measures a single square edge instead.
+        _ => match size('s').filter(|edge| *edge > 0) {
+            Some(square) => (square, square),
+            None => return url.to_owned(),
+        },
+    };
+    let longer = width.max(height);
+    if longer == 0 {
+        return url.to_owned();
+    }
+    let scale = |side: u32| u64::from(side) * u64::from(edge) / u64::from(longer);
     let options = options
         .split('-')
         .map(|option| {
@@ -364,6 +374,8 @@ fn resized(url: &str, edge: u32) -> String {
                 format!("w{}", scale(width))
             } else if numeric(option, 'h') {
                 format!("h{}", scale(height))
+            } else if numeric(option, 's') {
+                format!("s{}", scale(width))
             } else {
                 option.to_owned()
             }

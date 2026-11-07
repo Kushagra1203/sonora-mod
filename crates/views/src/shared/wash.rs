@@ -32,6 +32,10 @@ const FADE_TO: f32 = 0.78;
 pub(crate) const SIDEBAR_FROST_TINT: f32 = 0.18;
 pub(crate) const SIDEBAR_FROST_BLUR: Pixels = px(38.);
 
+/// The lighter shade an artist page's wash keeps: its artwork reaches the fold, so the wash
+/// stays close to the artwork's own colour instead of settling into the page behind it.
+pub(crate) const ARTIST_SHADE: f32 = 0.12;
+
 /// The wash behind a detail page. `cover` is the largest cover the page holds; without one the
 /// page keeps the plain theme background.
 #[derive(IntoElement)]
@@ -40,6 +44,12 @@ pub(crate) struct PageWash {
     /// How far below the window's top the wash starts. Zero on a page that drops the title bar,
     /// the bar's height on one that keeps it.
     top: Pixels,
+    /// Whether the field settles into the page colour toward the bottom. A page whose artwork
+    /// already reaches the fold wants the field left alone, so the sidebars frost the artwork's
+    /// own colours rather than a darkening gradient.
+    settle: bool,
+    /// How much of the page colour lies over the whole field.
+    shade: f32,
 }
 
 impl PageWash {
@@ -47,12 +57,27 @@ impl PageWash {
         Self {
             cover,
             top: Pixels::ZERO,
+            settle: true,
+            shade: SHADE,
         }
     }
 
     /// Starts the wash `top` below the window's top edge.
     pub(crate) fn top(mut self, top: Pixels) -> Self {
         self.top = top;
+        self
+    }
+
+    /// Whether the field darkens into the page toward the bottom. Off on a page whose artwork
+    /// reaches the fold, so the sidebars frost the artwork alone.
+    pub(crate) fn settle(mut self, settle: bool) -> Self {
+        self.settle = settle;
+        self
+    }
+
+    /// How much of the page colour lies over the whole field.
+    pub(crate) fn shade(mut self, shade: f32) -> Self {
+        self.shade = shade;
         self
     }
 }
@@ -120,13 +145,15 @@ impl RenderOnce for PageWash {
                 div()
                     .absolute()
                     .inset_0()
-                    .bg(theme.background.opacity(SHADE * clarity)),
+                    .bg(theme.background.opacity(self.shade * clarity)),
             )
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                180.,
-                linear_color_stop(theme.background.opacity(0.), FADE_FROM),
-                linear_color_stop(end, FADE_TO),
-            )))
+            .when(self.settle, |this| {
+                this.child(div().absolute().inset_0().bg(linear_gradient(
+                    180.,
+                    linear_color_stop(theme.background.opacity(0.), FADE_FROM),
+                    linear_color_stop(end, FADE_TO),
+                )))
+            })
             .into_any_element()
     }
 }
