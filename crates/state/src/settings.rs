@@ -308,7 +308,8 @@ pub const SYSTEM_FONT: &str = "auto";
 /// Every lyrics source Sonora knows by the name its provider reports, in the order a fresh
 /// install prefers them. Local, Subsonic and Spotify ride along with the track itself; the rest
 /// are catalogues searched by recording.
-pub const LYRICS_SOURCES: [&str; 15] = [
+pub const LYRICS_SOURCES: [&str; 16] = [
+    "lrc.red",
     "Apple Music", // BiniLyrics
     "PaxSenix",
     "PaxSenix: Musixmatch",
@@ -441,6 +442,8 @@ struct Values {
     /// Set once the lyric sources added alongside BetterLyrics and PaxSenix have been offered, so
     /// a user who turns one off afterwards keeps it off.
     new_lyrics_sources_offered: bool,
+    /// Set once lrc.red has been offered, so a user who turns it off afterwards keeps it off.
+    lrc_red_offered: bool,
     lyrics_providers: Vec<String>,
     /// Every known lyrics source, the preferred one first. Lyrics of the same kind from two
     /// sources go to the one listed higher.
@@ -650,12 +653,14 @@ impl Default for Values {
             local_lyrics_offered: false,
             subsonic_lyrics_offered: false,
             new_lyrics_sources_offered: false,
+            lrc_red_offered: false,
             lyrics_provider_priority: lyrics_priority(&[]),
             lyrics_prioritize_words: true,
             // Musixmatch and NetEase, the old catalogue sources, start switched off; the new
             // PaxSenix: Musixmatch and PaxSenix: Spotify cover their catalogues. Track-scoped
             // sources (Local, Subsonic, Spotify) are enabled and sorted to the end of the priority.
             lyrics_providers: vec![
+                "lrc.red".into(),
                 "Apple Music".into(),
                 "PaxSenix".into(),
                 "PaxSenix: Musixmatch".into(),
@@ -934,6 +939,7 @@ impl AppSettings {
         let parsed = parsed.map(|(values, bytes)| {
             let values = values
                 .map(offer_subsonic_lyrics)
+                .map(offer_lrc_red)
                 .map(offer_new_lyrics_sources);
             // If migrations changed anything, save the updated settings back to disk.
             if let Ok(ref migrated) = values {
@@ -2714,7 +2720,7 @@ impl AppSettings {
             return SettingsReload::Unchanged;
         }
         let values = match serde_json::from_slice::<Values>(json(&bytes)) {
-            Ok(values) => offer_subsonic_lyrics(values).settled(),
+            Ok(values) => offer_lrc_red(offer_subsonic_lyrics(values)).settled(),
             Err(error) => {
                 log::warn!("settings: cannot parse {}: {error}", self.path.display());
                 let newly_broken = self.broken != Some(error.line());
@@ -2806,6 +2812,25 @@ fn offer_subsonic_lyrics(mut values: Values) -> Values {
             .any(|name| name == "Subsonic")
         {
             values.lyrics_providers.push("Subsonic".to_owned());
+        }
+    }
+    values
+}
+
+/// lrc.red reaches an existing user once, then stays as they leave it.
+fn offer_lrc_red(mut values: Values) -> Values {
+    if !values.lrc_red_offered {
+        values.lrc_red_offered = true;
+        if !values.lyrics_providers.iter().any(|name| name == "lrc.red") {
+            values.lyrics_providers.insert(0, "lrc.red".to_owned());
+        }
+        // Slot it into the saved order, which predates it, rather than at the end.
+        if !values
+            .lyrics_provider_priority
+            .iter()
+            .any(|name| name == "lrc.red")
+        {
+            values.lyrics_provider_priority = lyrics_priority(&values.lyrics_provider_priority);
         }
     }
     values

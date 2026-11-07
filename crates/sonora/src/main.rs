@@ -135,6 +135,7 @@ fn main() -> ExitCode {
             Arc::new(music::local::LocalLyrics),
             Arc::new(music::subsonic::SubsonicLyrics::new()),
             Arc::new(music::spotify::SpotifyLyrics::from_env()),
+            Arc::new(music::lrcred::LrcRed::new()),
             Arc::new(music::binimum::Binimum::new()),
             Arc::new(music::paxsenix::PaxSenix::create_apple()),
             Arc::new(music::paxsenix::PaxSenix::create_musixmatch()),

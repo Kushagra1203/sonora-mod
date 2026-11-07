@@ -21,6 +21,7 @@ pub mod link;
 mod live_tests;
 pub mod local;
 pub mod lrclib;
+pub mod lrcred;
 pub mod lyrics;
 mod models;
 pub mod musixmatch;

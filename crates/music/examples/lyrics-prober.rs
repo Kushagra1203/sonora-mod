@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
+use music::lrcred;
 use music::spotify::{AuthConfig, LibrespotClient, auth};
 use music::youtube::YouTubeClient;
 use music::{
@@ -23,6 +24,7 @@ fn providers() -> Vec<Arc<dyn LyricsProvider>> {
     vec![
         Arc::new(music::spotify::SpotifyLyrics::from_env()),
         Arc::new(music::youtube::YouTubeLyrics::new()),
+        Arc::new(lrcred::LrcRed::new()),
         Arc::new(binimum::Binimum::new()),
         Arc::new(musixmatch::Musixmatch::new()),
         Arc::new(lrclib::LrcLib::new()),
