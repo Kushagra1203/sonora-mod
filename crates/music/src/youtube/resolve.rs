@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use regex::Regex;
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use tokio::task::JoinSet;
@@ -158,7 +159,7 @@ impl Resolver {
             }
             *start = Instant::now();
         }
-        match self.api.resolve_song(track).await {
+        match self.search_song(track).await {
             Ok(Some(song)) => {
                 self.landed();
                 return Answer::Song(Box::new(song));
@@ -181,7 +182,7 @@ impl Resolver {
         if self.quiet() {
             return Answer::Failed;
         }
-        match self.api.resolve_song(&retry).await {
+        match self.search_song(&retry).await {
             Ok(Some(song)) => {
                 self.landed();
                 Answer::Song(Box::new(song))
@@ -195,6 +196,13 @@ impl Resolver {
                 Answer::Failed
             }
         }
+    }
+
+    /// Searches for the song behind `track`. The search goes out signed in: the guest search is
+    /// the one Google answers with a challenge first, and a challenge is not an answer.
+    async fn search_song(&self, track: &Track) -> Result<Option<Track>> {
+        let candidates = self.api.search_songs(&query_of(track)).await?;
+        Ok(ytmusic::dedup::best_song_match(track, candidates))
     }
 
     /// Whether a run of failures has put the resolver to sleep. Lifts the sleep when it is over.
@@ -321,6 +329,27 @@ static GUEST_CREDIT: LazyLock<Regex> = LazyLock::new(|| {
 /// leaves the guests out.
 fn without_guests(title: &str) -> String {
     GUEST_CREDIT.replace_all(title, "").trim().to_owned()
+}
+
+/// A note in a title that only says the row is a video, as `(Official Music Video)` or
+/// `(Lyric Video)` writes it.
+static VIDEO_NOTE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\s*[\(\[](?:[^)\]]*(?:official video|official music video|official audio|official lyric video|lyric video|lyrics video|music video|visualizer|audio|mv)[^)\]]*[\)\]])",
+    )
+    .unwrap()
+});
+
+/// The query a search goes out with: the title without the notes that only say the row is a
+/// video, and the artists behind it.
+fn query_of(track: &Track) -> String {
+    let title = VIDEO_NOTE.replace_all(&track.title, " ");
+    let artists: Vec<&str> = track
+        .artists
+        .iter()
+        .map(|artist| artist.name.as_str())
+        .collect();
+    format!("{title} {}", artists.join(" ")).trim().to_owned()
 }
 
 /// Where the resolver keeps what it has learned.

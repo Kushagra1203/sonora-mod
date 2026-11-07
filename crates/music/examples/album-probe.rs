@@ -4,14 +4,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use music::youtube::YouTubeClient;
 use music::MusicApi;
+use music::youtube::YouTubeClient;
 use ytmusic::YtMusic;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let jar = std::env::var("YTMUSIC_COOKIES")
-        .unwrap_or_else(|_| "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into());
+    let jar = std::env::var("YTMUSIC_COOKIES").unwrap_or_else(|_| {
+        "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into()
+    });
     let api = Arc::new(YtMusic::with_cookies("").persist_cookies(jar.into()));
     let client = YouTubeClient::new(api);
     for album_id in std::env::args().skip(1) {
