@@ -103,10 +103,10 @@ impl Resolver {
         if !track.is_video() {
             return track;
         }
-        let Some(id) = track.video_id.clone() else {
+        if track.video_id.is_none() {
             return track;
-        };
-        if let Some(known) = self.cached(&id) {
+        }
+        if let Some(known) = self.cached(&track) {
             return match known {
                 Some(song) => applied(track, song),
                 None => track,
@@ -114,23 +114,31 @@ impl Resolver {
         }
         match self.ask(&track).await {
             Answer::Song(song) => {
-                self.record(id, Some((*song).clone()));
+                self.record(&track, Some((*song).clone()));
                 applied(track, *song)
             }
             Answer::None => {
-                self.record(id, None);
+                self.record(&track, None);
                 track
             }
             Answer::Failed => track,
         }
     }
 
-    /// Whether `video_id` is already known, `Some(None)` when it is known to have no song.
-    fn cached(&self, video_id: &str) -> Option<Option<Track>> {
-        self.known
-            .lock()
-            .ok()
-            .and_then(|known| known.get(video_id).cloned())
+    /// What is known about the song behind `track`, `Some(None)` when it is known to have none.
+    ///
+    /// The same video can sit in two rows of a listing with different credits, and each wants
+    /// its own song: the entry for one of them says nothing about the other. So the row's own
+    /// title and credits are part of the key, and an entry under the bare video id is only
+    /// trusted when the song it holds is the song this row would have found.
+    fn cached(&self, track: &Track) -> Option<Option<Track>> {
+        let known = self.known.lock().ok()?;
+        if let Some(answer) = known.get(&key_of(track)) {
+            return Some(answer.clone());
+        }
+        let video_id = track.video_id.as_deref()?;
+        let song = known.get(video_id)?.as_ref()?;
+        ytmusic::dedup::best_song_match(track, vec![song.clone()]).map(Some)
     }
 
     /// Searches for the song behind `track`, paced and with the guest credit stripped if the
@@ -226,9 +234,17 @@ impl Resolver {
 
     /// Remembers what a completed search said, and rewrites the file at most every
     /// [`WRITE_EVERY`].
-    fn record(&self, video_id: String, song: Option<Track>) {
+    fn record(&self, track: &Track, song: Option<Track>) {
         if let Ok(mut known) = self.known.lock() {
-            known.insert(video_id, song);
+            known.insert(key_of(track), song.clone());
+            // The bare video id serves a row that has no entry of its own yet, as long as the
+            // song it holds is the song that row would have found.
+            if let Some(song) = song
+                && let Some(video_id) = track.video_id.as_deref()
+                && !known.contains_key(video_id)
+            {
+                known.insert(video_id.to_owned(), Some(song));
+            }
         }
         let Ok(mut written) = self.written.lock() else {
             return;
@@ -262,6 +278,23 @@ impl Resolver {
             log::warn!("youtube: cannot write the resolution cache: {error}");
         }
     }
+}
+
+/// The row's own key: the video it is, its title and its credits. Two rows can share a video
+/// and still want different songs, and each keeps its own answer.
+fn key_of(track: &Track) -> String {
+    let mut artists: Vec<String> = track
+        .artists
+        .iter()
+        .map(|artist| artist.name.to_lowercase())
+        .collect();
+    artists.sort();
+    format!(
+        "{}\u{1}{}\u{1}{}",
+        track.video_id.as_deref().unwrap_or_default(),
+        track.title.to_lowercase(),
+        artists.join(", ")
+    )
 }
 
 /// Takes the song's playable id and runtime onto the listing's row.
