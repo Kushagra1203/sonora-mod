@@ -41,6 +41,10 @@ const ROTATION: Duration = Duration::from_secs(10 * 60);
 /// How often the rotation loop looks at the wall clock. A machine that slept past a rotation
 /// catches up within this, since a monotonic timer stops while the system is suspended.
 const ROTATION_CHECK: Duration = Duration::from_secs(60);
+/// How many times the account behind a session is asked before the session is given up on.
+const PROFILE_ATTEMPTS: u32 = 4;
+/// The wait between those asks, which grows with the attempt.
+const PROFILE_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -232,7 +236,7 @@ impl YouTubeProvider {
         if !fresh && let Err(error) = api.rotate_cookies().await {
             log::warn!("youtube: cannot rotate the stored cookies: {error:#}");
         }
-        match api.profile().await {
+        match self.profile(&api).await {
             Ok(profile) => {
                 log::debug!(
                     "youtube: restored the session for authuser {authuser} page {page_id:?}"
@@ -247,6 +251,26 @@ impl YouTubeProvider {
                 Ok(None)
             }
         }
+    }
+
+    /// The account behind the session, asked a few times over: Google answers a burst of
+    /// requests with a challenge now and then, and one of those is no reason to throw a
+    /// working session away and fall back to a guest.
+    async fn profile(&self, api: &Arc<YtMusic>) -> Result<ytmusic::Profile> {
+        let mut last = None;
+        for attempt in 1..=PROFILE_ATTEMPTS {
+            match api.profile().await {
+                Ok(profile) => return Ok(profile),
+                Err(error) => {
+                    log::warn!(
+                        "youtube: cannot read the account behind the session ({attempt}/{PROFILE_ATTEMPTS}): {error:#}"
+                    );
+                    last = Some(error);
+                    tokio::time::sleep(PROFILE_WAIT * attempt).await;
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("the account could not be read")))
     }
 
     /// When the cookie store was last written, which is when Google last rotated the session.

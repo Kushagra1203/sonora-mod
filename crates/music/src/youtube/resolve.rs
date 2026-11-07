@@ -201,7 +201,11 @@ impl Resolver {
     /// Searches for the song behind `track`. The search goes out signed in: the guest search is
     /// the one Google answers with a challenge first, and a challenge is not an answer.
     async fn search_song(&self, track: &Track) -> Result<Option<Track>> {
-        let candidates = self.api.search_songs(&query_of(track)).await?;
+        let Some(query) = query_of(track) else {
+            // Nothing to search for: a row whose title says nothing but that it is a video.
+            return Ok(None);
+        };
+        let candidates = self.api.search_songs(&query).await?;
         Ok(ytmusic::dedup::best_song_match(track, candidates))
     }
 
@@ -341,15 +345,26 @@ static VIDEO_NOTE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The query a search goes out with: the title without the notes that only say the row is a
-/// video, and the artists behind it.
-fn query_of(track: &Track) -> String {
+/// video, and the artists behind it. `None` when the row says nothing to search for.
+fn query_of(track: &Track) -> Option<String> {
     let title = VIDEO_NOTE.replace_all(&track.title, " ");
     let artists: Vec<&str> = track
         .artists
         .iter()
         .map(|artist| artist.name.as_str())
         .collect();
-    format!("{title} {}", artists.join(" ")).trim().to_owned()
+    let query = format!("{title} {}", artists.join(" "));
+    // A query with control characters in it is refused outright, and one with nothing in it is
+    // refused the same way.
+    let query: String = query
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    match query.is_empty() {
+        true => None,
+        false => Some(query),
+    }
 }
 
 /// Where the resolver keeps what it has learned.
