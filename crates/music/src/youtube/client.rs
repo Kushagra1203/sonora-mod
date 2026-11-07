@@ -7,6 +7,7 @@ use tokio::task::JoinSet;
 use ytmusic::YtMusic;
 
 use crate::cover::{self, CoverLimits};
+use crate::youtube::resolve::{self, Resolver};
 use crate::youtube::{genres, radio, subscriptions, wire};
 use crate::{
     Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, Feed, Genre,
@@ -27,13 +28,16 @@ const POPULAR: usize = 12;
 
 pub struct YouTubeClient {
     api: Arc<YtMusic>,
+    resolver: Arc<Resolver>,
     account: String,
 }
 
 impl YouTubeClient {
     pub fn new(api: Arc<YtMusic>) -> Self {
+        let resolver = Arc::new(Resolver::new(api.clone(), resolve::path()));
         Self {
             api,
+            resolver,
             account: String::new(),
         }
     }
@@ -120,7 +124,7 @@ impl MusicApi for YouTubeClient {
                     match self.top_songs(&browse_id, params.as_deref()).await {
                         Ok(mut tracks) if !tracks.is_empty() => {
                             tracks.truncate(POPULAR);
-                            Some(self.api.swap_playable(tracks).await)
+                            Some(self.resolver.swap(tracks).await)
                         }
                         Ok(_) => None,
                         Err(error) => {
@@ -137,7 +141,7 @@ impl MusicApi for YouTubeClient {
         };
         if full.is_none() {
             self.hydrate_durations(&mut base.top_tracks).await;
-            base.top_tracks = self.api.swap_playable(base.top_tracks).await;
+            base.top_tracks = self.resolver.swap(base.top_tracks).await;
         }
         let mut mapped = wire::artist(base);
         if let Some(tracks) = full {
@@ -192,10 +196,9 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn saved_tracks(&self) -> Result<Vec<Track>> {
-        Ok(self
-            .api
-            .liked_songs_resolved()
-            .await?
+        let liked = self.api.liked_songs().await?;
+        let resolved = self.resolver.swap(liked).await;
+        Ok(ytmusic::dedup::collapse(resolved)
             .into_iter()
             .enumerate()
             .map(|(index, track)| wire::track(track, index as u32))
@@ -268,7 +271,7 @@ impl MusicApi for YouTubeClient {
             })
             .unwrap_or_default();
         // The same swap the listings get, so a video asked for on its own also plays its song.
-        let mut tracks = wire::audio_only(&self.api, vec![track]).await;
+        let mut tracks = wire::audio_only(&self.resolver, vec![track]).await;
         let Some(track) = tracks.pop() else {
             anyhow::bail!("track {track_id} could not be read");
         };
@@ -335,7 +338,7 @@ impl MusicApi for YouTubeClient {
         };
         let index = match seat(&tracks) {
             Some(index) => index,
-            None => seat(&self.api.swap_playable(tracks.clone()).await)
+            None => seat(&self.resolver.swap(tracks.clone()).await)
                 .context("track is not in the playlist")?,
         };
         let track = tracks.get(index).context("track is not in the playlist")?;
@@ -381,7 +384,7 @@ impl MusicApi for YouTubeClient {
 
     async fn album(&self, album_id: &str) -> Result<AlbumDetail> {
         let mut detail = self.api.album(album_id).await?;
-        detail.tracks = self.api.swap_playable(detail.tracks).await;
+        detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::album_detail(detail))
     }
 
@@ -420,7 +423,7 @@ impl MusicApi for YouTubeClient {
 
     async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail> {
         let mut detail = self.api.playlist_page(playlist_id).await?;
-        detail.tracks = self.api.swap_playable(detail.tracks).await;
+        detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::playlist_detail(detail))
     }
 
@@ -429,19 +432,19 @@ impl MusicApi for YouTubeClient {
         continuation: &str,
     ) -> Result<(Vec<Track>, Option<String>)> {
         let mut page = self.api.playlist_continuation(continuation).await?;
-        page.tracks = self.api.swap_playable(page.tracks).await;
+        page.tracks = self.resolver.swap(page.tracks).await;
         Ok(wire::playlist_page(page))
     }
 
     async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
         let mut detail = self.api.playlist(playlist_id).await?;
-        detail.tracks = self.api.swap_playable(detail.tracks).await;
+        detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::playlist_detail(detail).tracks)
     }
 
     async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
         let mut tracks = self.api.playlist_page(playlist_id).await?.tracks;
-        tracks = self.api.swap_playable(tracks).await;
+        tracks = self.resolver.swap(tracks).await;
         let tracks: Vec<Track> = tracks
             .into_iter()
             .enumerate()
@@ -455,13 +458,13 @@ impl MusicApi for YouTubeClient {
         track_id: &str,
         from: Option<&str>,
     ) -> Result<(Vec<Track>, Option<String>)> {
-        radio::station(&self.api, track_id, from).await
+        radio::station(&self.api, &self.resolver, track_id, from).await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Track>> {
         let tracks = self
-            .api
-            .swap_playable(self.api.search_songs(query).await?)
+            .resolver
+            .swap(self.api.search_songs(query).await?)
             .await;
         Ok(tracks
             .into_iter()
@@ -491,7 +494,11 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn home(&self) -> Result<HomeFeed> {
-        let mut feed = genres::home(self.api.clone(), self.account.clone());
+        let mut feed = genres::home(
+            self.api.clone(),
+            self.resolver.clone(),
+            self.account.clone(),
+        );
         let mut whole = HomeFeed::default();
         while let Some(lot) = feed.recv().await {
             whole = lot?;
@@ -500,7 +507,11 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn home_paged(&self) -> Result<Feed> {
-        Ok(genres::home(self.api.clone(), self.account.clone()))
+        Ok(genres::home(
+            self.api.clone(),
+            self.resolver.clone(),
+            self.account.clone(),
+        ))
     }
 
     async fn genres(&self) -> Result<Vec<Genre>> {
@@ -508,12 +519,14 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn genre(&self, genre_id: &str) -> Result<GenreDetail> {
-        genres::genre(&self.api, genre_id).await
+        genres::genre(&self.api, &self.resolver, genre_id).await
     }
 
     /// The first cover on the category's own page, since the category buttons carry only a colour.
     async fn genre_cover(&self, genre_id: &str) -> Result<Option<String>> {
-        Ok(genres::genre(&self.api, genre_id).await?.cover())
+        Ok(genres::genre(&self.api, &self.resolver, genre_id)
+            .await?
+            .cover())
     }
 }
 

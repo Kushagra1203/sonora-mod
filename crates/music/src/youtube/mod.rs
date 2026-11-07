@@ -6,6 +6,7 @@ mod links;
 mod lyrics;
 mod playback;
 mod radio;
+mod resolve;
 mod segments;
 mod subscriptions;
 mod wire;
@@ -89,7 +90,6 @@ pub struct YouTubeProvider {
     /// The cookie store ytmusic writes back to as Google rotates the session. The pasted
     /// header in the credential file seeds it when it is missing.
     cookies: PathBuf,
-    resolved: PathBuf,
     player: PathBuf,
 }
 
@@ -100,7 +100,6 @@ impl YouTubeProvider {
         Self {
             credentials: account.join(credentials::FILE),
             cookies: account.join("cookies.json"),
-            resolved: cache.join("resolved.json"),
             player: cache.join("player.json"),
         }
     }
@@ -128,7 +127,6 @@ impl YouTubeProvider {
         };
         Arc::new(
             api.persist_cookies(self.cookies.clone())
-                .cache_resolutions(self.resolved.clone())
                 .cache_player(self.player.clone())
                 .mint_po_tokens(Arc::new(Minter)),
         )

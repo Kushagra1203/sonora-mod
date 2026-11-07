@@ -10,6 +10,7 @@ use ytmusic::nav::Nav as _;
 use ytmusic::{Client, YtMusic, parse};
 
 use crate::Track;
+use crate::youtube::resolve::Resolver;
 use crate::youtube::wire;
 
 /// The station YouTube Music opens when a track is played on its own: the seed first, then what
@@ -18,6 +19,7 @@ use crate::youtube::wire;
 /// own the token answers with most of the panel before it again.
 pub(crate) async fn station(
     api: &Arc<YtMusic>,
+    resolver: &Arc<Resolver>,
     video_id: &str,
     from: Option<&str>,
 ) -> Result<(Vec<Track>, Option<String>)> {
@@ -31,7 +33,7 @@ pub(crate) async fn station(
     let (tracks, next) = panel(&response, key);
     // A station seeded by a video answers with videos, so the songs behind them are what the
     // queue gets. A seed that is already a song never reaches the resolver.
-    let tracks = api.swap_playable(tracks).await;
+    let tracks = resolver.swap(tracks).await;
     Ok((
         tracks
             .into_iter()
