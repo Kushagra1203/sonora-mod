@@ -246,16 +246,22 @@ impl Home {
         let mut held = false;
         let mut sections = pruned(&feed.sections);
         for section in &mut sections {
-            let shown = self
+            let Some(shown) = self
                 .sections
                 .iter()
-                .find(|shown| shown.title == section.title);
-            if let Some(shown) = shown.filter(|shown| shown.items != section.items) {
-                *section = shown.clone();
-                held = true;
+                .find(|shown| shown.title == section.title)
+            else {
+                continue;
+            };
+            // A shelf whose rows only differ in the version they play — a video swapped for the
+            // song behind it — is the same shelf refreshed, so the fresh rows land in place.
+            if shown.items == section.items || same_shelf(shown, section) {
+                continue;
             }
+            *section = shown.clone();
+            held = true;
         }
-        let grown = feed.listen_again.starts_with(&self.recent);
+        let grown = continues(&self.recent, &feed.listen_again);
         let listen_again = match grown {
             true => feed.listen_again.clone(),
             false => self.recent.as_ref().clone(),
@@ -263,7 +269,7 @@ impl Home {
         let quick_picks = feed
             .quick_picks
             .clone()
-            .filter(|picks| picks.starts_with(&self.picks));
+            .filter(|picks| continues_tracks(&self.picks, picks));
         held |= !grown || (feed.quick_picks.is_some() && quick_picks.is_none());
 
         self.pending = held.then_some(feed.clone());
@@ -416,6 +422,53 @@ fn blank(item: &GenreItem) -> bool {
         GenreItem::Playlist(playlist) => playlist.name.is_empty(),
         _ => false,
     }
+}
+
+/// Whether `fresh` still holds everything `shown` did, row for row, whatever version each row
+/// now plays. The audio-only swap rewrites a row's id and runtime and leaves the title, credits
+/// and artwork, so a lot that only differs that way is the same shelf refreshed.
+fn continues(shown: &[GenreItem], fresh: &[GenreItem]) -> bool {
+    fresh.len() >= shown.len()
+        && shown
+            .iter()
+            .zip(fresh)
+            .all(|(shown, fresh)| same_row(shown, fresh))
+}
+
+/// As [`continues`], over plain tracks.
+fn continues_tracks(shown: &[Track], fresh: &[Track]) -> bool {
+    fresh.len() >= shown.len()
+        && shown
+            .iter()
+            .zip(fresh)
+            .all(|(shown, fresh)| same_track(shown, fresh))
+}
+
+/// Whether two shelves hold the same rows in the same order.
+fn same_shelf(shown: &GenreSection, fresh: &GenreSection) -> bool {
+    shown.items.len() == fresh.items.len()
+        && shown
+            .items
+            .iter()
+            .zip(&fresh.items)
+            .all(|(shown, fresh)| same_row(shown, fresh))
+}
+
+/// Whether two rows are the same row, ignoring the version each one plays.
+fn same_row(shown: &GenreItem, fresh: &GenreItem) -> bool {
+    match (shown, fresh) {
+        (GenreItem::Track(shown), GenreItem::Track(fresh)) => same_track(shown, fresh),
+        _ => shown == fresh,
+    }
+}
+
+/// Whether two tracks are the same recording as the listing shows it: the same title, credits,
+/// album and artwork. The playable id and the runtime are what the swap changes.
+fn same_track(shown: &Track, fresh: &Track) -> bool {
+    shown.name == fresh.name
+        && shown.artists == fresh.artists
+        && shown.album == fresh.album
+        && shown.cover == fresh.cover
 }
 
 fn pruned(sections: &[GenreSection]) -> Vec<GenreSection> {

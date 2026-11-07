@@ -719,6 +719,7 @@ mod tests {
             id: Some(format!("{name}:{artists}")),
             name: name.to_owned(),
             playable: true,
+            is_video: false,
             artists: artists.to_owned(),
             artist_refs: artists
                 .split(", ")

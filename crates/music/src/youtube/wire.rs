@@ -98,6 +98,38 @@ fn resolved(mut track: Track, song: ytmusic::Track) -> Track {
     track
 }
 
+/// How many times a request Google answered with a challenge is asked again.
+const CHALLENGE_ATTEMPTS: u32 = 3;
+
+/// Runs `call`, asking again when Google answers with a challenge. A challenge is not an answer —
+/// the same request usually goes through a moment later, and Google hands one out now and then to
+/// a session it is unsure about. Every other failure is handed straight back: an expired sign-in
+/// or a video that is gone will not change.
+pub(crate) async fn patience<T, F, Fut>(mut call: F) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match call().await {
+            Ok(value) => return Ok(value),
+            Err(error) if attempt < CHALLENGE_ATTEMPTS && challenged(&error) => {
+                log::warn!("youtube: met a challenge, asking again ({attempt}): {error:#}");
+                tokio::time::sleep(Duration::from_millis(500 * u64::from(attempt))).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Whether an error is Google's challenge page rather than an answer to the request.
+fn challenged(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("non-json response") || text.contains("403 Forbidden")
+}
+
 /// The same swap across a shelf's cards, so the songs survive being listed beside albums and
 /// playlists.
 pub(crate) async fn audio_only_items(

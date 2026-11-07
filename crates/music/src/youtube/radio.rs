@@ -27,9 +27,8 @@ pub(crate) async fn station(
         Some(_) => "playlistPanelContinuation",
         None => "playlistPanelRenderer",
     };
-    let response = api
-        .execute("next", Client::Music, request(video_id, from))
-        .await?;
+    let response =
+        wire::patience(|| api.execute("next", Client::Music, request(video_id, from))).await?;
     let (tracks, next) = panel(&response, key);
     // A station seeded by a video answers with videos, so the songs behind them are what the
     // queue gets. A seed that is already a song never reaches the resolver.

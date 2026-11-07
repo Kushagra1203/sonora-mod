@@ -36,19 +36,23 @@ const SEPARATOR: &str = " • ";
 /// turn up, every other shelf keeps its place. A lot that fails ends the feed with what came
 /// before it.
 ///
-/// The page opens with four things: Listen again, "From your library", Recaps and Quick
-/// picks. Those are sent as soon as each lot brings one, with nothing else beside them, and
-/// only once all four are in does the rest come, in one message at the end, so the page
-/// settles quickly and then fills below the fold rather than reshuffling lot by lot.
+/// The page opens with Listen again and Quick picks, and those arrive over the first lots. The
+/// first lot waits for both, so the top of the page never draws without the rows the listener
+/// came for; every lot after it carries everything gathered so far, so the page fills below
+/// the fold as the shelves come.
 ///
-/// "From your library" is among the last shelves YouTube sends, yet it opens the page, so
-/// the first lot carries a stand-in built from the library's own playlists, fetched beside
-/// the first page; YouTube's shelf takes its place when it comes.
+/// The songs behind the shelves' videos are resolved after the page is up: a search that is
+/// slow, or that YouTube refuses for a moment, then costs the rows their audio version rather
+/// than the whole page.
+///
+/// "From your library" is among the last shelves YouTube sends, yet it opens the page, so the
+/// first lot carries a stand-in built from the library's own playlists, fetched beside the
+/// first page; YouTube's shelf takes its place when it comes.
 pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) -> Feed {
-    let (sink, feed) = tokio::sync::mpsc::channel(PAGES);
+    let (sink, feed) = tokio::sync::mpsc::channel(PAGES + 1);
     tokio::spawn(async move {
         let (first, playlists) = tokio::join!(
-            api.execute("browse", Client::Music, json!({ "browseId": HOME })),
+            wire::patience(|| api.execute("browse", Client::Music, json!({ "browseId": HOME }))),
             api.library_playlists(),
         );
         let mut answer = match first {
@@ -63,34 +67,39 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
             Ok(playlists) => whole.sections.extend(stand_in(playlists, &account)),
             Err(error) => log::warn!("youtube: cannot list the library playlists: {error:#}"),
         }
-        gather(&answer, &mut whole);
-        swap_shelf_tracks(&resolver, &mut whole).await;
-        let mut opening = !opened(&whole);
-        if sink.send(Ok(arranged(&whole, opening))).await.is_err() {
-            return;
-        }
-        for page in 2..=PAGES {
+        let mut sent = false;
+        for page in 1..=PAGES {
+            gather(&answer, &mut whole);
+            if opened(&whole) || page == PAGES {
+                if sink.send(Ok(arranged(&whole))).await.is_err() {
+                    return;
+                }
+                sent = true;
+            }
             let Some(token) = continuation(&answer).map(str::to_owned) else {
                 break;
             };
-            answer = match api
-                .execute("browse", Client::Music, json!({ "continuation": token }))
-                .await
+            answer = match wire::patience(|| {
+                api.execute(
+                    "browse",
+                    Client::Music,
+                    json!({ "continuation": token.clone() }),
+                )
+            })
+            .await
             {
                 Ok(next) => next,
                 Err(error) => {
-                    log::warn!("youtube: cannot load home page {page}: {error:#}");
+                    log::warn!("youtube: cannot load home page {}: {error:#}", page + 1);
                     break;
                 }
             };
-            gather(&answer, &mut whole);
-            swap_shelf_tracks(&resolver, &mut whole).await;
-            if opening && sink.send(Ok(arranged(&whole, true))).await.is_err() {
-                return;
-            }
-            opening = opening && !opened(&whole);
         }
-        sink.send(Ok(arranged(&whole, false))).await.ok();
+        swap_shelf_tracks(&resolver, &mut whole).await;
+        sink.send(Ok(arranged(&whole))).await.ok();
+        if !sent {
+            log::warn!("youtube: the home feed carried nothing to open with");
+        }
     });
 
     feed
@@ -109,13 +118,11 @@ async fn swap_shelf_tracks(resolver: &Arc<Resolver>, feed: &mut HomeFeed) {
     }
 }
 
-/// Whether the four the page opens with are all in.
+/// Whether the two the page opens with are in. "Recaps" and "From your library" are not part of
+/// it: YouTube only sends the first sometimes, and the stand-in covers the second, so waiting on
+/// them would hold the page back for shelves that may never come.
 fn opened(feed: &HomeFeed) -> bool {
-    !feed.listen_again.is_empty()
-        && feed.quick_picks.is_some()
-        && LEADING
-            .iter()
-            .all(|title| feed.sections.iter().any(|section| section.title == *title))
+    !feed.listen_again.is_empty() && feed.quick_picks.is_some()
 }
 
 fn gather(answer: &Value, feed: &mut HomeFeed) {
@@ -164,9 +171,9 @@ fn stand_in(playlists: Vec<ytmusic::Playlist>, account: &str) -> Option<GenreSec
     })
 }
 
-/// The feed with the `LEADING` shelves first, in their order; while `opening`, those are the
-/// only shelves in it.
-fn arranged(feed: &HomeFeed, opening: bool) -> HomeFeed {
+/// The feed with the `LEADING` shelves first, in their order, and every other shelf behind them
+/// in the order YouTube sent it.
+fn arranged(feed: &HomeFeed) -> HomeFeed {
     let mut sections = feed.sections.clone();
     let mut arranged = Vec::with_capacity(sections.len());
     for title in LEADING {
@@ -174,9 +181,7 @@ fn arranged(feed: &HomeFeed, opening: bool) -> HomeFeed {
             arranged.push(sections.remove(at));
         }
     }
-    if !opening {
-        arranged.append(&mut sections);
-    }
+    arranged.append(&mut sections);
 
     HomeFeed {
         listen_again: feed.listen_again.clone(),
@@ -186,9 +191,9 @@ fn arranged(feed: &HomeFeed, opening: bool) -> HomeFeed {
 }
 
 pub(crate) async fn genres(api: &YtMusic) -> Result<Vec<Genre>> {
-    let answer = api
-        .execute("browse", Client::Music, json!({ "browseId": CATEGORIES }))
-        .await?;
+    let answer =
+        wire::patience(|| api.execute("browse", Client::Music, json!({ "browseId": CATEGORIES })))
+            .await?;
 
     Ok(parse::find_renderers(&answer, "gridRenderer")
         .into_iter()
@@ -202,13 +207,14 @@ pub(crate) async fn genre(
     resolver: &Arc<Resolver>,
     params: &str,
 ) -> Result<GenreDetail> {
-    let answer = api
-        .execute(
+    let answer = wire::patience(|| {
+        api.execute(
             "browse",
             Client::Music,
             json!({ "browseId": CATEGORY, "params": params }),
         )
-        .await?;
+    })
+    .await?;
 
     let mut detail = GenreDetail {
         name: answer

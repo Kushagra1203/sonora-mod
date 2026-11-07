@@ -77,10 +77,11 @@ impl YouTubeClient {
         if let Some(params) = params {
             payload["params"] = serde_json::Value::String(params.to_owned());
         }
-        let page = self
-            .api
-            .execute("browse", ytmusic::Client::Music, payload)
-            .await?;
+        let page = wire::patience(|| {
+            self.api
+                .execute("browse", ytmusic::Client::Music, payload.clone())
+        })
+        .await?;
         Ok(wire::top_songs(&page))
     }
 }
@@ -107,12 +108,12 @@ impl MusicApi for YouTubeClient {
         // response carries the counts and the shelves beside them, so it is read here too, side
         // by side with the crate's reading of the same page.
         let (base, page) = tokio::join!(
-            self.api.artist(artist_id),
-            self.api.execute(
+            wire::patience(|| self.api.artist(artist_id)),
+            wire::patience(|| self.api.execute(
                 "browse",
                 ytmusic::Client::Music,
                 serde_json::json!({ "browseId": artist_id }),
-            ),
+            )),
         );
         let mut base = base?;
         // The shelf's "Show all" leads to the artist's full top-songs list. The page itself only
@@ -383,7 +384,7 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn album(&self, album_id: &str) -> Result<AlbumDetail> {
-        let mut detail = self.api.album(album_id).await?;
+        let mut detail = wire::patience(|| self.api.album(album_id)).await?;
         detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::album_detail(detail))
     }
@@ -402,9 +403,7 @@ impl MusicApi for YouTubeClient {
         let Some(artist_id) = artist_id else {
             return Ok(AlbumCatalogue::default());
         };
-        let artist = self
-            .api
-            .artist(artist_id)
+        let artist = wire::patience(|| self.api.artist(artist_id))
             .await
             .with_context(|| format!("cannot load more from artist {artist_id}"))?;
         let also_like = artist
@@ -422,7 +421,7 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail> {
-        let mut detail = self.api.playlist_page(playlist_id).await?;
+        let mut detail = wire::patience(|| self.api.playlist_page(playlist_id)).await?;
         detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::playlist_detail(detail))
     }
@@ -431,13 +430,13 @@ impl MusicApi for YouTubeClient {
         &self,
         continuation: &str,
     ) -> Result<(Vec<Track>, Option<String>)> {
-        let mut page = self.api.playlist_continuation(continuation).await?;
+        let mut page = wire::patience(|| self.api.playlist_continuation(continuation)).await?;
         page.tracks = self.resolver.swap(page.tracks).await;
         Ok(wire::playlist_page(page))
     }
 
     async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
-        let mut detail = self.api.playlist(playlist_id).await?;
+        let mut detail = wire::patience(|| self.api.playlist(playlist_id)).await?;
         detail.tracks = self.resolver.swap(detail.tracks).await;
         Ok(wire::playlist_detail(detail).tracks)
     }

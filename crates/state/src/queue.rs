@@ -1374,6 +1374,7 @@ mod tests {
             id: Some(id.to_owned()),
             name: id.to_owned(),
             playable: true,
+            is_video: false,
             artists: String::new(),
             artist_refs: Vec::new(),
             album: String::new(),
