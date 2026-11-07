@@ -509,6 +509,7 @@ mod tests {
             id: Some(format!("track-{index}")),
             name: format!("Track {index}"),
             playable,
+            is_video: false,
             artists: format!("Artist {artist}"),
             artist_refs: vec![ArtistRef {
                 name: format!("Artist {artist}"),

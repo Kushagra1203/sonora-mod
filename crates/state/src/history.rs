@@ -192,6 +192,7 @@ impl Store {
                     id: Some(row.get(0)?),
                     name: row.get(2)?,
                     playable: row.get(3)?,
+                    is_video: false,
                     artists: row.get(4)?,
                     artist_refs,
                     album: row.get(6)?,

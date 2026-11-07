@@ -2,6 +2,8 @@
 //! `ytmusic::track_radio` asks for the first panel alone, and the continuation that keeps a
 //! station running past it is only in the raw answer, so the request is made here.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use serde_json::{Value, json};
 use ytmusic::nav::Nav as _;
@@ -15,7 +17,7 @@ use crate::youtube::wire;
 /// under a different renderer key. The seed goes with the continuation either way, since on its
 /// own the token answers with most of the panel before it again.
 pub(crate) async fn station(
-    api: &YtMusic,
+    api: &Arc<YtMusic>,
     video_id: &str,
     from: Option<&str>,
 ) -> Result<(Vec<Track>, Option<String>)> {
@@ -26,7 +28,18 @@ pub(crate) async fn station(
     let response = api
         .execute("next", Client::Music, request(video_id, from))
         .await?;
-    Ok(panel(&response, key))
+    let (tracks, next) = panel(&response, key);
+    // A station seeded by a video answers with videos, so the songs behind them are what the
+    // queue gets. A seed that is already a song never reaches the resolver.
+    let tracks = api.swap_playable(tracks).await;
+    Ok((
+        tracks
+            .into_iter()
+            .enumerate()
+            .map(|(index, track)| wire::track(track, index as u32))
+            .collect(),
+        next,
+    ))
 }
 
 /// The `next` request for the station seeded by `video_id`, at its start or at a continuation.
@@ -45,7 +58,7 @@ fn request(video_id: &str, continuation: Option<&str>) -> Value {
 
 /// The tracks of the first panel under `key`, and the continuation that follows them. A panel
 /// with no radio continuation is the end of the station.
-fn panel(response: &Value, key: &str) -> (Vec<Track>, Option<String>) {
+fn panel(response: &Value, key: &str) -> (Vec<ytmusic::Track>, Option<String>) {
     let Some(panel) = parse::find_renderers(response, key).into_iter().next() else {
         return (Vec::new(), None);
     };
@@ -53,8 +66,6 @@ fn panel(response: &Value, key: &str) -> (Vec<Track>, Option<String>) {
         .items(&["contents"])
         .iter()
         .filter_map(parse::panel_track)
-        .enumerate()
-        .map(|(index, track)| wire::track(track, index as u32))
         .collect();
     let next = panel
         .items(&["continuations"])

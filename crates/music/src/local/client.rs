@@ -783,6 +783,7 @@ mod tests {
             id: Some(id.to_owned()),
             name: name.to_owned(),
             playable: true,
+            is_video: false,
             artists: artists.to_owned(),
             artist_refs: vec![ArtistRef {
                 name: artists.to_owned(),

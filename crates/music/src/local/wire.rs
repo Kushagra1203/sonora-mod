@@ -640,6 +640,7 @@ pub fn track_from_file(
             id: Some(track_id(path)),
             name,
             playable: is_playable(path),
+            is_video: false,
             artists: artist.clone(),
             artist_refs: track_artist_refs,
             album: album_name,

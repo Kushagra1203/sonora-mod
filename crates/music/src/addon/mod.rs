@@ -735,6 +735,7 @@ fn track_of(shared: &Shared, addon: &Addon, row: &AddonTrack) -> Track {
         id: Some(full_id),
         name: row.title.clone(),
         playable: true,
+        is_video: false,
         artists: row.artist.clone(),
         artist_refs: vec![crate::models::ArtistRef {
             name: row.artist.clone(),

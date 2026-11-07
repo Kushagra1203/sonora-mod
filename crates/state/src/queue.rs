@@ -54,6 +54,9 @@ pub struct Stub {
     pub(crate) cover: Option<String>,
     pub(crate) seconds: f32,
     pub(crate) explicit: bool,
+    /// A music video queued before it was swapped for its audio-only song.
+    #[serde(default)]
+    pub(crate) is_video: bool,
     /// Which of the resume's `origins` the track was queued from.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) from: Option<usize>,
@@ -194,6 +197,7 @@ fn stub(track: &Track) -> Option<Stub> {
         cover: track.cover.clone(),
         seconds: track.duration.as_secs_f32(),
         explicit: track.explicit,
+        is_video: track.is_video,
         from: None,
         kind: QueueKind::Context,
     })
@@ -204,6 +208,7 @@ fn hydrate(stub: Stub) -> Track {
         id: Some(stub.id),
         name: stub.name,
         playable: true,
+        is_video: stub.is_video,
         artists: stub.artists,
         artist_refs: stub.credited,
         album: stub.album,

@@ -122,6 +122,7 @@ fn track_from(uri: &str, track: &TrackMessage) -> Track {
     Track {
         id: uri.strip_prefix(TRACK_PREFIX).map(str::to_owned),
         playable: !track.file.is_empty() || !track.alternative.is_empty(),
+        is_video: false,
         name: non_empty(track.name.as_deref())
             .unwrap_or(UNKNOWN)
             .to_owned(),

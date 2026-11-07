@@ -248,6 +248,7 @@ fn track_from(track: PathTrack, album: &Album) -> Result<Track> {
         id: track.uri.strip_prefix(TRACK_PREFIX).map(str::to_owned),
         name: non_empty(&track.name).unwrap_or(UNKNOWN).to_owned(),
         playable: track.playability.playable,
+        is_video: false,
         artists,
         artist_refs,
         album: album.name.clone(),

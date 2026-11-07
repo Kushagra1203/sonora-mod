@@ -47,7 +47,7 @@ impl Target {
             artist: track.artists.clone(),
             duration_sec: (!track.duration.is_zero()).then_some(track.duration.as_secs()),
             album: (!track.album.trim().is_empty()).then(|| track.album.clone()),
-            is_video: false,
+            is_video: track.is_video,
         }
     }
 }

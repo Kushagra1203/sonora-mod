@@ -17,6 +17,7 @@ pub fn track(song: Child, cover: Option<String>) -> Track {
         id: Some(song.id.clone()),
         name: song.title,
         playable: !song.is_video.unwrap_or(false),
+        is_video: false,
         artists,
         artist_refs,
         album: song.album.unwrap_or_default(),

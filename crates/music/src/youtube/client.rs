@@ -64,7 +64,11 @@ impl YouTubeClient {
 
     /// The songs on the artist's "Top songs" page, which the artist page links to under its own
     /// five-song shelf.
-    async fn top_songs(&self, browse_id: &str, params: Option<&str>) -> Result<Vec<Track>> {
+    async fn top_songs(
+        &self,
+        browse_id: &str,
+        params: Option<&str>,
+    ) -> Result<Vec<ytmusic::Track>> {
         let mut payload = serde_json::json!({ "browseId": browse_id });
         if let Some(params) = params {
             payload["params"] = serde_json::Value::String(params.to_owned());
@@ -114,7 +118,10 @@ impl MusicApi for YouTubeClient {
             Ok(page) => match wire::top_songs_endpoint(page) {
                 Some((browse_id, params)) => {
                     match self.top_songs(&browse_id, params.as_deref()).await {
-                        Ok(tracks) if !tracks.is_empty() => Some(tracks),
+                        Ok(mut tracks) if !tracks.is_empty() => {
+                            tracks.truncate(POPULAR);
+                            Some(self.api.swap_playable(tracks).await)
+                        }
                         Ok(_) => None,
                         Err(error) => {
                             log::debug!(
@@ -130,10 +137,15 @@ impl MusicApi for YouTubeClient {
         };
         if full.is_none() {
             self.hydrate_durations(&mut base.top_tracks).await;
+            base.top_tracks = self.api.swap_playable(base.top_tracks).await;
         }
         let mut mapped = wire::artist(base);
         if let Some(tracks) = full {
-            mapped.top_tracks = tracks.into_iter().take(POPULAR).collect();
+            mapped.top_tracks = tracks
+                .into_iter()
+                .enumerate()
+                .map(|(index, track)| wire::track(track, index as u32))
+                .collect();
         }
         match page {
             Ok(page) => wire::artist_page(&mut mapped, &page),
@@ -221,6 +233,15 @@ impl MusicApi for YouTubeClient {
             .get("channelId")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        // The player response says whether this id is the song or its video, so a video can be
+        // swapped for its audio-only song before it ever reaches the engine.
+        let kind = match details
+            .get("musicVideoType")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("MUSIC_VIDEO_TYPE_ATV") | None => ytmusic::TrackKind::Song,
+            Some(_) => ytmusic::TrackKind::Video,
+        };
         let source = ytmusic::Track {
             video_id: Some(track_id.to_string()),
             title,
@@ -233,7 +254,7 @@ impl MusicApi for YouTubeClient {
             thumbnails: Vec::new(),
             explicit: false,
             available: true,
-            kind: ytmusic::TrackKind::Song,
+            kind,
             set_video_id: None,
             liked: None,
             views: None,
@@ -246,6 +267,11 @@ impl MusicApi for YouTubeClient {
                 wire::cover(&thumbs)
             })
             .unwrap_or_default();
+        // The same swap the listings get, so a video asked for on its own also plays its song.
+        let mut tracks = wire::audio_only(&self.api, vec![track]).await;
+        let Some(track) = tracks.pop() else {
+            anyhow::bail!("track {track_id} could not be read");
+        };
         Ok(track)
     }
 
@@ -433,10 +459,11 @@ impl MusicApi for YouTubeClient {
     }
 
     async fn search(&self, query: &str) -> Result<Vec<Track>> {
-        Ok(self
+        let tracks = self
             .api
-            .search_songs(query)
-            .await?
+            .swap_playable(self.api.search_songs(query).await?)
+            .await;
+        Ok(tracks
             .into_iter()
             .enumerate()
             .map(|(index, track)| wire::track(track, index as u32))

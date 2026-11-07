@@ -223,6 +223,7 @@ pub fn track(value: &Value) -> Option<Track> {
                 .get("readable")
                 .map(|flag| flag.is_boolean())
                 .unwrap_or(false),
+        is_video: false,
         artists,
         artist_refs,
         album: text(&album, &["title"])

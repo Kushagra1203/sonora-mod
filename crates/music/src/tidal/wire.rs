@@ -146,6 +146,7 @@ pub fn track(wrapper: &Value) -> Option<Track> {
         id: Some(id),
         name,
         playable,
+        is_video: false,
         artists,
         artist_refs,
         album: text(album, "title").unwrap_or_default().to_owned(),

@@ -1094,6 +1094,7 @@ fn song_as(value: &Resource, id: String) -> Option<Track> {
         name: text(&attributes.name)?,
         // Without play parameters a song is listed but not streamable here.
         playable: attributes.play_params.is_some(),
+        is_video: false,
         artists: text(&attributes.artist_name).unwrap_or_default(),
         artist_refs: artist_refs(value, attributes),
         album: text(&attributes.album_name).unwrap_or_default(),

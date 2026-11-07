@@ -63,6 +63,7 @@ pub(crate) fn home(api: Arc<YtMusic>, account: String) -> Feed {
             Err(error) => log::warn!("youtube: cannot list the library playlists: {error:#}"),
         }
         gather(&answer, &mut whole);
+        swap_shelf_tracks(&api, &mut whole).await;
         let mut opening = !opened(&whole);
         if sink.send(Ok(arranged(&whole, opening))).await.is_err() {
             return;
@@ -82,6 +83,7 @@ pub(crate) fn home(api: Arc<YtMusic>, account: String) -> Feed {
                 }
             };
             gather(&answer, &mut whole);
+            swap_shelf_tracks(&api, &mut whole).await;
             if opening && sink.send(Ok(arranged(&whole, true))).await.is_err() {
                 return;
             }
@@ -91,6 +93,18 @@ pub(crate) fn home(api: Arc<YtMusic>, account: String) -> Feed {
     });
 
     feed
+}
+
+/// Swaps the videos on the feed's shelves for their audio-only songs, so a quick pick or a
+/// listen-again row never sends a music video to the queue.
+async fn swap_shelf_tracks(api: &Arc<YtMusic>, feed: &mut HomeFeed) {
+    feed.listen_again = wire::audio_only_items(api, std::mem::take(&mut feed.listen_again)).await;
+    if let Some(picks) = feed.quick_picks.take() {
+        feed.quick_picks = Some(wire::audio_only(api, picks).await);
+    }
+    for section in &mut feed.sections {
+        section.items = wire::audio_only_items(api, std::mem::take(&mut section.items)).await;
+    }
 }
 
 /// Whether the four the page opens with are all in.
@@ -181,7 +195,7 @@ pub(crate) async fn genres(api: &YtMusic) -> Result<Vec<Genre>> {
         .collect())
 }
 
-pub(crate) async fn genre(api: &YtMusic, params: &str) -> Result<GenreDetail> {
+pub(crate) async fn genre(api: &Arc<YtMusic>, params: &str) -> Result<GenreDetail> {
     let answer = api
         .execute(
             "browse",
@@ -190,7 +204,7 @@ pub(crate) async fn genre(api: &YtMusic, params: &str) -> Result<GenreDetail> {
         )
         .await?;
 
-    Ok(GenreDetail {
+    let mut detail = GenreDetail {
         name: answer
             .run_text(&["header", "musicHeaderRenderer", "title"])
             .unwrap_or_default(),
@@ -198,7 +212,11 @@ pub(crate) async fn genre(api: &YtMusic, params: &str) -> Result<GenreDetail> {
             .into_iter()
             .filter_map(section)
             .collect(),
-    })
+    };
+    for section in &mut detail.sections {
+        section.items = wire::audio_only_items(api, std::mem::take(&mut section.items)).await;
+    }
+    Ok(detail)
 }
 
 fn section(shelf: &Value) -> Option<GenreSection> {

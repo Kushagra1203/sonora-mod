@@ -453,6 +453,7 @@ mod tests {
                 id: Some(id.to_owned()),
                 name: format!("{}:{id}", self.label),
                 playable: true,
+                is_video: false,
                 artists: "Artist".to_owned(),
                 artist_refs: vec![ArtistRef {
                     name: "Artist".to_owned(),

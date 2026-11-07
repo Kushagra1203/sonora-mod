@@ -1,12 +1,14 @@
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
+use regex::Regex;
 use serde_json::Value;
 use ytmusic::nav::Nav as _;
 use ytmusic::parse;
 
 use crate::models::{
-    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, Playlist, PlaylistDetail, RelatedArtist,
-    ReleaseType, Shelves, Track, UserProfile,
+    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreItem, Playlist, PlaylistDetail,
+    RelatedArtist, ReleaseType, Shelves, Track, UserProfile,
 };
 
 /// The longer edge of a large cover, wide enough for the fullscreen player on a 2x display.
@@ -15,6 +17,7 @@ const COVER_LARGE: u32 = 1440;
 const BANNER: u32 = 1440;
 
 pub fn track(source: ytmusic::Track, index: u32) -> Track {
+    let is_video = source.is_video();
     let artists = source
         .artists
         .iter()
@@ -33,6 +36,7 @@ pub fn track(source: ytmusic::Track, index: u32) -> Track {
         id: source.video_id,
         name: source.title,
         playable: source.available,
+        is_video,
         artists,
         artist_refs,
         album: source
@@ -54,6 +58,140 @@ pub fn track(source: ytmusic::Track, index: u32) -> Track {
         languages: Vec::new(),
         credits: Vec::new(),
     }
+}
+
+/// Swaps every video in `tracks` for the song recording behind it. Only the playable id and
+/// the runtime are taken from the song: the listing's title, credits, album and artwork are
+/// what the queue should keep showing. A track that is already a song, or whose song cannot be
+/// found with confidence, is left exactly as it is.
+pub(crate) async fn audio_only(api: &Arc<ytmusic::YtMusic>, tracks: Vec<Track>) -> Vec<Track> {
+    if !tracks.iter().any(|track| track.is_video) {
+        return tracks;
+    }
+    let sources: Vec<ytmusic::Track> = tracks.iter().map(source_of).collect();
+    let swapped = api.swap_playable(sources).await;
+    let mut out = Vec::with_capacity(tracks.len());
+    for (track, song) in tracks.into_iter().zip(swapped) {
+        if !song.is_video() {
+            out.push(resolved(track, song));
+            continue;
+        }
+        // A video's title names its guests, while the song's own title often leaves them out,
+        // and the resolver compares titles exactly. Retry with the guests stripped rather than
+        // play the video behind the song.
+        let guestless = without_guests(&track.name);
+        if !guestless.is_empty() && guestless != track.name {
+            let retry = source_of_as(&track, guestless);
+            if let Ok(Some(song)) = api.resolve_song(&retry).await {
+                out.push(resolved(track, song));
+                continue;
+            }
+        }
+        out.push(track);
+    }
+    out
+}
+
+/// Takes the song's playable id and runtime onto the listing's row.
+fn resolved(mut track: Track, song: ytmusic::Track) -> Track {
+    if let Some(id) = song.video_id {
+        track.id = Some(id);
+    }
+    if let Some(duration) = song.duration {
+        track.duration = duration;
+    }
+    if track.album.trim().is_empty()
+        && let Some(album) = song.album
+    {
+        track.album = album.name;
+        track.album_id = album.id;
+    }
+    track.is_video = false;
+    track
+}
+
+/// The same swap across a shelf's cards, so the songs survive being listed beside albums and
+/// playlists.
+pub(crate) async fn audio_only_items(
+    api: &Arc<ytmusic::YtMusic>,
+    items: Vec<GenreItem>,
+) -> Vec<GenreItem> {
+    let mut seats = Vec::new();
+    let mut tracks = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        if let GenreItem::Track(track) = item {
+            seats.push(index);
+            tracks.push(track.clone());
+        }
+    }
+    if tracks.is_empty() {
+        return items;
+    }
+    let swapped = audio_only(api, tracks).await.into_iter();
+    let mut items = items;
+    for (index, track) in seats.into_iter().zip(swapped) {
+        items[index] = GenreItem::Track(track);
+    }
+    items
+}
+
+/// The queue's view of a track as the resolver reads it: enough of the title, credits,
+/// album and runtime for the search to find the same recording.
+fn source_of(track: &Track) -> ytmusic::Track {
+    source_of_as(track, track.name.clone())
+}
+
+fn source_of_as(track: &Track, title: String) -> ytmusic::Track {
+    let artists = match track.artist_refs.is_empty() {
+        true => track
+            .artists
+            .split(", ")
+            .filter(|name| !name.is_empty())
+            .map(|name| ytmusic::ArtistRef {
+                name: name.to_owned(),
+                id: None,
+            })
+            .collect(),
+        false => track
+            .artist_refs
+            .iter()
+            .map(|artist| ytmusic::ArtistRef {
+                name: artist.name.clone(),
+                id: artist.id.clone(),
+            })
+            .collect(),
+    };
+    ytmusic::Track {
+        video_id: track.id.clone(),
+        title,
+        artists,
+        album: (!track.album.trim().is_empty()).then(|| ytmusic::AlbumRef {
+            name: track.album.clone(),
+            id: track.album_id.clone(),
+        }),
+        duration: (!track.duration.is_zero()).then_some(track.duration),
+        thumbnails: Vec::new(),
+        explicit: track.explicit,
+        available: track.playable,
+        kind: match track.is_video {
+            true => ytmusic::TrackKind::Video,
+            false => ytmusic::TrackKind::Song,
+        },
+        set_video_id: None,
+        liked: None,
+        views: None,
+    }
+}
+
+/// A guest credit as a title writes it, `(feat. …)`, `[ft. …]`, `(featuring …)`.
+static GUEST_CREDIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s*[\(\[](?:feat\.|feat\s|ft\.|ft\s|featuring\s)[^)\]]*[\)\]]").unwrap()
+});
+
+/// The title with its guest credits taken out, for matching against a song whose own title
+/// leaves the guests out.
+fn without_guests(title: &str) -> String {
+    GUEST_CREDIT.replace_all(title, "").trim().to_owned()
 }
 
 pub fn album(source: ytmusic::Album) -> Album {
@@ -248,8 +386,9 @@ pub fn top_songs_endpoint(page: &Value) -> Option<(String, Option<String>)> {
     ))
 }
 
-/// The songs on an artist's top songs page, in the order the page ranks them.
-pub fn top_songs(page: &Value) -> Vec<Track> {
+/// The songs on an artist's top songs page, in the order the page ranks them. They come back
+/// as the crate read them so the caller can swap the videos for their songs before wiring.
+pub fn top_songs(page: &Value) -> Vec<ytmusic::Track> {
     let mut tracks = Vec::new();
     for shelf in parse::find_renderers(page, "musicPlaylistShelfRenderer") {
         collect_songs(shelf.items(&["contents"]), &mut tracks);
@@ -257,13 +396,12 @@ pub fn top_songs(page: &Value) -> Vec<Track> {
     tracks
 }
 
-fn collect_songs(items: &[Value], tracks: &mut Vec<Track>) {
+fn collect_songs(items: &[Value], tracks: &mut Vec<ytmusic::Track>) {
     for item in items {
         let Some(source) = parse::list_item_track(item) else {
             continue;
         };
-        let index = tracks.len() as u32;
-        tracks.push(track(source, index));
+        tracks.push(source);
     }
 }
 

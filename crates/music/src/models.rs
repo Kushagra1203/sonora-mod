@@ -69,6 +69,10 @@ pub struct Track {
     pub id: Option<String>,
     pub name: String,
     pub playable: bool,
+    /// The provider streams a music video here rather than the song's audio. YouTube lists a
+    /// song and its video under separate ids, and only the song carries the timed lyrics.
+    #[serde(default)]
+    pub is_video: bool,
     pub artists: String,
     pub artist_refs: Vec<ArtistRef>,
     pub album: String,
