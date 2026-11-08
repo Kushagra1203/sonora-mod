@@ -460,6 +460,9 @@ pub struct Playback {
     addon_task: Option<Task<()>>,
     /// The search for a lossless copy of the track playing, held so a skip cancels it.
     upgrade_task: Option<Task<()>>,
+    /// Whether an engine is being rebuilt after it was found gone, so a rebuild that finds a
+    /// dead engine again does not rebuild forever.
+    recovering: bool,
     /// The wait for a lossless copy to arrive whole, held so giving up on it cancels it.
     upgrade_timer: Option<Task<()>>,
     /// The display track whose stream an addon copy is shadowing, once one was found.
@@ -673,6 +676,7 @@ impl Playback {
             addon_engine: None,
             addon_task: None,
             upgrade_task: None,
+            recovering: false,
             upgrade_timer: None,
             shadow: None,
             attempted: None,
@@ -1216,6 +1220,10 @@ impl Playback {
                     return;
                 };
                 if let Err(error) = engine.load(&id, at, start == Start::Segue) {
+                    if engine_gone(&error) {
+                        this.recover_engine(cx);
+                        return;
+                    }
                     let reason = crate::blamed(&error, cx);
                     this.failed(reason, cx);
                 }
@@ -2678,10 +2686,15 @@ impl Playback {
                 self.position = at;
                 self.clock.reset(at, false);
             }
-            Err(error) => log::warn!(
-                "playback: cannot prepare {} for resume: {error:#}",
-                track.name
-            ),
+            Err(error) => {
+                log::warn!(
+                    "playback: cannot prepare {} for resume: {error:#}",
+                    track.name
+                );
+                if engine_gone(&error) {
+                    self.recover_engine(cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -3374,6 +3387,19 @@ impl Playback {
         }
     }
 
+    /// Rebuilds the streaming engine after a command could not reach it, which is what a dead
+    /// engine's closed channel says. The track is loaded again where the clock stood, so a
+    /// dead engine does not leave the app stuck at zero.
+    fn recover_engine(&mut self, cx: &mut Context<Self>) {
+        if self.recovering {
+            return;
+        }
+        self.recovering = true;
+        log::warn!("playback: the engine is gone, opening another one");
+        self.restart_output(false, cx);
+        self.recovering = false;
+    }
+
     /// Whether a track's failure is the session having gone stale, in which case the session
     /// reconnects and playback continues from `rebind`.
     fn ask_for_reconnect(&mut self, cx: &mut Context<Self>) -> bool {
@@ -3965,6 +3991,13 @@ fn throttle_wait(throttles: u8) -> Duration {
     THROTTLE_WAIT
         .saturating_mul(1 << doublings)
         .min(THROTTLE_CAP)
+}
+
+/// Whether an error says the engine is gone rather than that the engine refused a command. A
+/// dead engine's channel is closed, and every later command fails the same way, so the app
+/// would stay silent until another engine is opened.
+fn engine_gone(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("cannot reach the playback engine")
 }
 
 /// Drops an engine on a thread of its own. Spotify's waits for its player thread to end, which

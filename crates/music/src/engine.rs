@@ -669,11 +669,15 @@ async fn engine_loop<F: Fetch>(
                 // closed `joined` first. Without reading `gone` here the engine would end
                 // without telling the state to rebuild it, and playback would stay silent.
                 let Some(join) = join else {
-                    if gone.try_recv().is_ok() {
-                        events.send(PlaybackEvent::OutputChanged).ok();
-                        return;
+                    // The audio thread is gone either way. Whether it said so or not, the output
+                    // it was writing to is not there, so the state is told to open another one.
+                    // Without this the engine ends in silence and every later command fails
+                    // with a closed channel, which leaves the app stuck at zero.
+                    if gone.try_recv().is_err() {
+                        log::warn!("playback: the audio thread ended without saying why");
                     }
-                    break;
+                    events.send(PlaybackEvent::OutputChanged).ok();
+                    return;
                 };
                 let before = current.clone();
                 settle(&mut current, join);
@@ -688,9 +692,13 @@ async fn engine_loop<F: Fetch>(
                 }
             }
             lost = gone.recv() => {
-                if lost.is_some() {
-                    events.send(PlaybackEvent::OutputChanged).ok();
+                // The output the audio thread was writing to is gone. It says so when it can,
+                // but the thread can also end without a word, and the engine has to tell the
+                // state to open another output either way.
+                if lost.is_none() {
+                    log::warn!("playback: the audio thread ended without saying why");
                 }
+                events.send(PlaybackEvent::OutputChanged).ok();
                 return;
             }
         }
