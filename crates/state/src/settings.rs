@@ -3196,6 +3196,7 @@ mod tests {
         assert_eq!(
             values.lyrics_provider_priority,
             [
+                "lrc.red",
                 "Apple Music",
                 "PaxSenix",
                 "PaxSenix: Musixmatch",
@@ -3204,10 +3205,12 @@ mod tests {
                 "PaxSenix: Spotify",
                 "LrcLib",
                 "Kugou",
+                "YouTube captions",
                 "YouTube Music",
                 "Genius",
                 "Musixmatch",
                 "NetEase",
+                "Unison",
                 LOCAL,
                 "Subsonic",
                 "Spotify"
@@ -3232,7 +3235,7 @@ mod tests {
     #[test]
     fn lyrics_priority_ignores_unknown_and_duplicate_sources_and_inserts_missing_ones() {
         let order = lyrics_priority(&["LrcLib".into(), "unknown".into(), "LrcLib".into()]);
-        assert_eq!(order[0], "Apple Music");
+        assert_eq!(order[0], "lrc.red");
         assert!(order.contains(&"LrcLib".to_owned()));
         assert_eq!(order.len(), LYRICS_SOURCES.len());
         assert!(!order.iter().any(|name| name == "unknown"));
