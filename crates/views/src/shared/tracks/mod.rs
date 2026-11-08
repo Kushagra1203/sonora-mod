@@ -851,6 +851,7 @@ mod fixture {
             id: Some("id".to_owned()),
             name: String::new(),
             playable,
+            is_video: false,
             artists: String::new(),
             artist_refs: Vec::new(),
             album: String::new(),
