@@ -22,6 +22,13 @@ pub enum LyricsState {
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
+/// How long a source may take to answer before it is left out of the lookup.
+///
+/// Short on purpose. A source that hangs holds up the whole panel, and the sources behind it
+/// are the better answer: a lyric that arrives after the second chorus is of no use to
+/// anyone, and a source that never answers is worse than one that says no.
+const DEADLINE: Duration = Duration::from_secs(6);
+
 /// How many tracks keep their answer in memory. The rest are read back from the cache database,
 /// so this only has to cover the track playing, the next one and a few just played.
 const RECENT: usize = 16;
@@ -728,31 +735,35 @@ fn query_for(track: &Track, key: Option<TrackKey>) -> LyricsQuery {
 /// Asks every provider at once and sends each one's name and hits for the queried track as
 /// they arrive. A provider that fails sends its name with no hits, so the receiver knows it is
 /// done. Returns the providers that replied, leaving out any that failed.
+///
+/// Every provider has a deadline. A source that hangs holds up the whole panel, and the ones
+/// behind it are the better answer: a lyric that arrives after the song has moved on is of no
+/// use to anyone, and a source that never answers at all is worse than one that says no.
+///
+/// The plain-text fallback is asked last, and only when nothing else brought timed words. It
+/// cannot bring timed words itself, so a timed sheet from any other source beats it outright,
+/// and asking it first would spend a request on a host that is watching for them.
 async fn gather(
     providers: Vec<Arc<dyn LyricsProvider>>,
     query: LyricsQuery,
     sender: tokio::sync::mpsc::UnboundedSender<Reply>,
 ) -> anyhow::Result<Vec<&'static str>> {
     let mut tasks = JoinSet::new();
+    let mut fallback: Option<Arc<dyn LyricsProvider>> = None;
     for provider in providers {
+        if provider.name() == music::lyrics::GENIUS {
+            fallback = Some(provider);
+            continue;
+        }
         let query = query.clone();
         tasks.spawn(async move {
             let name = provider.name();
-            let found = provider
-                .search(&query)
-                .await
-                .inspect_err(|error| log::warn!("lyrics: {name} did not answer: {error:#}"))
-                .ok()
-                .map(|mut found| {
-                    // Hits for another track are dropped here, before the lookup holds and
-                    // copies them.
-                    found.retain(|hit| music::lyrics::matched(&query, hit));
-                    found
-                });
+            let found = ask(&provider, &query).await;
             (name, found)
         });
     }
     let mut answered = Vec::new();
+    let mut timed = false;
     while !tasks.is_empty() {
         tokio::select! {
             // Dropping the foreground lookup (including on a provider change) must also
@@ -760,7 +771,8 @@ async fn gather(
             _ = sender.closed() => break,
             found = tasks.join_next() => {
                 if let Some(Ok((name, found))) = found {
-                    if found.is_some() {
+                    if let Some(found) = &found {
+                        timed |= found.iter().any(|hit| hit.lyrics.synced());
                         answered.push(name);
                     }
                     sender.send((Some(name), found.unwrap_or_default())).ok();
@@ -768,7 +780,40 @@ async fn gather(
             }
         }
     }
+    if let Some(provider) = fallback
+        && !timed
+    {
+        let name = provider.name();
+        let found = ask(&provider, &query).await;
+        if found.is_some() {
+            answered.push(name);
+        }
+        sender.send((Some(name), found.unwrap_or_default())).ok();
+    }
     Ok(answered)
+}
+
+/// Asks one provider, with a deadline. A provider that fails or takes too long is left out of
+/// the answer rather than held up: the sources behind it are the better answer.
+async fn ask(provider: &Arc<dyn LyricsProvider>, query: &LyricsQuery) -> Option<Vec<LyricsHit>> {
+    let name = provider.name();
+    match tokio::time::timeout(DEADLINE, provider.search(query)).await {
+        Ok(Ok(found)) => {
+            let mut found = found;
+            // Hits for another track are dropped here, before the lookup holds and
+            // copies them.
+            found.retain(|hit| music::lyrics::matched(query, hit));
+            Some(found)
+        }
+        Ok(Err(error)) => {
+            log::warn!("lyrics: {name} did not answer: {error:#}");
+            None
+        }
+        Err(_) => {
+            log::warn!("lyrics: {name} did not answer within {DEADLINE:?}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

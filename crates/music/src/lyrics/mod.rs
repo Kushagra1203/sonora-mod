@@ -17,6 +17,13 @@ use crate::{Lyrics, LyricsHit, LyricsLine, LyricsQuery, LyricsWord};
 /// The provider that reads a local file's own tags.
 pub const LOCAL: &str = "Local";
 
+/// The provider that scrapes Genius, a plain-text source behind a bot check.
+///
+/// It is asked last and only when nothing else has answered with timed words: it is a web
+/// scraper rather than a service with an endpoint, so every request it answers is one more
+/// request to a host that is watching for them.
+pub const GENIUS: &str = "Genius";
+
 const CLOSE_ENOUGH: u64 = 3;
 const WAY_OFF: u64 = 10;
 const TITLE: u32 = 40;
