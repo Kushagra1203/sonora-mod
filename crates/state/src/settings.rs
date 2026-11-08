@@ -308,7 +308,7 @@ pub const SYSTEM_FONT: &str = "auto";
 /// Every lyrics source Sonora knows by the name its provider reports, in the order a fresh
 /// install prefers them. Local, Subsonic and Spotify ride along with the track itself; the rest
 /// are catalogues searched by recording.
-pub const LYRICS_SOURCES: [&str; 17] = [
+pub const LYRICS_SOURCES: [&str; 18] = [
     "lrc.red",
     "Apple Music", // BiniLyrics
     "PaxSenix",
@@ -323,6 +323,7 @@ pub const LYRICS_SOURCES: [&str; 17] = [
     "Genius",
     "Musixmatch",
     "NetEase",
+    "Unison",
     LOCAL,
     "Subsonic",
     "Spotify",
@@ -330,7 +331,7 @@ pub const LYRICS_SOURCES: [&str; 17] = [
 
 /// The sources added after the first release of the lyrics list. An existing settings file gets
 /// them switched on once, then leaves them alone.
-const NEW_LYRICS_SOURCES: [&str; 7] = [
+const NEW_LYRICS_SOURCES: [&str; 8] = [
     "PaxSenix",
     "PaxSenix: Musixmatch",
     "BetterLyrics",
@@ -338,6 +339,7 @@ const NEW_LYRICS_SOURCES: [&str; 7] = [
     "PaxSenix: Spotify",
     "Genius",
     "YouTube captions",
+    "Unison",
 ];
 
 /// A pin together with the provider it belongs to. The pin is flattened so the stored JSON

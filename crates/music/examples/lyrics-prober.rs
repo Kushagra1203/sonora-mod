@@ -30,6 +30,7 @@ fn providers() -> Vec<Arc<dyn LyricsProvider>> {
         Arc::new(lrclib::LrcLib::new()),
         Arc::new(kugou::Kugou::new()),
         Arc::new(netease::NetEase::new()),
+        Arc::new(music::unison::Unison::new()),
     ]
 }
 

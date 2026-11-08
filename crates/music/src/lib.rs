@@ -39,6 +39,7 @@ pub mod subsonic;
 pub mod tidal;
 mod trim;
 pub mod trouble;
+pub mod unison;
 pub mod vault;
 pub mod youtube;
 

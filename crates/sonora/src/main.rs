@@ -147,6 +147,7 @@ fn main() -> ExitCode {
             Arc::new(music::youtube::YouTubeTranscript::new()),
             Arc::new(music::youtube::YouTubeLyrics::new()),
             Arc::new(music::genius::Genius::new()),
+            Arc::new(music::unison::Unison::new()),
             Arc::new(music::musixmatch::Musixmatch::new()),
             Arc::new(music::netease::NetEase::new()),
         ];
