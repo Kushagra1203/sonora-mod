@@ -20,7 +20,8 @@ impl YouTubeLyrics {
         }
     }
 
-    async fn sheet(&self, id: &str) -> Result<Option<Lyrics>> {
+    /// The plain lyrics YouTube Music holds for a video, from its lyrics tab.
+    pub async fn sheet(&self, id: &str) -> Result<Option<Lyrics>> {
         let next = self
             .api
             .execute(

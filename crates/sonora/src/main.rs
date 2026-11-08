@@ -144,6 +144,7 @@ fn main() -> ExitCode {
             Arc::new(music::paxsenix::PaxSenix::create_spotify()),
             Arc::new(music::lrclib::LrcLib::new()),
             Arc::new(music::kugou::Kugou::new()),
+            Arc::new(music::youtube::YouTubeTranscript::new()),
             Arc::new(music::youtube::YouTubeLyrics::new()),
             Arc::new(music::genius::Genius::new()),
             Arc::new(music::musixmatch::Musixmatch::new()),

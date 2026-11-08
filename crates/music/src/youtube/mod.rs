@@ -9,6 +9,7 @@ mod radio;
 pub mod resolve;
 mod segments;
 mod subscriptions;
+mod transcript;
 mod wire;
 
 use std::path::PathBuf;
@@ -28,6 +29,7 @@ use crate::{
 };
 pub use client::YouTubeClient;
 pub use lyrics::YouTubeLyrics;
+pub use transcript::YouTubeTranscript;
 
 const GUEST_ID: &str = "youtube-guest";
 /// Google's sign-in page, told to come back to YouTube Music once the account is in: the same url
