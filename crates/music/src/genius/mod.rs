@@ -255,10 +255,7 @@ fn furniture(tag: &scraper::node::Element) -> bool {
 /// Cleans the text a page carries around its words: the spaces Genius writes in special
 /// unicode, its "You might also like" insertions, and the "29 Embed" footer.
 fn tidy(raw: &str) -> String {
-    let raw = raw
-        .replace('\u{00A0}', " ")
-        .replace('\u{200B}', " ")
-        .replace('\u{FEFF}', " ");
+    let raw = raw.replace(['\u{00A0}', '\u{200B}', '\u{FEFF}'], " ");
     let mut out = String::with_capacity(raw.len());
     for line in raw.lines() {
         let line = line.trim().replace("You might also like", "");

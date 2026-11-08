@@ -134,12 +134,13 @@ impl LyricsProvider for Unison {
 /// The words in whichever shape the entry says they are.
 fn read(entry: &Entry, text: &str) -> (Lyrics, Vec<String>) {
     let format = entry.format.as_deref().unwrap_or_default();
-    if format.eq_ignore_ascii_case("ttml") || text.contains("<tt ") || text.contains("<tt>") {
-        if let Ok(sheet) = ttml::parse(text)
-            && !sheet.lyrics.is_empty()
-        {
-            return (sheet.lyrics, sheet.writers);
-        }
+    let ttml_shape =
+        format.eq_ignore_ascii_case("ttml") || text.contains("<tt ") || text.contains("<tt>");
+    if ttml_shape
+        && let Ok(sheet) = ttml::parse(text)
+        && !sheet.lyrics.is_empty()
+    {
+        return (sheet.lyrics, sheet.writers);
     }
 
     // A plain entry is prose by its own account; anything else is offered to the LRC reader,
