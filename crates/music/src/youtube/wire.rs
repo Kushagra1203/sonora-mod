@@ -244,11 +244,24 @@ pub fn album(source: ytmusic::Album) -> Album {
 }
 
 pub fn album_detail(source: ytmusic::AlbumDetail) -> AlbumDetail {
+    // The backing playlist's rows carry the songs but not always the release they belong to, so
+    // the album's own name and id fill what a row leaves out.
+    let name = source.album.title.clone();
+    let id = source.album.browse_id.clone();
     let tracks = source
         .tracks
         .into_iter()
         .enumerate()
-        .map(|(index, item)| track(item, index as u32))
+        .map(|(index, item)| {
+            let mut track = track(item, index as u32);
+            if track.album.trim().is_empty() {
+                track.album = name.clone();
+            }
+            if track.album_id.is_none() {
+                track.album_id = Some(id.clone());
+            }
+            track
+        })
         .collect();
     AlbumDetail {
         album: album(source.album),

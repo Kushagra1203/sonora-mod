@@ -11,6 +11,7 @@ use ytmusic::YtMusic;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let jar = std::env::var("YTMUSIC_COOKIES").unwrap_or_else(|_| {
         "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into()
     });

@@ -84,6 +84,47 @@ impl YouTubeClient {
         .await?;
         Ok(wire::top_songs(&page))
     }
+
+    /// The playlist's rows as YouTube's own watch queue states them, which is where it names the
+    /// audio version of each row. A playlist of official videos comes back as the songs behind
+    /// them, so one request replaces a search per row.
+    ///
+    /// `None` when the queue cannot be read or holds fewer rows than the playlist did, so a
+    /// partial queue never replaces a whole listing.
+    async fn playlist_audio(&self, playlist_id: &str, rows: usize) -> Option<Vec<ytmusic::Track>> {
+        let tracks = self.resolver.queue(playlist_id).await?;
+        if tracks.len() < rows {
+            log::debug!(
+                "youtube: the watch queue of {playlist_id} has {} rows against the playlist's {rows}",
+                tracks.len()
+            );
+            return None;
+        }
+        Some(tracks)
+    }
+
+    /// The album's authoritative track listing: the backing playlist the release's own play
+    /// action names, browsed directly, with the `VL` prefix a playlist browse needs. That
+    /// playlist lists the catalogue songs where the album page shows the videos it has for them,
+    /// so one request replaces a search per row.
+    ///
+    /// `None` when the album names no playlist, when the playlist cannot be read, or when it
+    /// holds a poorer listing than the album's own rows — an album that stops at two hundred rows
+    /// has no continuation, while its playlist pages a hundred at a time, so the playlist's rows
+    /// only lose when they are both fewer and complete.
+    async fn album_listing(&self, detail: &ytmusic::AlbumDetail) -> Option<Vec<ytmusic::Track>> {
+        let playlist_id = detail.album.playlist_id.as_deref()?;
+        let tracks = self.resolver.listing(playlist_id).await?;
+        if tracks.len() < detail.tracks.len() {
+            log::debug!(
+                "youtube: album {playlist_id} has {} rows against the album's {}; keeping the album's own",
+                tracks.len(),
+                detail.tracks.len()
+            );
+            return None;
+        }
+        Some(tracks)
+    }
 }
 
 #[async_trait]
@@ -389,7 +430,10 @@ impl MusicApi for YouTubeClient {
 
     async fn album(&self, album_id: &str) -> Result<AlbumDetail> {
         let mut detail = wire::patience(|| self.api.album(album_id)).await?;
-        detail.tracks = self.resolver.swap(detail.tracks).await;
+        match self.album_listing(&detail).await {
+            Some(tracks) => detail.tracks = tracks,
+            None => detail.tracks = self.resolver.swap(detail.tracks).await,
+        }
         Ok(wire::album_detail(detail))
     }
 
@@ -426,7 +470,10 @@ impl MusicApi for YouTubeClient {
 
     async fn playlist(&self, playlist_id: &str) -> Result<PlaylistDetail> {
         let mut detail = wire::patience(|| self.api.playlist_page(playlist_id)).await?;
-        detail.tracks = self.resolver.swap(detail.tracks).await;
+        match self.playlist_audio(playlist_id, detail.tracks.len()).await {
+            Some(tracks) => detail.tracks = tracks,
+            None => detail.tracks = self.resolver.swap(detail.tracks).await,
+        }
         Ok(wire::playlist_detail(detail))
     }
 

@@ -200,6 +200,64 @@ impl Resolver {
         self.api.track_duration(track.video_id.as_deref()?).await
     }
 
+    /// The songs a listing holds as audio, read from the listing's own catalogue rows.
+    ///
+    /// A playlist or an album's backing playlist lists the catalogue songs, where a page that
+    /// lists uploads lists their videos. Reading the catalogue listing is an answer rather than
+    /// a guess, and it costs one request for the whole listing instead of a search per row.
+    ///
+    /// `None` when the listing cannot be read, or when it holds fewer rows than the page did
+    /// and has no continuation — a partial listing is worse than none.
+    pub async fn listing(&self, playlist_id: &str) -> Option<Vec<ytmusic::Track>> {
+        let browse_id = format!("VL{}", playlist_id.trim_start_matches("VL"));
+        let _permit = self.turn().await;
+        let answer = self
+            .api
+            .execute(
+                "browse",
+                ytmusic::Client::Music,
+                serde_json::json!({ "browseId": browse_id }),
+            )
+            .await
+            .ok()?;
+        let tracks: Vec<ytmusic::Track> =
+            ytmusic::parse::find_renderers(&answer, "musicResponsiveListItemRenderer")
+                .into_iter()
+                .filter_map(ytmusic::parse::list_item_track)
+                .collect();
+        if tracks.is_empty() {
+            return None;
+        }
+        Some(tracks)
+    }
+
+    /// The rows of a watch queue, which is how YouTube Music states a playlist's tracks: a row
+    /// YouTube marks as audio is the song behind the video the playlist lists.
+    ///
+    /// The queue carries the type each row really is, so a queue of a playlist of official
+    /// videos comes back with the songs already named — an answer rather than a search's guess.
+    pub async fn queue(&self, playlist_id: &str) -> Option<Vec<ytmusic::Track>> {
+        let _permit = self.turn().await;
+        let answer = self
+            .api
+            .execute(
+                "next",
+                ytmusic::Client::Music,
+                serde_json::json!({ "playlistId": playlist_id, "isAudioOnly": true }),
+            )
+            .await
+            .ok()?;
+        let tracks: Vec<ytmusic::Track> =
+            ytmusic::parse::find_renderers(&answer, "playlistPanelVideoRenderer")
+                .into_iter()
+                .filter_map(ytmusic::parse::panel_track)
+                .collect();
+        if tracks.is_empty() {
+            return None;
+        }
+        Some(tracks)
+    }
+
     /// Waits for this request's turn: at most [`AT_ONCE`] in flight, and at least [`GAP`] apart.
     /// The permit is held for the length of the request it was taken for.
     async fn turn(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
