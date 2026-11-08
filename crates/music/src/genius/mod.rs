@@ -1,19 +1,36 @@
 //! Genius, as a last resort: plain words from a song page.
 //!
 //! Genius has no public lyric API for a desktop client, so the search endpoint and the page it
-//! points at are read directly. The page is HTML, but the lyrics sit in a handful of marked
-//! containers with `<br>` between lines, which is little enough to read without a DOM.
+//! points at are read directly. The page is HTML and its markup nests the way a browser reads
+//! it, so it is parsed rather than scanned: a byte scan of the raw page counts tags inside
+//! `<script>` and `<style>` blocks that are not markup, and mis-nests the page around the
+//! lyrics.
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use scraper::{ElementRef, Html, Node, Selector};
 use serde::Deserialize;
 
-use crate::lyrics::{catalog, entities};
+use crate::lyrics::catalog;
 use crate::{Lyrics, LyricsHit, LyricsProvider, LyricsQuery};
 
 const SOURCE: &str = "Genius";
 const SEARCH: &str = "https://genius.com/api/search/multi";
-const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+/// What this says it is, which is deliberately not a browser.
+///
+/// Genius sits behind Cloudflare, and Cloudflare challenges a browser-claiming User-Agent
+/// whose TLS fingerprint and `sec-ch-ua` headers do not back the claim. Measured from this
+/// app against both of Genius' endpoints: a Chrome UA is answered `403` with a bot-challenge
+/// page, and a plain one is answered `200` with the JSON and the lyrics HTML. Claiming to
+/// be a browser was the thing getting this blocked.
+///
+/// The cost of the 403 was invisible. A failed request travels up as "no lyrics for this
+/// track", which is indistinguishable from a song Genius genuinely does not have.
+const AGENT: &str = concat!(
+    "sonora/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/sonorahq/sonora)"
+);
 
 pub struct Genius {
     http: reqwest::Client,
@@ -165,19 +182,94 @@ impl GeniusResult {
     }
 }
 
+/// The classes Genius puts around a song's words that are not its words: the header with its
+/// count of contributors and its list of translations, the song's introduction, the adverts,
+/// and the buttons and scripts that go with them.
+const FURNITURE: [&str; 3] = [
+    "LyricsHeader__Container",
+    "SongBioPreview__Container",
+    "InreadAd__Container",
+];
+
 /// The words of a song page, verses separated by a blank line.
 fn words(html: &str) -> String {
+    let page = Html::parse_document(html);
+    let marked = Selector::parse("div[data-lyrics-container=true]")
+        .expect("the selector is a constant and always parses");
+    let legacy =
+        Selector::parse("div.lyrics").expect("the selector is a constant and always parses");
+    let mut blocks: Vec<ElementRef<'_>> = page.select(&marked).collect();
+    if blocks.is_empty() {
+        blocks = page.select(&legacy).collect();
+    }
+
     let mut out = String::new();
-    for block in blocks(html) {
-        out.push_str(&clean(block));
+    for block in blocks {
+        // The words sit inside the same container as the furniture, so the furniture is left
+        // out as the words are read rather than sliced away by offset.
+        gather(block, &mut out);
         out.push('\n');
     }
-    let out = out
-        .replace("You might also like", "")
-        .lines()
-        .map(str::trim)
-        .collect::<Vec<_>>()
-        .join("\n");
+    tidy(&out)
+}
+
+/// Writes the words under a node, leaving out the furniture and turning `<br>` into a newline.
+fn gather<'a>(element: ElementRef<'a>, out: &mut String) {
+    for child in element.children() {
+        match child.value() {
+            Node::Text(text) => out.push_str(&text.text),
+            Node::Element(tag) => {
+                if furniture(tag) {
+                    continue;
+                }
+                let Some(element) = ElementRef::wrap(child) else {
+                    continue;
+                };
+                match tag.name() {
+                    "br" => out.push('\n'),
+                    "p" | "div" => {
+                        out.push('\n');
+                        gather(element, out);
+                        out.push('\n');
+                    }
+                    _ => gather(element, out),
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether an element holds a song page's furniture rather than its words.
+fn furniture(tag: &scraper::node::Element) -> bool {
+    if matches!(tag.name(), "script" | "style" | "button") {
+        return true;
+    }
+    if tag.attr("data-exclude-from-selection") == Some("true") {
+        return true;
+    }
+    tag.attr("class")
+        .is_some_and(|classes| FURNITURE.iter().any(|name| classes.contains(name)))
+}
+
+/// Cleans the text a page carries around its words: the spaces Genius writes in special
+/// unicode, its "You might also like" insertions, and the "29 Embed" footer.
+fn tidy(raw: &str) -> String {
+    let raw = raw
+        .replace('\u{00A0}', " ")
+        .replace('\u{200B}', " ")
+        .replace('\u{FEFF}', " ");
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let line = line.trim().replace("You might also like", "");
+        let line = trim_embed(line.trim());
+        if line.is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
     let mut lines: Vec<&str> = out.lines().collect();
     while lines.first().is_some_and(|line| line.is_empty()) {
         lines.remove(0);
@@ -192,92 +284,20 @@ fn words(html: &str) -> String {
     text
 }
 
-/// The inside of every `data-lyrics-container="true"` div.
-fn blocks(html: &str) -> Vec<&str> {
-    let mut found = Vec::new();
-    let mut from = 0;
-    while let Some(offset) = html[from..].find("data-lyrics-container=\"true\"") {
-        let at = from + offset;
-        let Some(open) = html[..at].rfind('<') else {
-            break;
-        };
-        let Some(close) = inner_end(html, open) else {
-            break;
-        };
-        found.push(&html[open..close]);
-        from = close;
-    }
-    found
-}
-
-/// Where the div that starts at `open` closes, after its opening tag.
-fn inner_end(html: &str, open: usize) -> Option<usize> {
-    let tag_end = html[open..].find('>')? + open;
-    if html[open..tag_end].trim_end().ends_with('/') {
-        return Some(tag_end + 1);
-    }
-
-    let mut depth = 1usize;
-    let mut cursor = tag_end + 1;
-    while let Some(offset) = html[cursor..].find('<') {
-        let at = cursor + offset;
-        let close = html[at..].find('>').map(|end| at + end)?;
-        let inner = html[at + 1..close].trim();
-        if inner.starts_with("!--") {
-            cursor = close + 1;
-            continue;
-        }
-        let closing = inner.starts_with('/');
-        let name: String = inner
-            .trim_start_matches('/')
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric())
-            .collect();
-        if name.eq_ignore_ascii_case("div") {
-            if closing {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(at);
-                }
-            } else if !inner.ends_with('/') {
-                depth += 1;
-            }
-        }
-        cursor = close + 1;
-    }
-    None
-}
-
-/// Tags out, line breaks in, entities decoded.
-fn clean(block: &str) -> String {
-    let mut out = String::with_capacity(block.len());
-    let mut rest = block;
-    while let Some(open) = rest.find('<') {
-        out.push_str(&rest[..open]);
-        let Some(close) = rest[open..].find('>').map(|end| open + end) else {
-            break;
-        };
-        let tag = &rest[open + 1..close];
-        let name: String = tag
-            .trim_start_matches('/')
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric())
-            .collect();
-        if name.eq_ignore_ascii_case("br")
-            || name.eq_ignore_ascii_case("p")
-            || name.eq_ignore_ascii_case("div")
-        {
-            out.push('\n');
-        }
-        rest = &rest[close + 1..];
-    }
-    out.push_str(rest);
-    entities::decode(&out)
+/// A line without its trailing "Embed" count.
+fn trim_embed(line: &str) -> &str {
+    let trimmed = line.trim_end();
+    let Some(head) = trimmed.strip_suffix("Embed") else {
+        return trimmed;
+    };
+    head.trim_end()
+        .trim_end_matches(|character: char| character.is_ascii_digit())
+        .trim_end()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clean, words};
+    use super::words;
 
     #[test]
     fn reads_the_marked_container() {
@@ -293,7 +313,22 @@ mod tests {
     }
 
     #[test]
-    fn strips_tags_but_keeps_breaks() {
-        assert_eq!(clean("<b>One</b><br/>Two"), "One\nTwo");
+    fn leaves_out_the_furniture() {
+        let html = r#"<div data-lyrics-container="true">
+            <div class="LyricsHeader__Container-sc">98 Contributors Translations</div>
+            [Verse 1]<br>I met him at a party<br><br>[Chorus]<br>These days, I've got expectations
+            <div class="LyricsFooter__Container-sc"><button>Share</button>29 Embed</div>
+        </div>"#;
+        assert_eq!(
+            words(html),
+            "[Verse 1]\nI met him at a party\n\n[Chorus]\nThese days, I've got expectations"
+        );
+    }
+
+    #[test]
+    fn ignores_tag_shaped_text_in_a_script() {
+        let html = r#"<script>var markup = "<div><div>";</script>
+            <div data-lyrics-container="true">One<br>Two</div>"#;
+        assert_eq!(words(html), "One\nTwo");
     }
 }

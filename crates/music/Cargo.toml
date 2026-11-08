@@ -48,6 +48,7 @@ rodio = { workspace = true, features = ["symphonia-aac", "symphonia-aiff", "symp
 rtrb.workspace = true
 rusqlite.workspace = true
 rusty_aac.workspace = true
+scraper.workspace = true
 rustfft.workspace = true
 serde.workspace = true
 serde_json.workspace = true
