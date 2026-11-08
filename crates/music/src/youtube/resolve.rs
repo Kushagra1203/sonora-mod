@@ -129,6 +129,43 @@ impl Resolver {
         }
     }
 
+    /// The id of the song behind a video, when it is known.
+    ///
+    /// A station seeded by a video answers with videos, and every one of them would then need a
+    /// search of its own. A station seeded by the song answers with songs, so one lookup for the
+    /// seed turns the whole queue into audio.
+    pub async fn song_id(self: &Arc<Self>, video_id: &str) -> String {
+        let Some(track) = self.track_of(video_id).await else {
+            return video_id.to_owned();
+        };
+        let song = self.one(track).await;
+        match song.is_video() {
+            true => video_id.to_owned(),
+            false => song.video_id.unwrap_or_else(|| video_id.to_owned()),
+        }
+    }
+
+    /// The video as a row the resolver can look up, read from YouTube's own watch queue for it.
+    /// The queue carries the title and the credit the video was published under, which is what
+    /// the search needs.
+    async fn track_of(&self, video_id: &str) -> Option<Track> {
+        let _permit = self.turn().await;
+        let answer = self
+            .api
+            .execute(
+                "next",
+                ytmusic::Client::Music,
+                serde_json::json!({ "videoId": video_id }),
+            )
+            .await
+            .ok()?;
+        let track = ytmusic::parse::find_renderers(&answer, "playlistPanelVideoRenderer")
+            .into_iter()
+            .next()
+            .and_then(ytmusic::parse::panel_track)?;
+        Some(track)
+    }
+
     /// What is known about the song behind `track`, `Some(None)` when it is known to have none.
     ///
     /// The same video can sit in two rows of a listing with different credits, and each wants

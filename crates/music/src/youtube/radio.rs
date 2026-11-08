@@ -17,6 +17,10 @@ use crate::youtube::wire;
 /// YouTube's automix picks after it. With `from` it is the next stretch instead, which arrives
 /// under a different renderer key. The seed goes with the continuation either way, since on its
 /// own the token answers with most of the panel before it again.
+///
+/// A station seeded by a video answers with videos, every one of which would then need a search
+/// for the song behind it. A station seeded by the song itself answers with songs, so the seed
+/// is looked up once and the whole queue comes back as audio.
 pub(crate) async fn station(
     api: &Arc<YtMusic>,
     resolver: &Arc<Resolver>,
@@ -27,8 +31,14 @@ pub(crate) async fn station(
         Some(_) => "playlistPanelContinuation",
         None => "playlistPanelRenderer",
     };
+    // The seed of a station that has already started is the row's own id, which the queue
+    // carries; only the first panel has to look the song up.
+    let seed = match from {
+        Some(_) => video_id.to_owned(),
+        None => resolver.song_id(video_id).await,
+    };
     let response =
-        wire::patience(|| api.execute("next", Client::Music, request(video_id, from))).await?;
+        wire::patience(|| api.execute("next", Client::Music, request(&seed, from))).await?;
     let (tracks, next) = panel(&response, key);
     // A station seeded by a video answers with videos, so the songs behind them are what the
     // queue gets. A seed that is already a song never reaches the resolver.
