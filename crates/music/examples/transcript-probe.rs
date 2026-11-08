@@ -10,8 +10,9 @@ use ytmusic::nav::Nav as _;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let jar = std::env::var("YTMUSIC_COOKIES")
-        .unwrap_or_else(|_| "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into());
+    let jar = std::env::var("YTMUSIC_COOKIES").unwrap_or_else(|_| {
+        "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into()
+    });
     let api = Arc::new(YtMusic::with_cookies("").persist_cookies(jar.into()));
     let http = reqwest::Client::new();
 
@@ -27,11 +28,20 @@ async fn main() -> Result<()> {
                 }),
             )
             .await?;
-        let playability = answer.str_at(&["playabilityStatus", "status"]).unwrap_or("?");
+        let playability = answer
+            .str_at(&["playabilityStatus", "status"])
+            .unwrap_or("?");
         let tracks: Vec<_> = answer
-            .items(&["captions", "playerCaptionsTracklistRenderer", "captionTracks"])
+            .items(&[
+                "captions",
+                "playerCaptionsTracklistRenderer",
+                "captionTracks",
+            ])
             .to_vec();
-        println!("=== {video_id}: playability {playability}, {} caption tracks", tracks.len());
+        println!(
+            "=== {video_id}: playability {playability}, {} caption tracks",
+            tracks.len()
+        );
         for track in tracks.iter().take(4) {
             let language = track.str_at(&["languageCode"]).unwrap_or("-");
             let kind = track.str_at(&["kind"]).unwrap_or("manual");
@@ -58,7 +68,7 @@ async fn main() -> Result<()> {
                 };
                 let text: String = event
                     .items(&["segs"])
-                    .into_iter()
+                    .iter()
                     .filter_map(|seg| seg.str_at(&["utf8"]))
                     .collect();
                 let text = text.trim().to_owned();

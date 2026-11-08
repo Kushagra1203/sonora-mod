@@ -10,8 +10,9 @@ use ytmusic::YtMusic;
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
-    let jar = std::env::var("YTMUSIC_COOKIES")
-        .unwrap_or_else(|_| "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into());
+    let jar = std::env::var("YTMUSIC_COOKIES").unwrap_or_else(|_| {
+        "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into()
+    });
     let api = Arc::new(YtMusic::with_cookies("").persist_cookies(jar.into()));
     let resolver = Arc::new(Resolver::new(api.clone(), music::youtube::resolve::path()));
 
