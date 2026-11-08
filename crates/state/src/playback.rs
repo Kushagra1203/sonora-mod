@@ -115,9 +115,18 @@ const LISTED_FILES: usize = 5;
 /// How many tracks' signal reports are kept: the one playing, the one queued behind it, and
 /// room for a skip that has not been heard yet.
 const SIGNALS: usize = 4;
-/// How long a lossless copy may take to arrive whole before the upgrade is given up on, so a
-/// copy that never lands does not hold the hand-over open for the whole track.
-const UPGRADE_PATIENCE: Duration = Duration::from_secs(120);
+/// How far past the live position the lossless copy is opened, so a lead of already-arrived
+/// audio is in hand before the hand-over. The copy opens this far ahead and the swap then seeks
+/// back to where the listener is, which is a seek over bytes that have already arrived. Waiting
+/// for the whole copy instead is what made an upgrade take as long as the download.
+const UPGRADE_LEAD: Duration = Duration::from_secs(12);
+/// How long a copy may take to open before the upgrade is given up on. The original keeps
+/// playing throughout, so this only bounds how long a search result is kept waiting; one that
+/// opens much later would be handed over too far into the song to be worth interrupting it.
+const UPGRADE_PATIENCE: Duration = Duration::from_secs(30);
+/// The least of a track that has to be left for an upgrade to be worth taking the sound down
+/// for: improving the last few seconds of a song is a straight loss.
+const UPGRADE_MIN_REMAINING: Duration = Duration::from_secs(20);
 /// How far the copy may land from the place the original had reached and still be taken for
 /// the same moment of the song.
 const SWAP_SLACK: Duration = Duration::from_secs(2);
@@ -142,8 +151,6 @@ struct Shadow {
     signal: Option<TrackSignal>,
     /// Whether the addon engine has opened the copy and said what it decodes to.
     opened: bool,
-    /// Whether the whole copy has arrived, so it can be heard without waiting on the network.
-    buffered: bool,
     /// Where the copy was told to start playing, so the sound it makes can be checked against
     /// the place the original had reached.
     at: Duration,
@@ -463,7 +470,7 @@ pub struct Playback {
     /// Whether an engine is being rebuilt after it was found gone, so a rebuild that finds a
     /// dead engine again does not rebuild forever.
     recovering: bool,
-    /// The wait for a lossless copy to arrive whole, held so giving up on it cancels it.
+    /// The wait for a lossless copy to open, held so giving up on it cancels it.
     upgrade_timer: Option<Task<()>>,
     /// The display track whose stream an addon copy is shadowing, once one was found.
     shadow: Option<Shadow>,
@@ -1020,7 +1027,6 @@ impl Playback {
         if let Some(shadow) = self.shadow.as_mut() {
             shadow.phase = Shade::Reopening;
             shadow.opened = false;
-            shadow.buffered = false;
         }
         let Some(engine) = self.addon_engine.as_deref() else {
             self.fall_back(cx);
@@ -1278,8 +1284,9 @@ impl Playback {
         ));
     }
 
-    /// Starts the addon engine on the copy that was found, held paused. The original keeps
-    /// playing until the copy has arrived whole and can be heard from where it stands.
+    /// Starts the addon engine on the copy that was found, held paused, opened a little ahead
+    /// of where the original stands. The original keeps playing until the copy has opened and
+    /// the lead it was opened at is behind it; nothing waits for the whole copy.
     fn begin_swap(&mut self, display: &str, addon: Track, cx: &mut Context<Self>) {
         if self.track.as_ref().and_then(|track| track.id.as_deref()) != Some(display)
             || self.intent != Intent::Play
@@ -1289,6 +1296,27 @@ impl Playback {
         }
         let Some(addon_id) = addon.id.clone() else {
             return;
+        };
+        // Not worth taking the sound down for the last stretch of a song.
+        let at = self.live_position();
+        let duration = self.track.as_ref().map(|track| track.duration);
+        if let Some(duration) = duration
+            && !duration.is_zero()
+            && duration.saturating_sub(at) < UPGRADE_MIN_REMAINING
+        {
+            log::debug!(
+                "playback: not upgrading {} with only {}s left",
+                addon.name,
+                duration.saturating_sub(at).as_secs()
+            );
+            self.attempted = Some(display.to_owned());
+            return;
+        }
+        // Opened ahead of the listener so a lead of audio has arrived by the hand-over; the
+        // swap then seeks back to the live position over bytes that are already here.
+        let ahead = match duration {
+            Some(duration) if !duration.is_zero() => (at + UPGRADE_LEAD).min(duration),
+            _ => at + UPGRADE_LEAD,
         };
         self.start_addon_engine(cx);
         let Some(engine) = self.addon_engine.as_ref() else {
@@ -1300,13 +1328,9 @@ impl Playback {
             phase: Shade::Loading,
             signal: None,
             opened: false,
-            buffered: false,
             at: Duration::ZERO,
         });
-        // The copy is opened at its start rather than where the original stands: the bytes
-        // around that place may not have arrived yet, and a decoder waiting for them holds
-        // the sound out.
-        if let Err(error) = engine.load_paused_at(&addon_id, Duration::ZERO) {
+        if let Err(error) = engine.load_paused_at(&addon_id, ahead) {
             log::warn!(
                 "playback: cannot hold the addon stream for {}: {error:#}",
                 addon.name
@@ -1319,8 +1343,8 @@ impl Playback {
         cx.notify();
     }
 
-    /// Gives the copy a while to arrive whole. A copy that never lands is given up on, so the
-    /// original keeps playing and the track is not searched for again.
+    /// Gives the copy a while to open. A copy that never opens is given up on, so the original
+    /// keeps playing and the track is not searched for again.
     fn watch_for_copy(&mut self, display: String, cx: &mut Context<Self>) {
         self.upgrade_timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UPGRADE_PATIENCE).await;
@@ -1328,14 +1352,12 @@ impl Playback {
                 let Some(shadow) = this.shadow.as_ref() else {
                     return;
                 };
-                if shadow.buffered {
+                if shadow.opened {
                     return;
                 }
                 match shadow.phase {
                     Shade::Loading => {
-                        log::warn!(
-                            "playback: the lossless copy of {display} did not arrive in time"
-                        );
+                        log::warn!("playback: the lossless copy of {display} did not open in time");
                         // The shadow is dropped without touching the timer, which is this task.
                         this.abandon_shadow();
                         this.attempted = Some(display);
@@ -1380,9 +1402,9 @@ impl Playback {
         }));
     }
 
-    /// Once the copy has arrived whole, moves it to where the original is now and starts it.
-    /// The original keeps playing until the copy is heard from, so the hand-over is a change
-    /// of stream under the music rather than a stop.
+    /// Once the copy has opened, moves it to where the original is now and starts it. The
+    /// original keeps playing until the copy is heard from, so the hand-over is a change of
+    /// stream under the music rather than a stop.
     fn swap_in(&mut self, cx: &mut Context<Self>) {
         let Some(shadow) = self.shadow.as_ref() else {
             return;
@@ -1391,13 +1413,10 @@ impl Playback {
         if !matches!(phase, Shade::Loading | Shade::Reopening) {
             return;
         }
-        // The copy has to be here whole before it can be heard: a decoder that has to wait for
-        // the bytes around the place it starts at holds the sound out. A copy being reopened is
-        // the only sound there is, so it is taken as soon as it opens.
+        // The copy has to have opened — its decoder standing where it was opened, ahead of the
+        // listener — before it can be heard. It is not waited on whole: the pump keeps filling
+        // the rest while it plays.
         if !shadow.opened {
-            return;
-        }
-        if phase == Shade::Loading && !shadow.buffered {
             return;
         }
         // the first hand-over only starts from a playing track; one being reopened was
@@ -1642,13 +1661,10 @@ impl Playback {
             BackendEvent::Downloaded { .. } if phase == Shade::Playing => {
                 self.preload_upcoming(false, cx);
             }
-            // The copy has arrived whole, so it can be heard without waiting on the network.
+            // The whole copy has arrived; if its decoder has opened, the hand-over goes ahead.
             BackendEvent::Downloaded { .. }
                 if matches!(phase, Shade::Loading | Shade::Reopening) =>
             {
-                if let Some(shadow) = self.shadow.as_mut() {
-                    shadow.buffered = true;
-                }
                 self.swap_in(cx);
             }
             BackendEvent::Downloaded { .. } => {}
