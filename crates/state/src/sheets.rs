@@ -9,7 +9,6 @@ use music::{Lyrics as Sheet, LyricsHit};
 use serde::{Deserialize, Serialize};
 
 const VERSION: u32 = 5;
-const PASSING: bool = cfg!(debug_assertions);
 const CAPACITY: usize = 500;
 
 /// Everything the services said about one track. A service in `answered` replied, even if it had
@@ -51,7 +50,7 @@ pub(crate) struct Unsaved {
 }
 
 /// The stored sheets. Every method blocks on sqlite and json, so a caller runs it off the main
-/// thread. Debug builds neither read nor write them, so a lookup always reaches the services.
+/// thread.
 #[derive(Clone)]
 pub(crate) struct Sheets {
     cache: storage::Cache,
@@ -69,9 +68,6 @@ impl Sheets {
         key: &str,
         known: &[&'static str],
     ) -> Option<(Vec<LyricsHit>, Vec<&'static str>)> {
-        if PASSING {
-            return None;
-        }
         let value = self
             .cache
             .lyrics(key, VERSION)
@@ -107,7 +103,7 @@ impl Sheets {
 
     /// Writes `unsaved` and drops the oldest sheets past the capacity.
     pub(crate) fn save(&self, unsaved: Vec<Unsaved>) {
-        if PASSING || unsaved.is_empty() {
+        if unsaved.is_empty() {
             return;
         }
         if let Err(error) = self.keep(unsaved.into_iter().map(|entry| (entry.key, entry.kept))) {
@@ -118,9 +114,6 @@ impl Sheets {
     /// Deletes the old `lyrics.json`. Its sheets were filed by which services were enabled, so
     /// none of them can be read as one track's answer.
     pub(crate) fn migrate(&self) {
-        if PASSING {
-            return;
-        }
         let path = legacy_path();
         match fs::remove_file(&path) {
             Ok(()) => log::info!("lyrics: removed the old cached sheets"),
