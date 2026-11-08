@@ -6,7 +6,7 @@ mod links;
 mod lyrics;
 mod playback;
 mod radio;
-mod resolve;
+pub mod resolve;
 mod segments;
 mod subscriptions;
 mod wire;

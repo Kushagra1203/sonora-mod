@@ -47,6 +47,17 @@ enum Answer {
     Failed,
 }
 
+/// What one search for a song came back with.
+enum Searched {
+    /// The song, when the search found it.
+    Song(Box<Track>),
+    /// The exact question answered and the song is not in it.
+    Nothing,
+    /// The exact question was refused and a simpler one answered about something else, so
+    /// nothing was learned about the song.
+    Refused,
+}
+
 /// The songs behind videos, remembered on disk so a video is searched for only once.
 pub struct Resolver {
     api: Arc<YtMusic>,
@@ -323,11 +334,17 @@ impl Resolver {
     /// The search itself, for a caller that has already waited its turn.
     async fn ask_now(&self, track: &Track) -> Answer {
         match self.search_song(track).await {
-            Ok(Some(song)) => {
+            Ok(Searched::Song(song)) => {
                 self.landed();
-                return Answer::Song(Box::new(song));
+                return Answer::Song(song);
             }
-            Ok(None) => self.landed(),
+            Ok(Searched::Nothing) => self.landed(),
+            // A refusal is not a challenge, so it does not put the resolver to sleep — but it
+            // says nothing about the song either, so nothing is remembered.
+            Ok(Searched::Refused) => {
+                log::warn!("youtube: {} could not be asked for", track.title);
+                return Answer::Failed;
+            }
             Err(error) => {
                 self.failed(error);
                 return Answer::Failed;
@@ -346,14 +363,15 @@ impl Resolver {
             return Answer::Failed;
         }
         match self.search_song(&retry).await {
-            Ok(Some(song)) => {
+            Ok(Searched::Song(song)) => {
                 self.landed();
-                Answer::Song(Box::new(song))
+                Answer::Song(song)
             }
-            Ok(None) => {
+            Ok(Searched::Nothing) => {
                 self.landed();
                 Answer::None
             }
+            Ok(Searched::Refused) => Answer::Failed,
             Err(error) => {
                 self.failed(error);
                 Answer::Failed
@@ -361,15 +379,45 @@ impl Resolver {
         }
     }
 
-    /// Searches for the song behind `track`. The search goes out signed in: the guest search is
-    /// the one Google answers with a challenge first, and a challenge is not an answer.
-    async fn search_song(&self, track: &Track) -> Result<Option<Track>> {
-        let Some(query) = query_of(track) else {
-            // Nothing to search for: a row whose title says nothing but that it is a video.
-            return Ok(None);
-        };
-        let candidates = self.api.search_songs(&query).await?;
-        Ok(ytmusic::dedup::best_song_match(track, candidates))
+    /// Searches for the song behind `track`.
+    ///
+    /// The search goes out signed in: the guest search is the one Google answers with a
+    /// challenge first, and a challenge is not an answer.
+    ///
+    /// Google refuses some searches outright — it answers `400 invalid argument` for the ones
+    /// that read like a list of keywords — so the row is asked about in several ways and the
+    /// first one Google answers is the one that counts. Only an answer to the exact question
+    /// says there is no song: a simpler question answers about a different thing, so its
+    /// silence is not a verdict.
+    async fn search_song(&self, track: &Track) -> Result<Searched> {
+        let mut refused = None;
+        for (index, question) in questions(track).into_iter().enumerate() {
+            match self.api.search_songs(&question).await {
+                Ok(candidates) => {
+                    if let Some(song) = ytmusic::dedup::best_song_match(track, candidates) {
+                        return Ok(Searched::Song(Box::new(song)));
+                    }
+                    // The search answered and the song is not in it. Only the exact question can
+                    // say that; a simpler one answers about a different thing.
+                    return Ok(match index {
+                        0 => Searched::Nothing,
+                        _ => Searched::Refused,
+                    });
+                }
+                Err(failure) => {
+                    let refused_here = failure.to_string().contains("400 Bad Request");
+                    log::debug!("youtube: the search for {question:?} was refused: {failure:#}");
+                    if !refused_here {
+                        return Err(failure);
+                    }
+                    refused = Some(failure);
+                }
+            }
+        }
+        match refused {
+            Some(error) => Err(error),
+            None => Ok(Searched::Nothing),
+        }
     }
 
     /// Whether a run of failures has put the resolver to sleep. Lifts the sleep when it is over.
@@ -507,27 +555,57 @@ static VIDEO_NOTE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// The query a search goes out with: the title without the notes that only say the row is a
-/// video, and the artists behind it. `None` when the row says nothing to search for.
-fn query_of(track: &Track) -> Option<String> {
-    let title = VIDEO_NOTE.replace_all(&track.title, " ");
-    let artists: Vec<&str> = track
+/// The questions to ask for the song behind a row, from the most exact to the simplest.
+///
+/// Google refuses some searches outright — it answers `400 invalid argument` for the ones that
+/// read like a list of keywords rather than a title — and a shorter question is often accepted
+/// where the long one was not. So the row is asked about in several ways, and the first one
+/// Google answers is the one that counts.
+fn questions(track: &Track) -> Vec<String> {
+    let title = VIDEO_NOTE.replace_all(&track.title, " ").into_owned();
+    let artists: Vec<String> = track
         .artists
         .iter()
-        .map(|artist| artist.name.as_str())
+        .map(|artist| artist.name.clone())
+        .filter(|name| !name.trim().is_empty())
         .collect();
-    let query = format!("{title} {}", artists.join(" "));
-    // A query with control characters in it is refused outright, and one with nothing in it is
-    // refused the same way.
-    let query: String = query
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    match query.is_empty() {
-        true => None,
-        false => Some(query),
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |question: String| {
+        let question = tidy(&question);
+        if !question.is_empty() && !out.contains(&question) {
+            out.push(question);
+        }
+    };
+    add(match artists.is_empty() {
+        true => title.clone(),
+        false => format!("{title} {}", artists.join(" ")),
+    });
+    add(title.clone());
+    // A title that reads like a list is the one Google refuses, so it is also asked about with
+    // only its first few words.
+    let words: Vec<&str> = title.split_whitespace().collect();
+    for count in [4usize, 3, 2] {
+        if words.len() <= count {
+            break;
+        }
+        let short = words[..count].join(" ");
+        add(match artists.first() {
+            Some(artist) => format!("{short} {artist}"),
+            None => short.clone(),
+        });
+        add(short);
     }
+    out
+}
+
+/// A query as it goes out: no control characters, no runs of space.
+fn tidy(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Where the resolver keeps what it has learned.

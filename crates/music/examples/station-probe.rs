@@ -4,22 +4,26 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use music::youtube::YouTubeClient;
 use music::MusicApi;
+use music::youtube::YouTubeClient;
 use ytmusic::YtMusic;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    let jar = std::env::var("YTMUSIC_COOKIES")
-        .unwrap_or_else(|_| "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into());
+    let jar = std::env::var("YTMUSIC_COOKIES").unwrap_or_else(|_| {
+        "/home/kushagra/.local/share/sonora/accounts/youtube/cookies.json".into()
+    });
     let api = Arc::new(YtMusic::with_cookies("").persist_cookies(jar.into()));
     let client = YouTubeClient::new(api);
 
     for video_id in std::env::args().skip(1) {
         let (tracks, next) = client.track_radio(&video_id, None).await?;
         let videos = tracks.iter().filter(|track| track.is_video).count();
-        println!("=== station of {video_id}: {} rows, {videos} videos", tracks.len());
+        println!(
+            "=== station of {video_id}: {} rows, {videos} videos",
+            tracks.len()
+        );
         for track in tracks.iter().take(8) {
             println!(
                 "  {:14} video={:5} dur={:>4}s {}",
