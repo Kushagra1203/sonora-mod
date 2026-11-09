@@ -176,6 +176,9 @@ pub(crate) struct HeroPlayButton {
     listing: Listing,
     from: Option<Origin>,
     shuffled: bool,
+    /// Whether the button is the page's lone large play control rather than a labelled one in a
+    /// row.
+    large: bool,
     playback: Entity<Playback>,
 }
 
@@ -192,26 +195,21 @@ impl HeroPlayButton {
             listing: Listing::Owned(tracks),
             from: None,
             shuffled: false,
+            large: false,
             playback,
         }
+    }
+
+    /// Turns the button into the page's lone large play control, with its glyph carrying the
+    /// action instead of a label.
+    pub(crate) fn large(mut self) -> Self {
+        self.large = true;
+        self
     }
 
     pub(crate) fn from(mut self, origin: Option<Origin>) -> Self {
         self.from = origin;
         self
-    }
-
-    /// The Shuffle button beside Play: an icon-only outline button that turns shuffle on and
-    /// starts the tracks from a random one, never mirroring the transport state.
-    pub(crate) fn shuffle(
-        id: impl Into<ElementId>,
-        tracks: Vec<Track>,
-        playback: Entity<Playback>,
-    ) -> Self {
-        Self {
-            shuffled: true,
-            ..Self::new(id, SharedString::default(), tracks, playback)
-        }
     }
 
     /// `shuffle` over a table's rows, in their displayed order.
@@ -238,6 +236,7 @@ impl HeroPlayButton {
             listing: Listing::Listed(table.clone()),
             from: None,
             shuffled: false,
+            large: false,
             playback,
         }
     }
@@ -284,28 +283,31 @@ impl RenderOnce for HeroPlayButton {
             None => (self.label, "icons/play.svg"),
         };
         let disabled = self.listing.first(cx).is_none();
+        let large = self.large;
         let listing = self.listing;
         let from = self.from;
         let playback = self.playback;
 
-        div().flex().child(
-            Button::new(self.id)
-                .label(label)
-                .icon(icon)
-                .primary()
-                .rounded_full()
-                .disabled(disabled)
-                .on_click(move |_, _, cx| {
-                    playback.update(cx, |playback, cx| match playing {
-                        Some(_) => playback.toggle_play(cx),
-                        None => {
-                            let queued = listing.queue(cx);
-                            let from = from.clone().or_else(|| listing.whence(cx));
-                            playback.start_any(queued, from, cx)
-                        }
-                    });
-                }),
-        )
+        let mut button = Button::new(self.id)
+            .icon(icon)
+            .primary()
+            .rounded_full()
+            .disabled(disabled);
+        button = match large {
+            true => button.large().tooltip("artist-play"),
+            false => button.label(label),
+        };
+
+        div().flex().child(button.on_click(move |_, _, cx| {
+            playback.update(cx, |playback, cx| match playing {
+                Some(_) => playback.toggle_play(cx),
+                None => {
+                    let queued = listing.queue(cx);
+                    let from = from.clone().or_else(|| listing.whence(cx));
+                    playback.start_any(queued, from, cx)
+                }
+            });
+        }))
     }
 }
 
@@ -333,6 +335,9 @@ pub(crate) struct PageHero {
     art_radius: Option<Pixels>,
     /// The title's size, for a page that gives its name more room than the shared display step.
     title_size: Option<Pixels>,
+    /// Centers the title, stats and actions across the page rather than starting them at the
+    /// left, for a poster screen that puts its name in the middle of the artwork.
+    center: bool,
 }
 
 impl PageHero {
@@ -354,6 +359,7 @@ impl PageHero {
             art: None,
             art_radius: None,
             title_size: None,
+            center: false,
         }
     }
 
@@ -372,6 +378,13 @@ impl PageHero {
     /// Sets the title in `size`, for a page whose name should carry the header.
     pub(crate) fn title_size(mut self, size: Pixels) -> Self {
         self.title_size = Some(size);
+        self
+    }
+
+    /// Centers the title, stats and actions across the page, for a poster screen that puts its
+    /// name in the middle of the artwork.
+    pub(crate) fn centered(mut self) -> Self {
+        self.center = true;
         self
     }
 
@@ -452,6 +465,7 @@ impl RenderOnce for PageHero {
                 .flex()
                 .flex_none()
                 .items_end()
+                .when(self.center, |this| this.w_full().justify_center())
                 .gap_5()
                 .pb_6()
                 .child(
@@ -466,6 +480,7 @@ impl RenderOnce for PageHero {
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .when(self.center, |this| this.items_center())
                         .min_w_0()
                         .h(art)
                         .justify_end()
@@ -494,6 +509,7 @@ impl RenderOnce for PageHero {
             .flex()
             .flex_none()
             .items_end()
+            .when(self.center, |this| this.w_full().justify_center())
             .gap_5()
             .pb_6()
             .child(
@@ -518,6 +534,7 @@ impl RenderOnce for PageHero {
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .when(self.center, |this| this.items_center())
                     .min_w_0()
                     .h(art)
                     .justify_end()
@@ -528,6 +545,7 @@ impl RenderOnce for PageHero {
                         div()
                             .flex()
                             .items_center()
+                            .when(self.center, |this| this.justify_center())
                             .gap_3()
                             .min_w_0()
                             .text_size(title_size)
@@ -561,7 +579,12 @@ impl RenderOnce for PageHero {
                             }),
                     )
                     .children(self.meta)
-                    .children(self.actions.map(|actions| div().pt_1().child(actions))),
+                    .children(self.actions.map(|actions| {
+                        div()
+                            .pt_1()
+                            .when(self.center, |this| this.flex().justify_center())
+                            .child(actions)
+                    })),
             )
     }
 }

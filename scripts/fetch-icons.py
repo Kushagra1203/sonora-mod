@@ -50,6 +50,7 @@ MAP = {
     "heart-off": (None, None, None),
     "house": ("home-simple", "home-linear", "home-4-line"),
     "info": ("info-circle", "info-circle-linear", "information-line"),
+    "languages": ("language", "globe-linear", "translate-2"),
     "layout-grid": ("view-grid", "widget-linear", "layout-grid-line"),
     "library-big": ("book-stack", "library-linear", "book-shelf-line"),
     "link": ("link", "link-linear", "link"),

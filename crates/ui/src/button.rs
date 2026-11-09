@@ -47,6 +47,9 @@ pub struct Button {
     trailing: Option<SharedString>,
     variant: Variant,
     small: bool,
+    /// A tall button with a larger glyph, for a lone action that should carry a page rather
+    /// than sit in a row of controls.
+    large: bool,
     disabled: bool,
     selected: bool,
     /// Whether the menu or panel the button opens is showing, `None` for a button that opens
@@ -87,6 +90,7 @@ impl Button {
             trailing: None,
             variant: Variant::Ghost,
             small: false,
+            large: false,
             disabled: false,
             selected: false,
             expanded: None,
@@ -173,6 +177,12 @@ impl Button {
 
     pub fn small(mut self) -> Self {
         self.small = true;
+        self
+    }
+
+    /// A tall button with a larger glyph, for a lone action such as a page's play button.
+    pub fn large(mut self) -> Self {
+        self.large = true;
         self
     }
 
@@ -328,6 +338,7 @@ impl RenderOnce for Button {
             trailing,
             variant,
             small,
+            large,
             disabled,
             selected,
             expanded,
@@ -421,9 +432,10 @@ impl RenderOnce for Button {
             true => palette.foreground,
             false => tint.unwrap_or(palette.foreground),
         };
-        let (height, padding, gap) = match small {
-            true => (theme.metrics.control_small, SMALL_INSET, px(4.)),
-            false => (theme.metrics.control, px(12.), px(6.)),
+        let (height, padding, gap, icon_size) = match (large, small) {
+            (true, _) => (px(64.), px(20.), px(6.), px(24.)),
+            (false, true) => (theme.metrics.control_small, SMALL_INSET, px(4.), px(16.)),
+            (false, false) => (theme.metrics.control, px(12.), px(6.), px(16.)),
         };
         let (hover, active) = match interactive {
             true => (palette.hover, palette.active),
@@ -495,7 +507,7 @@ impl RenderOnce for Button {
                 let glyph = |color| {
                     svg()
                         .path(icons::path(path.clone()))
-                        .size(px(16.))
+                        .size(icon_size)
                         .flex_none()
                         .text_color(color)
                         .with_transformation(Transformation::rotate(radians(turn * TAU)))
@@ -505,7 +517,7 @@ impl RenderOnce for Button {
                         div()
                             .relative()
                             .flex_none()
-                            .size(px(16.))
+                            .size(icon_size)
                             .child(
                                 glyph(theme.background.opacity(0.5))
                                     .absolute()

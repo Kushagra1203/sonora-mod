@@ -269,12 +269,15 @@ impl Scrollbar {
         self.nudges = self.nudges.wrapping_add(1);
     }
 
-    pub fn nudge(&mut self, window: &mut Window) {
+    /// Glides one wheel tick's worth of scroll into view. `gain` is what a caller scales the
+    /// tick by: the wheel's three lines need widening to cross a page, a trackpad's pixels do
+    /// not.
+    pub fn nudge(&mut self, gain: f32, window: &mut Window) {
         self.following = false;
         self.nudges = self.nudges.wrapping_add(1);
         match &self.list {
-            Some(list) => self.glide.nudge(list, window),
-            None => self.glide.nudge(&self.scroll, window),
+            Some(list) => self.glide.nudge(list, gain, window),
+            None => self.glide.nudge(&self.scroll, gain, window),
         }
     }
 

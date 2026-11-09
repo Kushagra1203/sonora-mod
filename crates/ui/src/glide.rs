@@ -40,11 +40,17 @@ impl ScrollPosition for ListState {
     }
 }
 
-const EASE: f32 = 0.12;
+/// How much of the distance to the target the glide covers each step at 180 Hz. Higher arrives
+/// sooner; the exponential tail is what reads as the motion settling rather than stopping.
+const EASE: f32 = 0.2;
 const HERTZ: f32 = 180.;
 const STALL: Duration = Duration::from_millis(64);
 const REST: Pixels = px(0.5);
 const SPRING_REST: Pixels = px(0.05);
+/// How far one wheel notch carries beyond the platform's own delta. A wheel reports a whole
+/// three lines per notch, which is not enough to cross a page; three times that is. A trackpad
+/// delta is already in true pixels and passes through at one.
+pub const WHEEL_GAIN: f32 = 3.0;
 
 #[derive(Default)]
 struct Drift {
@@ -102,11 +108,15 @@ impl Glide {
         }
     }
 
-    pub fn nudge(&self, scroll: &impl ScrollPosition, window: &mut Window) {
+    /// Adds one wheel tick to the glide's target. `gain` scales the tick's own delta, which is
+    /// what lets a wheel notch carry further than the platform's three lines while a trackpad
+    /// delta passes through untouched. The tick the platform already applied is put back to the
+    /// last drawn offset, so the glide is the only thing moving the region.
+    pub fn nudge(&self, scroll: &impl ScrollPosition, gain: f32, window: &mut Window) {
         {
             let mut drift = self.drift.borrow_mut();
             let landed = scroll.offset();
-            let step = landed - drift.shown;
+            let step = (landed - drift.shown) * gain;
             let from = match drift.gliding {
                 true => drift.target,
                 false => drift.shown,

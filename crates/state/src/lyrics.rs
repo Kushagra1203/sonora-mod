@@ -22,6 +22,20 @@ pub enum LyricsState {
 
 const SAVE_DELAY: Duration = Duration::from_millis(800);
 
+/// The lines on show in the language the reader chose.
+///
+/// It is held beside the sheet rather than on it: a [`music::Lyrics`] answer is shared and
+/// immutable, and a translation belongs to a language, which the sheet does not know about.
+#[derive(Clone, Debug)]
+pub struct Translation {
+    /// The language the lines were translated into.
+    pub language: String,
+    /// The line texts, trimmed and in order, that this answers.
+    source: Vec<String>,
+    /// One entry per line of the sheet, blank where the line needed none.
+    pub lines: Arc<[String]>,
+}
+
 /// How long a source may take to answer before it is left out of the lookup.
 ///
 /// Short on purpose. A source that hangs holds up the whole panel, and the sources behind it
@@ -54,6 +68,13 @@ pub struct Lyrics {
     /// Whether word-by-word lyrics are preferred over line-synced ones. A new preference looks
     /// the track up again, from what is held, so the answer is ranked the new way.
     prioritize_words: bool,
+    /// The language the lines on show are translated into, when they are translated at all.
+    target: Option<String>,
+    /// The lines on show in `target`, when the answer has arrived.
+    translation: Option<Translation>,
+    /// The translation being fetched, if one is on its way.
+    translating: Option<Task<()>>,
+    http: reqwest::Client,
     playback: Entity<Playback>,
     session: Entity<Session>,
     settings: Entity<AppSettings>,
@@ -83,17 +104,32 @@ impl Lyrics {
         .detach();
         cx.observe(&queue, |this, _, cx| this.prefetch(cx)).detach();
         cx.observe(&settings, |this, settings, cx| {
-            let settings = settings.read(cx);
-            let enabled = settings.lyrics_providers();
-            let priority = settings.lyrics_provider_priority();
-            let prioritize_words = settings.lyrics_prioritize_words();
+            let (enabled, priority, prioritize_words, translation) = {
+                let settings = settings.read(cx);
+                (
+                    settings.lyrics_providers().to_vec(),
+                    settings.lyrics_provider_priority(),
+                    settings.lyrics_prioritize_words(),
+                    settings
+                        .lyrics_translation()
+                        .map(|language| language.to_owned()),
+                )
+            };
+            // A new language translates the lines that are already on show, and nothing else
+            // about the answer changes.
+            if translation != this.target {
+                this.target = translation;
+                this.translation = None;
+                this.translating = None;
+                this.translate(cx);
+            }
             if enabled == this.enabled_providers
                 && priority == this.priority
                 && prioritize_words == this.prioritize_words
             {
                 return;
             }
-            this.enabled_providers = enabled.to_vec();
+            this.enabled_providers = enabled;
             this.priority = priority;
             this.prioritize_words = prioritize_words;
             this.task = None;
@@ -106,6 +142,7 @@ impl Lyrics {
         let enabled_providers = settings.read(cx).lyrics_providers().to_vec();
         let priority = settings.read(cx).lyrics_provider_priority();
         let prioritize_words = settings.read(cx).lyrics_prioritize_words();
+        let target = settings.read(cx).lyrics_translation().map(str::to_owned);
         let store = Sheets::new(storage::Cache::standard());
         let moving = store.clone();
         let migration = cx
@@ -126,6 +163,10 @@ impl Lyrics {
             enabled_providers,
             priority,
             prioritize_words,
+            target,
+            translation: None,
+            translating: None,
+            http: reqwest::Client::new(),
             playback,
             session,
             settings,
@@ -158,6 +199,20 @@ impl Lyrics {
         self.revision
     }
 
+    /// The lines on show in the language the reader chose, one for each line of the sheet.
+    pub fn translation(&self) -> Option<Arc<[String]>> {
+        let translation = self.translation.as_ref()?;
+        let music::Lyrics::Synced { lines } = &self.current()?.lyrics else {
+            return None;
+        };
+        let same = lines
+            .iter()
+            .map(|line| line.text.trim())
+            .filter(|text| !text.is_empty())
+            .eq(translation.source.iter().map(String::as_str));
+        same.then(|| translation.lines.clone())
+    }
+
     pub fn choose(&mut self, index: usize, cx: &mut Context<Self>) {
         if index >= self.hits.len() || index == self.chosen {
             return;
@@ -165,6 +220,7 @@ impl Lyrics {
         self.chosen = index;
         self.picked = true;
         self.revision = self.revision.wrapping_add(1);
+        self.translate(cx);
         cx.notify();
     }
 
@@ -226,6 +282,7 @@ impl Lyrics {
         self.settled = true;
         self.hits = ordered(query, hits, &priority, prioritize_words);
         self.state = state_for(&self.hits, instrumental);
+        self.translate(cx);
         cx.notify();
         self.prefetch(cx);
     }
@@ -329,6 +386,8 @@ impl Lyrics {
         }
         self.task = None;
         self.following = None;
+        self.translating = None;
+        self.translation = None;
         self.hits.clear();
         self.chosen = 0;
         self.picked = false;
@@ -547,7 +606,104 @@ impl Lyrics {
         if !self.hits.is_empty() {
             self.state = LyricsState::Ready;
         }
+        self.translate(cx);
         cx.notify();
+    }
+
+    /// Puts a translation under the lines on show, when one has been asked for.
+    ///
+    /// The lines go out as they are and the answer is put beside them when it arrives. The
+    /// translation is never stored: it belongs to a language the reader chose, and the sheet
+    /// on disk does not know which one that was.
+    fn translate(&mut self, cx: &mut Context<Self>) {
+        let Some(language) = self.target.clone() else {
+            return;
+        };
+        let Some(hit) = self.hits.get(self.chosen) else {
+            return;
+        };
+        let music::Lyrics::Synced { lines } = &hit.lyrics else {
+            return;
+        };
+        // A blank line is left out of the request rather than sent as one, because the
+        // service answers a blank line with a blank one and a translation with a hole in it
+        // reads as a mistake.
+        let texts = lines
+            .iter()
+            .map(|line| line.text.trim())
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if texts.is_empty() {
+            return;
+        }
+        if let Some(translation) = &self.translation
+            && translation.language == language
+            && translation.source == texts
+        {
+            return;
+        }
+        let source = texts.clone();
+        let http = self.http.clone();
+        let io = self.io.clone();
+        let id = self.following.clone();
+        let wanted = language.clone();
+        self.translating = Some(cx.spawn(async move |this, cx| {
+            let answer =
+                io.spawn(async move {
+                    music::lyrics::translate::translate(&http, &texts, &wanted).await
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.following.as_deref() != id.as_deref() {
+                    return;
+                }
+                let answer = match answer {
+                    Ok(Ok(answer)) => answer,
+                    Ok(Err(error)) => {
+                        log::warn!("lyrics: cannot translate the lines: {error:#}");
+                        return;
+                    }
+                    Err(error) => {
+                        log::warn!("lyrics: the translation did not come back: {error}");
+                        return;
+                    }
+                };
+                let Some(hit) = this.hits.get(this.chosen) else {
+                    return;
+                };
+                let music::Lyrics::Synced { lines } = &hit.lyrics else {
+                    return;
+                };
+                // The answer is one for every line that was asked for, so it only belongs to
+                // these lines if they are the ones that were asked about.
+                let asked = lines
+                    .iter()
+                    .map(|line| line.text.trim())
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if asked != source {
+                    return;
+                }
+                let mut translated = vec![String::new(); lines.len()];
+                let slots = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, line)| !line.text.trim().is_empty())
+                    .map(|(index, _)| index);
+                for (slot, text) in slots.zip(answer) {
+                    translated[slot] = text;
+                }
+                this.translation = Some(Translation {
+                    language,
+                    source,
+                    lines: translated.into(),
+                });
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     /// The hit a ranking would put on screen.
@@ -616,6 +772,7 @@ impl Lyrics {
             self.pin(ranked, displayed);
             self.state = state_for(&self.hits, instrumental);
         }
+        self.translate(cx);
         cx.notify();
         self.prefetch(cx);
     }

@@ -455,6 +455,9 @@ struct Values {
     /// Whether word-by-word lyrics are preferred over line-synced ones, so a search carries on
     /// past a line-synced match until a word-by-word sheet turns up.
     lyrics_prioritize_words: bool,
+    /// The language lyrics are translated into, when they are translated at all. Empty is no
+    /// translation.
+    lyrics_translation: Option<String>,
     karaoke_lyrics: bool,
     blur_lyrics: bool,
     romanized_lyrics: bool,
@@ -660,6 +663,7 @@ impl Default for Values {
             lrc_red_offered: false,
             lyrics_provider_priority: lyrics_priority(&[]),
             lyrics_prioritize_words: true,
+            lyrics_translation: None,
             // Musixmatch and NetEase, the old catalogue sources, start switched off; the new
             // PaxSenix: Musixmatch and PaxSenix: Spotify cover their catalogues. Track-scoped
             // sources (Local, Subsonic, Spotify) are enabled and sorted to the end of the priority.
@@ -1210,6 +1214,11 @@ impl AppSettings {
     /// past a line-synced match until a word-by-word sheet turns up.
     pub fn lyrics_prioritize_words(&self) -> bool {
         self.values.lyrics_prioritize_words
+    }
+
+    /// The language lyrics are translated into, when they are translated at all.
+    pub fn lyrics_translation(&self) -> Option<&str> {
+        self.values.lyrics_translation.as_deref()
     }
 
     pub fn karaoke_lyrics(&self) -> bool {
@@ -1804,6 +1813,18 @@ impl AppSettings {
 
     pub fn set_lyrics_prioritize_words(&mut self, prioritize: bool, cx: &mut Context<Self>) {
         self.values.lyrics_prioritize_words = prioritize;
+        self.schedule_save(cx);
+    }
+
+    /// Sets the language lyrics are translated into, or turns the translation off.
+    ///
+    /// A language the service does not offer is refused rather than stored, so a settings
+    /// file edited by hand cannot ask for a translation that never arrives.
+    pub fn set_lyrics_translation(&mut self, language: Option<&str>, cx: &mut Context<Self>) {
+        let language = language.and_then(|language| {
+            music::lyrics::translate::language(language).map(|language| language.code)
+        });
+        self.values.lyrics_translation = language.map(|language| language.to_owned());
         self.schedule_save(cx);
     }
 

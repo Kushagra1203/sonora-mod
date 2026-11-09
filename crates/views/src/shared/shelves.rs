@@ -8,7 +8,9 @@ use std::rc::Rc;
 
 use music::{GenreItem, GenreSection};
 use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, Deck, Glide, Mode, Skeleton, Text, heading, snapped};
+use ui::{
+    ActiveTheme as _, Button, Card, Deck, Glide, Mode, Skeleton, Text, WHEEL_GAIN, heading, snapped,
+};
 
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards;
@@ -242,7 +244,7 @@ impl Shelves {
                             if !sideways(event) {
                                 return;
                             }
-                            glide.nudge(&scroll, window);
+                            glide.nudge(&scroll, wheel_gain(event), window);
                         }
                     })
                     .child(
@@ -514,7 +516,7 @@ impl Rail {
                         if !sideways(event) {
                             return;
                         }
-                        glided.nudge(&scrolled, window);
+                        glided.nudge(&scrolled, wheel_gain(event), window);
                     })
                     .child(
                         Deck::new(SharedString::from(format!("{tag}-rail-{place}")))
@@ -653,10 +655,20 @@ fn slot(kind: &'static str, place: usize) -> ElementId {
     ElementId::NamedInteger(SharedString::new_static(kind), place as u64)
 }
 
-/// Whether a wheel event should glide a rail. Only a notched wheel moving sideways does, since a
-/// trackpad scrolls the rail itself and a vertical notch belongs to the page.
+/// Whether a wheel event should glide a rail: a sideways delta, from either a wheel or a
+/// trackpad, that leans more across than down. A mostly vertical scroll belongs to the page.
 fn sideways(event: &ScrollWheelEvent) -> bool {
-    !event.delta.precise() && event.delta.pixel_delta(px(1.)).x != Pixels::ZERO
+    let delta = event.delta.pixel_delta(px(1.));
+    delta.x != Pixels::ZERO && delta.x.abs() >= delta.y.abs()
+}
+
+/// How far a sideways tick carries: a wheel's three lines are widened to cross a rail, while a
+/// trackpad's pixels pass through untouched.
+fn wheel_gain(event: &ScrollWheelEvent) -> f32 {
+    match event.delta.precise() {
+        true => 1.,
+        false => WHEEL_GAIN,
+    }
 }
 
 /// A shelf or rail title as a level two heading, so screen readers can jump from one shelf to

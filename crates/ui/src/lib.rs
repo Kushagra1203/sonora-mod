@@ -82,7 +82,7 @@ pub use glass::{
     GLASS_BLUR, GLASS_FILL, LIQUID_BLUR, LIQUID_FILL, LIQUID_RADIUS, bar_surface, blurring, frost,
     glass, liquid_capsule, popover_fill, popover_surface,
 };
-pub use glide::{Glide, ScrollPosition};
+pub use glide::{Glide, ScrollPosition, WHEEL_GAIN};
 pub use grain::{frost as frost_grain, grain};
 pub use info_card::{Fact, InfoCard};
 pub use inline_links::{InlineLink, InlineLinks};

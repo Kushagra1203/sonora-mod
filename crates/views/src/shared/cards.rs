@@ -56,6 +56,34 @@ pub(crate) fn album_card(
         .when_some(pin, Pinnable::pin)
 }
 
+/// An album card for an artist's own page, whose caption leaves off the artist's name since
+/// every release on the page is by them. `kind` stands the release kind in the name's place,
+/// which is how a single or an EP is told from an album in a mixed shelf.
+pub(crate) fn release_card(
+    id: impl Into<ElementId>,
+    album: &Album,
+    playback: &Entity<Playback>,
+    kind: bool,
+    cx: &App,
+) -> Card {
+    let caption = release_caption(album.year, album.release_type, kind);
+
+    album_card(id, album, playback, cx)
+        .aria_description(caption.clone())
+        .meta(caption)
+}
+
+/// What a release's caption says on an artist's own page: the year, joined by the release
+/// kind when `named` is set. A release with no year falls back to its kind.
+fn release_caption(year: i32, kind: ReleaseType, named: bool) -> SharedString {
+    let label = i18n::lookup(release_key(kind), None);
+    match (year, named) {
+        (0, _) => label,
+        (year, true) => SharedString::from(format!("{year} {BULLET} {label}")),
+        (year, false) => SharedString::from(year.to_string()),
+    }
+}
+
 pub(crate) fn playlist_card(
     id: impl Into<ElementId>,
     playlist: &Playlist,
@@ -188,129 +216,6 @@ pub(crate) fn genre_card(id: impl Into<ElementId>, genre: &Genre) -> Card {
         .fallback("icons/music.svg")
         .weight(FontWeight::SEMIBOLD)
         .press(move |_, _, cx| navigate(Destination::Genre(opened.clone()), cx))
-}
-
-/// Which releases a release listing keeps: everything, or one kind of release.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReleaseFilter {
-    All,
-    Albums,
-    Singles,
-    Eps,
-}
-
-impl ReleaseFilter {
-    const ALL: [Self; 4] = [Self::All, Self::Singles, Self::Albums, Self::Eps];
-
-    /// The element id of the filter's pill.
-    pub(crate) fn id(self) -> &'static str {
-        match self {
-            Self::All => "release-filter-all",
-            Self::Albums => "release-filter-albums",
-            Self::Singles => "release-filter-singles",
-            Self::Eps => "release-filter-eps",
-        }
-    }
-
-    /// The pill's label, resolved for the active language.
-    pub(crate) fn label(self) -> SharedString {
-        match self {
-            Self::All => t!("artist-filter-all"),
-            Self::Albums => t!("artist-filter-albums"),
-            Self::Singles => t!("artist-filter-singles"),
-            Self::Eps => t!("artist-filter-eps"),
-        }
-    }
-
-    /// Whether a release of this kind passes the filter.
-    pub(crate) fn matches(self, kind: ReleaseType) -> bool {
-        self == Self::All
-            || matches!(
-                (self, kind),
-                (Self::Albums, ReleaseType::Album)
-                    | (Self::Singles, ReleaseType::Single)
-                    | (Self::Eps, ReleaseType::Ep)
-            )
-    }
-}
-
-/// The filters a listing earns: all of them, and one per kind the listing holds. A local
-/// listing has none, since its files carry no release kinds to split by.
-pub(crate) fn release_filters(
-    local: bool,
-    releases: impl IntoIterator<Item = ReleaseType>,
-) -> Vec<ReleaseFilter> {
-    if local {
-        return Vec::new();
-    }
-    let releases = releases.into_iter().collect::<Vec<_>>();
-    ReleaseFilter::ALL
-        .into_iter()
-        .filter(|filter| {
-            *filter == ReleaseFilter::All || releases.iter().any(|release| filter.matches(*release))
-        })
-        .collect()
-}
-
-/// A shelf item as one row of a list, at the plain weight of a listed row. Tracks, releases
-/// and playlists say what they are under their name, as in "Song · Artist", "EP · 2023 ·
-/// Artist" or "Playlist · Made for you · 50 songs".
-pub(crate) fn listed(
-    id: impl Into<ElementId>,
-    item: &GenreItem,
-    playback: &Entity<Playback>,
-    cx: &App,
-) -> Card {
-    let theme = *cx.theme();
-    let card = item_card(id, item, playback, cx).weight(FontWeight::NORMAL);
-
-    match item {
-        GenreItem::Track(track) => card
-            .aria_description(track_caption(Some(t!("kind-song")), track))
-            .bare_meta(tagged(
-                t!("kind-song"),
-                track_artists(SharedString::new_static("listed-artist"), track, &theme),
-                &theme,
-            )),
-        GenreItem::Album(album) => card
-            .aria_description(spoken_caption([
-                i18n::lookup(release_key(album.release_type), None),
-                year_label(album.year, None).unwrap_or_default(),
-                SharedString::from(album.artists.clone()),
-            ]))
-            .bare_meta(tagged(
-                i18n::lookup(release_key(album.release_type), None),
-                released(
-                    SharedString::new_static("listed-artist"),
-                    album.year,
-                    None,
-                    &album.artist_refs,
-                    album.artists.clone(),
-                    &theme,
-                ),
-                &theme,
-            )),
-        GenreItem::Playlist(playlist) => card
-            .aria_description(spoken_caption([
-                t!("kind-playlist"),
-                playlist_meta(playlist),
-            ]))
-            .meta(tagged(t!("kind-playlist"), playlist_meta(playlist), &theme)),
-        _ => card,
-    }
-}
-
-/// A caption led by what kind of thing it captions: "Song · " and then the rest.
-fn tagged(kind: SharedString, rest: impl IntoElement, theme: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .min_w_0()
-        .text_size(theme.text(Text::Small))
-        .text_color(theme.muted_foreground)
-        .child(div().flex_none().child(format!("{kind} {BULLET}")))
-        .child(div().min_w_0().truncate().child(rest))
 }
 
 /// The line under a playlist on a shelf: who it is by, and how many songs when that is known,
@@ -453,26 +358,4 @@ pub(crate) fn artist_card(
             playback.clone(),
         ))
         .when_some(pin, Pinnable::pin)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn local_releases_have_no_filters() {
-        assert!(release_filters(true, [ReleaseType::Album]).is_empty());
-    }
-
-    #[test]
-    fn listed_releases_only_show_populated_filters() {
-        assert_eq!(
-            release_filters(false, [ReleaseType::Album, ReleaseType::Single]),
-            [
-                ReleaseFilter::All,
-                ReleaseFilter::Singles,
-                ReleaseFilter::Albums,
-            ]
-        );
-    }
 }

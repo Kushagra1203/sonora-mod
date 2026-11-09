@@ -13,8 +13,14 @@ use crate::youtube::resolve::Resolver;
 
 /// The longer edge of a large cover, wide enough for the fullscreen player on a 2x display.
 const COVER_LARGE: u32 = 1440;
-/// The longer edge of an artist banner, which spans the whole page.
-const BANNER: u32 = 1440;
+/// The width an artist banner is asked for. It spans a whole window, so it wants more than a
+/// cover does; Google serves the same picture well past the 1440 it lists.
+const BANNER: u32 = 2560;
+/// The aspect a banner is asked for, as its width over its height. The page draws the banner
+/// across a window, and Google's own crop of an artist header is around 2.4:1, which a ~1.6:1
+/// window then cuts down hard on both sides. Asking for the window's own shape instead keeps
+/// most of the picture on screen.
+const BANNER_ASPECT: (u32, u32) = (16, 10);
 
 pub fn track(source: ytmusic::Track, index: u32) -> Track {
     let is_video = source.is_video();
@@ -500,7 +506,51 @@ pub fn cover_large(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
 /// only has the square portrait, which makes no banner.
 pub fn banner(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
     let widest = widest(thumbnails)?;
-    (widest.width > widest.height).then(|| resized(&widest.url, BANNER))
+    let height = BANNER * BANNER_ASPECT.1 / BANNER_ASPECT.0;
+    (widest.width > widest.height).then(|| cropped(&widest.url, BANNER, height))
+}
+
+/// Rewrites the sizing options of a googleusercontent url to a `width` by `height` crop,
+/// keeping every other option (and so the signature) in place. Unlike [`resized`], which keeps
+/// the aspect the server would have given, this asks for the shape the caller wants, which is
+/// how a banner is asked for a squarer crop than Google's own.
+fn cropped(url: &str, width: u32, height: u32) -> String {
+    let Some((base, options)) = url.rsplit_once('=') else {
+        return url.to_owned();
+    };
+    if !base.contains(".googleusercontent.com/") {
+        return url.to_owned();
+    }
+    let numeric = |option: &str, prefix: char| {
+        option
+            .strip_prefix(prefix)
+            .is_some_and(|value| value.parse::<u32>().is_ok())
+    };
+    let sized = |options: &str| {
+        options
+            .split('-')
+            .any(|option| numeric(option, 'w') || numeric(option, 'h') || numeric(option, 's'))
+    };
+    if !sized(options) {
+        return url.to_owned();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut wrote = false;
+    for option in options.split('-') {
+        if numeric(option, 'w') || numeric(option, 'h') || numeric(option, 's') {
+            // The first size option becomes the whole size: the rest of the run, if the url
+            // carried more than one, is folded into it.
+            if !wrote {
+                parts.push(format!("w{width}"));
+                parts.push(format!("h{height}"));
+                wrote = true;
+            }
+        } else {
+            parts.push(option.to_owned());
+        }
+    }
+    format!("{base}={}", parts.join("-"))
 }
 
 /// Rewrites the sizing options of a googleusercontent url so its longer edge is `edge`, keeping

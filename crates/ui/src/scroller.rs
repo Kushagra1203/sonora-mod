@@ -6,6 +6,7 @@ use gpui::{
 
 use crate::button::Button;
 use crate::glass::{blurring, glass};
+use crate::glide::WHEEL_GAIN;
 use crate::scrollbar::{Scrollbar, activate_middle_scroll, cancel_middle_scroll};
 use crate::theme::ActiveTheme as _;
 use crate::veil::effects;
@@ -125,11 +126,15 @@ impl RenderOnce for Scroller {
                     .restrict_scroll_to_axis()
                     .track_scroll(&scroll)
             })
+            // Every wheel tick goes through the glide, precise or notched, so both a trackpad
+            // and a wheel ease into place. A notched wheel is widened, since its three lines
+            // are not enough to cross a page; a trackpad's pixels are already true.
             .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
-                match event.delta.precise() {
-                    true => gliding.update(cx, |bar, _| bar.stirred()),
-                    false => gliding.update(cx, |bar, _| bar.nudge(window)),
-                }
+                let gain = match event.delta.precise() {
+                    true => 1.,
+                    false => WHEEL_GAIN,
+                };
+                gliding.update(cx, |bar, _| bar.nudge(gain, window));
             })
             .children(children);
 

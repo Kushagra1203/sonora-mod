@@ -32,6 +32,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   credits and packaging in the title, so the wrong recording is far less likely to play.
 - A "Prioritize syllable lyrics" setting on the Lyrics page keeps the search going past a
   line-synced match until word-by-word lyrics turn up.
+- The languages button in the lyrics panel header translates the lines into English, and turns
+  the translation back off.
 
 ### Changed
 
@@ -47,10 +49,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   showing the next one while the old one replays from where it was.
 - The Addon sources page no longer offers to switch the whole app to addons, so browsing YouTube
   no longer gets interrupted; lossless upgrades still work while it plays.
+- The artist page gives most of the window to the artist's poster, with the name and a single
+  play button just above a dense grid of popular songs.
+- An artist's releases are split into an Albums shelf and a Singles & EPs shelf instead of one
+  shelf with filter buttons.
+- Album and single covers are larger, while the faces in the artists a page recommends are
+  smaller.
+- Scrolling coasts to a stop with momentum, from a wheel or a trackpad, rather than stopping the
+  moment the gesture does.
 
 ### Fixed
 
 - The header of an album, playlist or artist page no longer jumps when it finishes loading.
+- An artist's popular songs list up to twenty, not twelve.
+- A release on an artist's page no longer repeats the artist's name in its caption: albums show
+  the year, and singles and EPs say what they are.
 - The column header of an artist's popular songs no longer leaves a thin gap above it while scrolling.
 - Resuming after a pause no longer plays a blip of the old position first after a seek or a reload.
 - A `spotify://track/…` link opens that song, as `spotify:track:…` links already did.

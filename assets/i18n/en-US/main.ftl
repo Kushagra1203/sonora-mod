@@ -436,10 +436,8 @@ artist-popular-less = Show less
 artist-releases = Releases
 artist-releases-more = Show all
 artist-releases-less = Show less
-artist-filter-all = All
-artist-filter-albums = Albums
-artist-filter-singles = Singles
-artist-filter-eps = EPs
+artist-albums = Albums
+artist-singles-eps = Singles & EPs
 artist-appears-on = Appears on
 album-also-like = You might also like
 album-tab-albums = Albums
@@ -1315,6 +1313,7 @@ toast-unpinned = Unpinned { $name }
 
 # lyrics
 lyrics-title = Lyrics
+lyrics-translate = Translate lyrics
 lyrics-idle = Play something to see its lyrics
 lyrics-loading = Looking for lyrics…
 lyrics-missing = No lyrics found, sorry!

@@ -7,6 +7,7 @@ pub mod lrc;
 pub(crate) mod romanize;
 mod shape;
 pub(crate) mod sheet;
+pub mod translate;
 pub(crate) mod ttml;
 
 use std::collections::HashSet;

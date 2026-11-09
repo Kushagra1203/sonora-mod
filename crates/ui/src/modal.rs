@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use crate::button::Button;
+use crate::glide::WHEEL_GAIN;
 use crate::metrics::{Rounding, Text, snapped};
 use crate::motion::Rising as _;
 use crate::scrollbar::Scrollbar;
@@ -259,7 +260,9 @@ impl RenderOnce for Modal {
                                                 if event.delta.precise() {
                                                     return;
                                                 }
-                                                gliding.update(cx, |bar, _| bar.nudge(window));
+                                                gliding.update(cx, |bar, _| {
+                                                    bar.nudge(WHEEL_GAIN, window)
+                                                });
                                             }
                                         })
                                         .children(

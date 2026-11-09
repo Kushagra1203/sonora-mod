@@ -13,6 +13,7 @@ use gpui::{
 use crate::Artwork;
 use crate::form::Submit;
 use crate::glass::{GLASS_BLUR, blurring, popover_fill};
+use crate::glide::WHEEL_GAIN;
 use crate::input::Input;
 use crate::label::Tails as _;
 use crate::metrics::snapped;
@@ -1058,7 +1059,7 @@ impl RenderOnce for Menu {
                         if event.delta.precise() {
                             return;
                         }
-                        gliding.update(cx, |bar, _| bar.nudge(window));
+                        gliding.update(cx, |bar, _| bar.nudge(WHEEL_GAIN, window));
                     })
                     .children(rows)
                     .into_any_element()

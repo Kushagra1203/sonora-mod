@@ -10,7 +10,7 @@ use gpui::{
 
 use crate::button::Button;
 use crate::glass::{blurring, glass};
-use crate::glide::Glide;
+use crate::glide::{Glide, WHEEL_GAIN};
 use crate::motion::{Motion, Motioned as _, animates};
 use crate::theme::ActiveTheme as _;
 
@@ -282,7 +282,7 @@ impl RenderOnce for TabBar {
                         }
                         match event.delta.precise() {
                             true => rails.glide.sync(&rails.scroll),
-                            false => rails.glide.nudge(&rails.scroll, window),
+                            false => rails.glide.nudge(&rails.scroll, WHEEL_GAIN, window),
                         }
                         cx.stop_propagation();
                     })

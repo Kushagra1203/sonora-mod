@@ -14,7 +14,7 @@ use state::{Home, Network, Playback, Sonora};
 use ui::{ActiveTheme as _, Lazy, Mode, Popup, Scrollbar, Scroller};
 
 use crate::shared::cells;
-use crate::shared::picks::{Picks, Shape};
+use crate::shared::picks::Picks;
 use crate::shared::shelves::Shelves;
 use crate::shared::tracks::{PlaybackStatus, playback_status};
 use crate::shared::trouble;
@@ -27,28 +27,10 @@ pub(crate) struct HomeView {
     playback_status: PlaybackStatus,
     shelves: Entity<Shelves>,
     width: Pixels,
-    quick_picks: Pager,
     scrollbar: Entity<Scrollbar>,
     /// The submenu state of a track's context menu.
     menus: ItemMenu,
     context_menu: Option<(Item, Point<Pixels>)>,
-}
-
-#[derive(Default)]
-struct Pager {
-    columns: usize,
-    page: usize,
-}
-
-impl Pager {
-    fn fit(&mut self, columns: usize, pages: usize) -> usize {
-        if self.columns != columns {
-            self.columns = columns;
-            self.page = 0;
-        }
-        self.page = self.page.min(pages.saturating_sub(1));
-        self.page
-    }
 }
 
 impl HomeView {
@@ -92,7 +74,6 @@ impl HomeView {
             playback_status: current_playback,
             shelves,
             width: Pixels::ZERO,
-            quick_picks: Pager::default(),
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
             menus,
             context_menu: None,
@@ -117,30 +98,17 @@ impl HomeView {
         home.is_loading(cx) || home.is_feeding()
     }
 
-    /// The Quick picks deck, the one deck on the page: what the provider lists as played lately
-    /// and its picks after them, a skeleton while they are on their way.
-    fn quick_picks(&mut self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
+    /// The Quick picks lead row: the one row of tall cards on the page, what the provider lists
+    /// as played lately and its picks after them, skeletons while they are on their way.
+    fn quick_picks(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let items = self.home.read(cx).quick_picks();
-        let shape = Shape::new(width, items.len());
-        let pages = shape.pages;
-        let page = self.quick_picks.fit(shape.columns, shape.pages);
         let opened = items.clone();
         let home = cx.entity().downgrade();
 
-        Picks::mixed("quick-picks", items, self.playback.clone(), width, page)
+        Picks::mixed("quick-picks", items, self.playback.clone())
             .title("home-quick-picks")
             .vacancy("home-quick-picks-empty")
             .loading(self.home.read(cx).is_loading(cx))
-            .on_previous(cx.listener(|this, _, _, cx| {
-                this.quick_picks.page = this.quick_picks.page.saturating_sub(1);
-                this.context_menu = None;
-                cx.notify();
-            }))
-            .on_next(cx.listener(move |this, _, _, cx| {
-                this.quick_picks.page = (this.quick_picks.page + 1).min(pages.saturating_sub(1));
-                this.context_menu = None;
-                cx.notify();
-            }))
             .on_context_menu(move |place, event, _, cx| {
                 open_item_menu(&home, &opened, place, event, cx);
             })
@@ -200,7 +168,7 @@ impl Render for HomeView {
 
         let view = cx.entity();
         let picks = Lazy::new("home-quick-picks", move |_, cx| {
-            view.update(cx, |this, cx| this.quick_picks(available, cx))
+            view.update(cx, |this, cx| this.quick_picks(cx))
         });
         let sections = self.home.read(cx).sections();
         let feeding = self.home.read(cx).is_feeding();

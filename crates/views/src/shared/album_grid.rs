@@ -6,8 +6,8 @@ use ui::Card;
 
 use crate::shared::cards;
 
-pub(crate) const CARD_MIN: Pixels = px(130.);
-pub(crate) const CARD_MAX: Pixels = px(190.);
+pub(crate) const CARD_MIN: Pixels = px(228.);
+pub(crate) const CARD_MAX: Pixels = px(288.);
 const CARD_GAP: Pixels = px(32.);
 
 #[derive(Clone, Copy)]

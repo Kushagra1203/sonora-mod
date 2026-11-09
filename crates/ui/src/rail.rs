@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use i18n::t;
 
-use crate::glide::Glide;
+use crate::glide::{Glide, WHEEL_GAIN};
 use crate::motion::{ease_out_cubic, paced};
 use crate::theme::ActiveTheme as _;
 
@@ -144,15 +144,16 @@ impl RenderOnce for Rail {
             .overflow_x_scroll()
             .restrict_scroll_to_axis()
             .track_scroll(&scroll)
-            // A touchpad already moves smoothly. A wheel jumps a whole step, which the glide
-            // eases out.
+            // Both a touchpad and a wheel go through the glide, so the rail eases instead of
+            // jumping a whole step at a time. A wheel's sideways tick is widened the same way
+            // the page's is.
             .on_scroll_wheel(move |event: &ScrollWheelEvent, window, _| {
-                match event.delta.precise() {
-                    true => gliding.jump(&wheeled, wheeled.offset()),
-                    false if event.delta.pixel_delta(LINE).x != Pixels::ZERO => {
-                        gliding.nudge(&wheeled, window)
-                    }
-                    false => {}
+                if event.delta.pixel_delta(LINE).x != Pixels::ZERO {
+                    let gain = match event.delta.precise() {
+                        true => 1.,
+                        false => WHEEL_GAIN,
+                    };
+                    gliding.nudge(&wheeled, gain, window);
                 }
             })
             .fade_sides(FADE, FADE)

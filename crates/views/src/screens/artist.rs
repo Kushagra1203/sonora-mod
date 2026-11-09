@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use gpui::accesskit::{Role, Toggled};
+use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
     AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Pixels, Render,
@@ -11,22 +11,20 @@ use gpui::{
 use crate::chrome::Chrome;
 use crate::shared::cells;
 use i18n::t;
-use music::{SavedArtist, Track};
+use music::{ReleaseType, SavedArtist, Track};
 use router::trail;
 use state::{ArtistDetail, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
 use ui::motion::Springs;
 use ui::{
-    Artwork, Button, Card, MIN_CONTENT, Picker, Popovers, Scrollbar, Scroller, Text, effects,
-    liquid_capsule, scrolled, snapped,
+    Artwork, Button, Card, MIN_CONTENT, Scrollbar, Scroller, Text, effects, liquid_capsule,
+    scrolled, snapped,
 };
 
 use crate::shared::about::{AboutArtist, about_modal};
 use crate::shared::album_grid::CardGrid;
-use crate::shared::cards::{self, ReleaseFilter};
-use crate::shared::confirm::Confirm;
+use crate::shared::cards;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
-use crate::shared::menus::artist_menu;
 use crate::shared::shelves::{Rail, RailSpec};
 use crate::shared::track_card::{StartHandler, TrackCard};
 use crate::shared::tracks::{PlaybackStatus, playback_status};
@@ -45,33 +43,38 @@ impl EventEmitter<ArtistEvent> for ArtistView {}
 
 /// How many shelves the page draws under the releases, each with a rail of its own.
 const SHELVES: usize = 4;
+/// How much smaller the "fans also like" avatars stand than the release covers, so a rail of
+/// faces reads as a supporting list rather than another wall of art.
+const FAN_SCALE: f32 = 0.8;
 /// How many release placeholders the rail shows while the discography is still loading.
 const RELEASE_SKELETONS: usize = 6;
-/// The popular songs grid: 3 rows x 4 columns = 12 songs. Borderless, horizontal rail when narrow.
-const POPULAR_ROWS: usize = 4;
-const POPULAR_COLUMNS: usize = 3;
+/// The popular songs grid: 4 columns of 5 rows, read left to right, for 20 songs. Borderless,
+/// horizontal rail when narrow.
+const POPULAR_ROWS: usize = 5;
+const POPULAR_COLUMNS: usize = 4;
 const POPULAR_SONGS: usize = POPULAR_ROWS * POPULAR_COLUMNS;
-const POPULAR_GAP: Pixels = px(12.);
+const POPULAR_GAP: Pixels = px(10.);
 /// The narrowest a popular column may get before the section scrolls sideways instead.
-const POPULAR_COLUMN: Pixels = px(260.);
-/// The artwork each popular row wears, and the space above and below it. The rows are the page's
-/// main shelf, so they are larger and airier than a table row rather than packed into it.
-const POPULAR_ART: Pixels = px(80.);
-const POPULAR_ROW_PAD: Pixels = px(8.);
-/// Where the artist's name sits down the hero, as a share of the page's height, and where the
-/// frost begins. The photograph stays sharp above the frost and blurs through the lower half.
-const HERO_TOP: f32 = 0.46;
+const POPULAR_COLUMN: Pixels = px(220.);
+/// The artwork each popular row wears, and the space above and below it. These rows are quick
+/// picks, so they are kept close to a table's density rather than given the room of a shelf.
+const POPULAR_ART: Pixels = px(44.);
+const POPULAR_ROW_PAD: Pixels = px(6.);
+/// How much of the window the artist poster takes, with the name and play button sitting just
+/// above the popular songs. The rest of the page begins below this share.
+const HERO_HEIGHT: f32 = 0.70;
 /// The band along the top of the page kept clear for the floating controls, and how far below it
 /// the page's content fades away as it scrolls up. The content is gone by the top of the band and
 /// only the artwork behind it shows.
 const TOP_CLEAR: Pixels = px(72.);
 const TOP_FADE: Pixels = px(150.);
-const FROST_START: f32 = 0.45;
-const FROST_END: f32 = 0.55;
+const FROST_START: f32 = 0.64;
+const FROST_END: f32 = 0.70;
 const FROST_TRANSITION: f32 = FROST_END - FROST_START;
 /// How much wider than the page the banner is drawn, so it still reaches both edges while the
-/// page width it was measured from lags a resize by a frame.
-const BANNER_SLACK: f32 = 0.06;
+/// page width it was measured from lags a resize by a frame. Kept small: every point of slack
+/// is another point the wide banner is scaled past the window and cut down.
+const BANNER_SLACK: f32 = 0.02;
 /// The blurs the banner steps through on its way down, each with the share of the banner's
 /// height at which it has fully taken over from the one above. The top stays sharp and the
 /// bottom half reads as frosted glass.
@@ -97,7 +100,6 @@ pub(crate) struct ArtistView {
     playback: Entity<Playback>,
     playback_status: PlaybackStatus,
     artist_id: Option<String>,
-    release_filter: ReleaseFilter,
     width: Pixels,
     scrollbar: Entity<Scrollbar>,
     about_bar: Entity<Scrollbar>,
@@ -106,7 +108,6 @@ pub(crate) struct ArtistView {
     /// grid and the play buttons above it both work from the same run.
     popular: Rc<Vec<Track>>,
     me: WeakEntity<Self>,
-    popovers: Popovers,
     /// The recommendation rails under the releases, in page order: appears-on.
     rails: Vec<Rail>,
 }
@@ -135,7 +136,6 @@ impl ArtistView {
             let artist_id = detail.read(cx).id().map(str::to_owned);
             if this.artist_id != artist_id {
                 this.artist_id = artist_id;
-                this.release_filter = ReleaseFilter::All;
                 this.about_open = false;
                 this.rails.clear();
                 this.scrollbar.update(cx, |bar, cx| {
@@ -188,13 +188,11 @@ impl ArtistView {
             playback,
             playback_status: current_playback,
             artist_id,
-            release_filter: ReleaseFilter::All,
             width,
             scrollbar,
             about_bar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             about_open: false,
             me: me.downgrade(),
-            popovers: Popovers::default(),
             rails: Vec::new(),
         }
     }
@@ -204,57 +202,16 @@ impl ArtistView {
         let title = artist
             .map(|artist| SharedString::from(artist.name.clone()))
             .unwrap_or_default();
-        // Both counts the page reports: the listeners a month and, where the provider keeps one,
-        // the subscriber count beside it.
-        let facts = artist.and_then(|artist| {
-            let mut facts = HeroMetaStrip::new();
-            let mut any = false;
-            if let Some(count) = artist.monthly_listeners {
-                let value = cells::count(count);
-                facts = facts.text(t!(
-                    "artist-monthly-listeners",
-                    count = count,
-                    value = &value
-                ));
-                any = true;
-            }
-            if let Some(count) = artist.subscribers {
-                let value = cells::count(count);
-                facts = facts.text(t!("artist-subscribers", count = count, value = &value));
-                any = true;
-            }
-            any.then_some(facts)
-        });
-        let overflow = self.saved_artist(cx).map(|artist| {
-            Picker::icon("artist-overflow", &self.popovers, "icons/ellipsis.svg")
-                .tooltip("common-more")
-                .large()
-                .left()
-                .menu(artist_menu(artist, self.playback.clone(), true, cx))
-        });
-        let actions = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                HeroPlayButton::new(
-                    "play-artist",
-                    t!("artist-play"),
-                    self.popular.as_ref().clone(),
-                    self.playback.clone(),
-                )
-                .from(self.playing_from(cx)),
+        let actions = div().flex().items_center().justify_center().child(
+            HeroPlayButton::new(
+                "play-artist",
+                t!("artist-play"),
+                self.popular.as_ref().clone(),
+                self.playback.clone(),
             )
-            .child(
-                HeroPlayButton::shuffle(
-                    "shuffle-artist",
-                    self.popular.as_ref().clone(),
-                    self.playback.clone(),
-                )
-                .from(self.playing_from(cx)),
-            )
-            .children(self.favorite_button(cx))
-            .children(overflow);
+            .from(self.playing_from(cx))
+            .large(),
+        );
 
         // The banner is the hero here — no square avatar, just name, stats and play buttons on the artwork.
         PageHero::new("artist-hero", title)
@@ -263,9 +220,32 @@ impl ArtistView {
             .cover(None)
             .art(px(0.))
             .title_size(cx.theme().text(Text::Display) * 1.9)
-            .when_some(facts, |hero, facts| hero.meta(facts))
+            .centered()
             .actions(actions)
             .into_any_element()
+    }
+
+    /// Both counts the page reports: the listeners a month and, where the provider keeps one,
+    /// the subscriber count beside it. Empty when it reports neither.
+    fn facts(&self, cx: &App) -> Option<HeroMetaStrip> {
+        let artist = self.detail.read(cx).artist()?;
+        let mut facts = HeroMetaStrip::new();
+        let mut any = false;
+        if let Some(count) = artist.monthly_listeners {
+            let value = cells::count(count);
+            facts = facts.text(t!(
+                "artist-monthly-listeners",
+                count = count,
+                value = &value
+            ));
+            any = true;
+        }
+        if let Some(count) = artist.subscribers {
+            let value = cells::count(count);
+            facts = facts.text(t!("artist-subscribers", count = count, value = &value));
+            any = true;
+        }
+        any.then_some(facts)
     }
 
     /// The static backdrop image that fills the entire window behind the page.
@@ -399,151 +379,129 @@ impl ArtistView {
         )
     }
 
-    fn saved_artist(&self, cx: &App) -> Option<SavedArtist> {
+    /// The Releases shelves: the artist's albums and its singles & EPs, each in a row of its
+    /// own that scrolls sideways like the page's other shelves. Nothing frames the cards.
+    fn releases(&self, _window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let detail = self.detail.read(cx);
-        let artist = detail.artist()?;
-
-        Some(SavedArtist {
-            id: detail.id()?.to_owned(),
-            name: artist.name.clone(),
-            cover: artist.cover_large.clone(),
-            added_at: None,
-        })
-    }
-
-    fn favorite_button(&self, cx: &App) -> Option<Button> {
-        let theme = *cx.theme();
-        // A provider with no followed artists has nothing for this to toggle.
-        if !Sonora::global(cx)
-            .session
-            .read(cx)
-            .capabilities()
-            .follow_artists
-        {
-            return None;
-        }
-        let library = Sonora::global(cx).library.clone();
-        let target = self.saved_artist(cx)?;
-        let saved = library.read(cx).saved_artist(&target.id);
-
-        let heart = Button::new("artist-toggle-library")
-            .outline()
-            .icon(match saved {
-                true => "icons/heart-filled.svg",
-                false => "icons/heart.svg",
-            })
-            .tooltip(match saved {
-                true => "menu-remove-from-library",
-                false => "menu-add-to-library",
-            })
-            .disabled(library.read(cx).pending_artist(&target.id));
-
-        Some(
-            match saved {
-                true => heart.tint(theme.primary),
-                false => heart,
-            }
-            .on_click(move |_, _, cx| {
-                match saved && !Confirm::unstarring(&target.id, cx) {
-                    true => Confirm::artists(vec![target.clone()], cx),
-                    false => {
-                        library.update(cx, |library, cx| library.heart_artist(target.clone(), cx));
-                    }
-                }
-            }),
-        )
-    }
-
-    /// The Releases shelf: every release that passes the filter, in one row that scrolls
-    /// sideways like the page's other shelves. Nothing frames the cards.
-    fn releases(&self, _window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let theme = *cx.theme();
-        let detail = self.detail.read(cx);
-        let albums = detail.albums();
+        let releases = detail.albums();
         // A discography still on its way reads as loading only while nothing of it is up.
-        let loading = detail.is_loading() || (albums.is_empty() && detail.is_filling());
-        if albums.is_empty() && !loading {
-            return None;
+        let loading = detail.is_loading() || (releases.is_empty() && detail.is_filling());
+        if releases.is_empty() && !loading {
+            return Vec::new();
         }
-        let local = detail.id().is_some_and(music::is_local_id);
-        let filters = match loading {
-            true => Vec::new(),
-            false => cards::release_filters(local, albums.iter().map(|album| album.release_type)),
-        };
         let tile = CardGrid::layout(self.width).card;
 
-        let shelf = match loading {
-            true => Carousel::new("artist-releases-rail")
-                .show_arrows(false)
-                .children((0..RELEASE_SKELETONS).map(|index| {
-                    Card::skeleton(("artist-release-skeleton", index))
-                        .tile(tile)
-                        .into_any_element()
-                }))
-                .into_any_element(),
-            false => {
-                let shown: Vec<&music::Album> = albums
-                    .iter()
-                    .filter(|album| self.release_filter.matches(album.release_type))
-                    .collect();
-                let total = shown.len();
-                Carousel::new("artist-releases-rail")
-                    .show_arrows(false)
-                    .children(shown.into_iter().enumerate().map(|(index, album)| {
-                        let id = SharedString::from(format!("artist-release-{}", album.id));
-                        cards::album_card(id, album, &self.playback, cx)
-                            .tile(tile)
-                            .flat()
-                            .aria_position_in_set(index + 1)
-                            .aria_size_of_set(total)
-                            .into_any_element()
-                    }))
-                    .into_any_element()
-            }
-        };
-
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .pt_6()
-                .child({
-                    let label = t!("artist-releases");
-                    div()
-                        .id("artist-releases-heading")
-                        .role(Role::Heading)
-                        .aria_level(2)
-                        .aria_label(label.clone())
-                        .text_size(theme.text(Text::Title))
-                        .font_weight(FontWeight::BOLD)
-                        .child(label)
-                })
-                .when(!filters.is_empty(), |this| {
-                    this.child(
+        if loading {
+            let theme = *cx.theme();
+            let label = t!("artist-releases");
+            return vec![
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .pt_6()
+                    .child(
                         div()
-                            .flex()
-                            .gap_1()
-                            .children(filters.into_iter().map(|filter| {
-                                Button::new(filter.id())
-                                    .label(filter.label())
-                                    .small()
-                                    .outline()
-                                    .selected(self.release_filter == filter)
-                                    .aria_toggled(Toggled::from(self.release_filter == filter))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if this.release_filter == filter {
-                                            return;
-                                        }
-                                        this.release_filter = filter;
-                                        cx.notify();
-                                    }))
+                            .id("artist-releases-heading")
+                            .role(Role::Heading)
+                            .aria_level(2)
+                            .aria_label(label.clone())
+                            .text_size(theme.text(Text::Title))
+                            .font_weight(FontWeight::BOLD)
+                            .child(label),
+                    )
+                    .child(
+                        Carousel::new("artist-releases-rail")
+                            .show_arrows(false)
+                            .children((0..RELEASE_SKELETONS).map(|index| {
+                                Card::skeleton(("artist-release-skeleton", index))
+                                    .tile(tile)
+                                    .into_any_element()
                             })),
                     )
-                })
-                .child(shelf)
-                .into_any_element(),
-        )
+                    .into_any_element(),
+            ];
+        }
+
+        let albums: Vec<&music::Album> = releases
+            .iter()
+            .filter(|album| {
+                matches!(
+                    album.release_type,
+                    ReleaseType::Album | ReleaseType::Compilation
+                )
+            })
+            .collect();
+        let singles: Vec<&music::Album> = releases
+            .iter()
+            .filter(|album| matches!(album.release_type, ReleaseType::Single | ReleaseType::Ep))
+            .collect();
+
+        let mut shelves = Vec::new();
+        if !albums.is_empty() {
+            shelves.push(self.release_shelf(
+                "artist-albums-rail",
+                t!("artist-albums"),
+                &albums,
+                tile,
+                false,
+                cx,
+            ));
+        }
+        if !singles.is_empty() {
+            shelves.push(self.release_shelf(
+                "artist-singles-rail",
+                t!("artist-singles-eps"),
+                &singles,
+                tile,
+                true,
+                cx,
+            ));
+        }
+        shelves
+    }
+
+    /// One release shelf under its own heading. `kind` puts the release kind in the caption in
+    /// place of the artist, for the shelf that mixes singles and EPs.
+    fn release_shelf(
+        &self,
+        rail: &'static str,
+        heading: SharedString,
+        releases: &[&music::Album],
+        tile: Pixels,
+        kind: bool,
+        cx: &App,
+    ) -> AnyElement {
+        let theme = *cx.theme();
+        let total = releases.len();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .pt_6()
+            .child(
+                div()
+                    .id(SharedString::from(format!("{rail}-heading")))
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(heading.clone())
+                    .text_size(theme.text(Text::Title))
+                    .font_weight(FontWeight::BOLD)
+                    .child(heading),
+            )
+            .child(Carousel::new(rail).show_arrows(false).children(
+                releases.iter().enumerate().map(|(index, album)| {
+                    let id = SharedString::from(format!("artist-release-{}", album.id));
+                    cards::release_card(id, album, &self.playback, kind, cx)
+                        .tile(tile)
+                        .flat()
+                        .aria_position_in_set(index + 1)
+                        .aria_size_of_set(total)
+                        .into_any_element()
+                }),
+            ))
+            .into_any_element()
     }
 
     /// The recommendation rail under the releases: what the artist guests on. A rail
@@ -557,6 +515,9 @@ impl ArtistView {
         let grid = CardGrid::layout(self.width);
         let card = grid.card;
         let columns = grid.columns.max(1);
+        // The fans rail shows smaller faces, so it fits more of them across than the covers do.
+        let fan_tile = (card * FAN_SCALE).floor();
+        let fan_columns = (columns as f32 / FAN_SCALE).floor().max(1.) as usize;
         let detail = self.detail.read(cx);
         let filling = detail.is_filling();
         let appears = detail.appears_on().len();
@@ -714,8 +675,8 @@ impl ArtistView {
                         place: 3,
                         title: t!("artist-fans-also-like"),
                         count: fans,
-                        tile: card,
-                        columns,
+                        tile: fan_tile,
+                        columns: fan_columns,
                         tabs: None,
                     },
                     window,
@@ -742,7 +703,7 @@ impl ArtistView {
                         };
                         let id = SharedString::from(format!("artist-fan-{}", fan.id));
                         let card = cards::artist_card(id, &saved, &held.playback, cx)
-                            .tile(card)
+                            .tile(fan_tile)
                             .flat()
                             .aria_position_in_set(index + 1)
                             .aria_size_of_set(fans);
@@ -866,9 +827,11 @@ impl ArtistView {
 
     fn about(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let artist = self.detail.read(cx).artist()?;
+        let facts = self.facts(cx);
         let card = AboutArtist::new("artist-about", artist.name.clone())
             .cover(artist.cover_large.clone())
             .biography(artist.biography.clone())
+            .when_some(facts, |card, facts| card.facts(facts))
             .on_open(cx.listener(|this, _, _, cx| {
                 this.about_open = true;
                 cx.notify();
@@ -1009,12 +972,15 @@ impl Render for ArtistView {
             .pl(inset)
             .pt(inset)
             .pb(inset)
-            // The hero content starts at HERO_TOP (46% of viewport).
-            // The frost layer begins at FROST_START (45%) and moves with scroll.
+            // The artist poster: the name and actions sit in the middle of a picture that takes
+            // most of the window, and the rest of the page begins below it.
             .child(
                 div()
                     .relative()
-                    .pt((height * HERO_TOP - TOP_CLEAR).max(Pixels::ZERO))
+                    .h((height * HERO_HEIGHT - TOP_CLEAR - inset).max(Pixels::ZERO))
+                    .flex()
+                    .flex_col()
+                    .justify_end()
                     .child(head),
             )
             .child(tracks)

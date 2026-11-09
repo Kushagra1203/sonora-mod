@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::{collections::HashMap, ops::Range};
 
 use gpui::prelude::*;
@@ -28,6 +29,7 @@ use ui::{
 };
 use unicode_bidi::{BidiClass, Direction};
 
+use crate::chrome::growth;
 use crate::chrome::{Chrome, section_label};
 use crate::shared::effects;
 use crate::shared::menus::ItemMenu;
@@ -96,6 +98,10 @@ const KARAOKE_FRAME: std::time::Duration =
 const SWEEP_STRETCH: f32 = 1.4;
 const SWEPT: f32 = 0.98;
 const LANDING: f32 = 0.2;
+// How far a word held past its share lifts off the line, as a share of the font size.
+const GROW_RISE: f32 = 0.25;
+// The blur the light a held word gives off is drawn with, as a share of the font size.
+const GROW_BLOOM: f32 = 0.16;
 // what a lane row actually takes, plus the gaps between lanes
 const LANE_GAP_REM: f32 = 0.25;
 const LANE_SLACK: f32 = 0.25;
@@ -899,6 +905,38 @@ impl Aside {
                         ),
                 )
             })
+            .when(self.tab == SideTab::Lyrics, |this| {
+                this.child(self.translation_toggle(cx))
+            })
+    }
+
+    /// The button that turns the translation of the lines on and off.
+    fn translation_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let on = self.settings.read(cx).lyrics_translation().is_some();
+
+        Button::new("lyrics-translate")
+            .ghost()
+            .small()
+            .icon("icons/languages.svg")
+            .tooltip("lyrics-translate")
+            .aria_toggled(Toggled::from(on))
+            .tint(match on {
+                true => theme.primary,
+                false => theme.muted_foreground,
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.settings.update(cx, |settings, cx| {
+                    settings.set_lyrics_translation(
+                        match on {
+                            true => None,
+                            false => Some("en"),
+                        },
+                        cx,
+                    );
+                });
+                cx.notify();
+            }))
     }
 
     fn follow(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -980,6 +1018,7 @@ impl Aside {
             (LyricsState::Ready, Some(music::Lyrics::Synced { lines })) => Some(lines.clone()),
             _ => None,
         };
+        let translated = lyrics.translation();
         if let Some(hit) = lyrics.current() {
             let language = i18n::language();
             let fresh = self.credit.as_ref().is_some_and(|credit| {
@@ -1252,9 +1291,13 @@ impl Aside {
                         self.lyrics_wraps.entry(index)
                     {
                         let parts = lyrics_parts(&line.text, line.words.as_deref());
-                        if let Some(wrapped) =
-                            lyrics_wrap_rows(&parts, wrap_size, wrap_width, window)
-                        {
+                        if let Some(wrapped) = lyrics_wrap_rows(
+                            &parts,
+                            line.words.as_deref(),
+                            wrap_size,
+                            wrap_width,
+                            window,
+                        ) {
                             slot.insert(wrapped);
                         }
                     }
@@ -1369,7 +1412,9 @@ impl Aside {
                                 has_right_to_left(&lane.text)
                                     .then(|| {
                                         let parts = lyrics_parts(&lane.text, lane.words.as_deref());
-                                        lyrics_wrap_rows(&parts, lane_size, wrap_width, window)
+                                        lyrics_wrap_rows(
+                                            &parts, None, lane_size, wrap_width, window,
+                                        )
                                     })
                                     .flatten()
                             })
@@ -1412,6 +1457,12 @@ impl Aside {
                             false => group.into_any_element(),
                         }
                     });
+                    let lane_text = translated
+                        .as_ref()
+                        .and_then(|lines| lines.get(index))
+                        .filter(|text| !text.is_empty())
+                        .cloned()
+                        .or_else(|| selected_romanization(&line.romanized, romanization_scripts));
                     let content = div()
                         .flex()
                         .flex_col()
@@ -1420,10 +1471,9 @@ impl Aside {
                             this.items_end().text_right()
                         })
                         .child(primary)
-                        .when_some(
-                            selected_romanization(&line.romanized, romanization_scripts),
-                            |this, text| this.child(romanized_lyrics_lane(text, lane_size, &theme)),
-                        )
+                        .when_some(lane_text.clone(), |this, text| {
+                            this.child(romanized_lyrics_lane(text, lane_size, &theme))
+                        })
                         .children(lanes)
                         .when(depth > 0., |this| {
                             this.layer_scale(1. - (1. - PRESSED) * depth)
@@ -1440,8 +1490,9 @@ impl Aside {
                     let traded = index
                         .checked_sub(1)
                         .is_some_and(|previous| lines[previous].voice != line.voice);
-                    // the romanization and the backing vocals under a line are read after it
-                    let lanes_spoken = selected_romanization(&line.romanized, romanization_scripts)
+                    // the romanization or translation and the backing vocals under a line are read
+                    // after it
+                    let lanes_spoken = lane_text
                         .into_iter()
                         .chain(line.secondary.iter().map(|lane| lane.text.clone()))
                         .filter(|text| !text.is_empty())
@@ -1518,6 +1569,7 @@ impl Aside {
                                 .map(|line| {
                                     lyrics_wrap_rows(
                                         &lyrics_parts(line, None),
+                                        None,
                                         plain_size,
                                         wrap_width,
                                         window,
@@ -2219,6 +2271,7 @@ fn loose_plan(line: &str, words: &[music::LyricsWord]) -> Wrapped {
         rows: Vec::new(),
         widths: Vec::new(),
         text: Vec::new(),
+        pieces: Vec::new(),
     }
 }
 
@@ -2299,11 +2352,36 @@ fn karaoke_lane(
             .text_left()
             .children((0..plan.rows.len()).map(|row| {
                 let reveal = revealed(plan, row, &windows, position, edge_fade);
+                // a row holding a word that has been held long enough is drawn in pieces, so
+                // that word can swell letter by letter
+                let pieces = plan
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.row == row)
+                    .collect::<Vec<_>>();
+                let content = match pieces.is_empty() {
+                    true => lit(plan.text[row].clone(), reveal),
+                    false => div()
+                        .flex()
+                        .flex_none()
+                        .children(pieces.iter().enumerate().map(|(index, piece)| {
+                            piece_lane(
+                                piece,
+                                &pieces,
+                                index,
+                                reveal,
+                                position,
+                                active_verse_size(verse),
+                                edge_fade,
+                                &sung,
+                            )
+                        })),
+                };
                 lifted(
                     div()
                         .flex()
                         .when(hugs_end(voice, sung.mirrored), |this| this.justify_end())
-                        .child(lit(plan.text[row].clone(), reveal)),
+                        .child(content),
                     sung,
                 )
             })),
@@ -2331,6 +2409,140 @@ fn karaoke_lane(
                 lit(fragments[index].clone(), reveal)
             })),
     }
+}
+
+/// One piece of a row's text, with the karaoke sweep's edge clipped across it.
+///
+/// The pieces of a row share one sweep: the edge falls at a fixed place in the row, and
+/// each piece is lit up to its own share of it, so the light runs across the row without a
+/// seam at the joins.
+#[allow(clippy::too_many_arguments)]
+fn piece_lane(
+    piece: &RowPiece,
+    pieces: &[&RowPiece],
+    index: usize,
+    reveal: Reveal,
+    position: std::time::Duration,
+    em: Pixels,
+    edge_fade: Pixels,
+    sung: &Sung,
+) -> Div {
+    let front = reveal.width.unwrap_or(px(0.));
+    let clip = (front - piece.offset).clamp(px(0.), piece.width);
+    // the sweep's edge falls in one piece of the row, and that is the one that softens
+    let edge = pieces
+        .iter()
+        .position(|other| front <= other.offset + other.width);
+    let landing = match edge {
+        Some(edge) if edge == index => reveal.landing,
+        _ => 0.,
+    };
+    let fade = edge_fade * landing;
+
+    match &piece.swell {
+        None => div()
+            .relative()
+            .flex_none()
+            .whitespace_nowrap()
+            .child(piece.text.clone())
+            .when(clip > px(0.), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(clip)
+                        .overflow_hidden()
+                        .text_color(sung.karaoke_tint)
+                        .when(landing > 0., |this| this.fade_sides(px(0.), fade))
+                        .child(div().whitespace_nowrap().child(piece.text.clone())),
+                )
+            }),
+        Some(word) => {
+            let growths = word
+                .letters
+                .iter()
+                .enumerate()
+                .map(|(index, _)| word.sample(index, position))
+                .collect::<Vec<_>>();
+            let resting = word
+                .letters
+                .iter()
+                .zip(&growths)
+                .map(|(letter, growth)| letter_div(*letter, *growth, em, false));
+            let glowing = word
+                .letters
+                .iter()
+                .zip(&growths)
+                .map(|(letter, growth)| letter_div(*letter, *growth, em, true));
+            let lit = word
+                .letters
+                .iter()
+                .zip(&growths)
+                .map(|(letter, growth)| letter_div(*letter, *growth, em, false));
+            let bloom = growths.iter().any(|growth| growth.bloom > 0.01);
+
+            div()
+                .relative()
+                .flex_none()
+                .flex()
+                .items_start()
+                .whitespace_nowrap()
+                .children(resting)
+                // the light the held word gives off, which is not the sweep: it follows
+                // the note being carried rather than everything sung so far
+                .when(bloom, |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .flex()
+                            .items_start()
+                            .text_color(sung.karaoke_tint)
+                            .children(glowing),
+                    )
+                })
+                .when(clip > px(0.), |this| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(clip)
+                            .overflow_hidden()
+                            .flex()
+                            .items_start()
+                            .text_color(sung.karaoke_tint)
+                            .when(landing > 0., |this| this.fade_sides(px(0.), fade))
+                            .children(lit),
+                    )
+                })
+        }
+    }
+}
+
+/// One letter of a held word, at the place the swell has brought it to.
+///
+/// The scale and the lean are paint-only, so the letter keeps the room it was laid out
+/// with and the words around it do not move.
+fn letter_div(letter: char, growth: growth::CharGrowth, em: Pixels, glowing: bool) -> Div {
+    let scale = growth.scale;
+    let lean = growth.shift * em;
+    let rise = growth.rise * GROW_RISE * em;
+    div()
+        .flex_none()
+        .child(SharedString::from(letter.to_string()))
+        .when(scale != 1., |this| this.layer_scale(scale))
+        .when(lean != px(0.) || rise != px(0.), |this| {
+            this.layer_translate(gpui::point(lean, -rise))
+        })
+        .when(glowing, |this| {
+            this.opacity(growth.bloom).blur(em * GROW_BLOOM)
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -2697,10 +2909,30 @@ struct Wrapped {
     text: Vec<SharedString>,
     /// Whether the line reads right to left, which sets the side its karaoke fill starts from.
     rtl: bool,
+    /// The pieces a row is drawn in when it holds a word long enough to swell. Empty for
+    /// every row that does not, and those rows are drawn as one run of text as they always
+    /// were.
+    pieces: Vec<RowPiece>,
+}
+
+/// One piece of a row's text, and the held word it carries when it has one.
+#[derive(Clone)]
+struct RowPiece {
+    /// Which row of the line this piece belongs to.
+    row: usize,
+    /// The piece's own text.
+    text: SharedString,
+    /// How far the piece sits from its row's left edge.
+    offset: Pixels,
+    /// How wide the piece is.
+    width: Pixels,
+    /// The word this piece swells, when it carries one.
+    swell: Option<Arc<growth::GrowingWord>>,
 }
 
 fn lyrics_wrap_rows(
     parts: &[(String, usize)],
+    words: Option<&[music::LyricsWord]>,
     font_size: Pixels,
     width: Pixels,
     window: &mut Window,
@@ -2726,19 +2958,30 @@ fn lyrics_wrap_rows(
             .collect::<String>(),
     );
     let rtl = right_to_left(&whole);
-    let widths = match has_right_to_left(&whole) {
+    // the byte offset of every part in the whole line, which is what the shaped line's
+    // positions are measured from
+    let mut offsets = Vec::with_capacity(parts.len());
+    let mut offset = 0;
+    for (text, _) in parts {
+        offsets.push(offset);
+        offset += text.len();
+    }
+    let (widths, shaped) = match has_right_to_left(&whole) {
         // right-to-left text sits left of what follows it, so positions along the shaped line no
         // longer measure a fragment: each is shaped on its own instead
-        true => parts
-            .iter()
-            .map(|(text, _)| {
-                let run = style.to_run(text.len());
-                window
-                    .text_system()
-                    .shape_line(SharedString::from(text.clone()), font_size, &[run], None)
-                    .width
-            })
-            .collect::<Vec<_>>(),
+        true => (
+            parts
+                .iter()
+                .map(|(text, _)| {
+                    let run = style.to_run(text.len());
+                    window
+                        .text_system()
+                        .shape_line(SharedString::from(text.clone()), font_size, &[run], None)
+                        .width
+                })
+                .collect::<Vec<_>>(),
+            None,
+        ),
         false => {
             let run = style.to_run(whole.len());
             let shaped = window
@@ -2753,7 +2996,7 @@ fn lyrics_wrap_rows(
                 widths.push(right - left);
                 left = right;
             }
-            widths
+            (widths, Some(shaped))
         }
     };
     let breaks = fragments
@@ -2777,6 +3020,12 @@ fn lyrics_wrap_rows(
             ))
         })
         .collect::<Vec<_>>();
+    // a word held long enough to swell is drawn letter by letter, which means the row it
+    // sits in is drawn in pieces rather than as one run of text
+    let pieces = match (words, &shaped) {
+        (Some(words), Some(shaped)) => row_pieces(parts, words, &rows, &offsets, shaped),
+        _ => Vec::new(),
+    };
 
     Some(Wrapped {
         rtl,
@@ -2787,7 +3036,118 @@ fn lyrics_wrap_rows(
         rows,
         widths,
         text,
+        pieces,
     })
+}
+
+/// The pieces a row is drawn in when it holds a word long enough to swell, and where each
+/// piece sits in its row.
+///
+/// Only the rows with something held in them are cut up: every other row is still one run
+/// of text, laid out and lit exactly as it was before.
+fn row_pieces(
+    parts: &[(String, usize)],
+    words: &[music::LyricsWord],
+    rows: &[Range<usize>],
+    offsets: &[usize],
+    shaped: &gpui::ShapedLine,
+) -> Vec<RowPiece> {
+    let held = growth::held_words(words);
+    if held.is_empty() {
+        return Vec::new();
+    }
+    // which parts of the line belong to each word
+    let mut owned: Vec<Vec<usize>> = vec![Vec::new(); words.len()];
+    for (index, (_, word)) in parts.iter().enumerate() {
+        if let Some(mine) = owned.get_mut(*word) {
+            mine.push(index);
+        }
+    }
+
+    let mut pieces = Vec::new();
+    for (row, range) in rows.iter().enumerate() {
+        let row_start = offsets[range.start];
+        let row_text = parts[range.clone()]
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>();
+        // the held words that sit wholly in this row
+        let mut swellings = held
+            .iter()
+            .filter_map(|(index, word)| {
+                let mine = &owned[*index];
+                // a word split across a wrap cannot swell as one piece
+                if mine.first().is_none_or(|first| *first < range.start)
+                    || mine.last().is_some_and(|last| *last >= range.end)
+                {
+                    return None;
+                }
+                let text = word.letters.iter().collect::<String>();
+                let within = offsets[mine[0]] - row_start;
+                let found = row_text.get(within..)?.find(text.as_str())?;
+                Some((within + found, text.len(), word.clone()))
+            })
+            .collect::<Vec<_>>();
+        swellings.sort_by_key(|(at, _, _)| *at);
+
+        let mut cursor = 0;
+        for (at, length, word) in swellings {
+            if at < cursor {
+                continue;
+            }
+            if at > cursor {
+                pieces.push(row_piece(
+                    row,
+                    &row_text,
+                    row_start,
+                    cursor..at,
+                    None,
+                    shaped,
+                ));
+            }
+            pieces.push(row_piece(
+                row,
+                &row_text,
+                row_start,
+                at..at + length,
+                Some(word),
+                shaped,
+            ));
+            cursor = at + length;
+        }
+        if cursor < row_text.len() {
+            pieces.push(row_piece(
+                row,
+                &row_text,
+                row_start,
+                cursor..row_text.len(),
+                None,
+                shaped,
+            ));
+        }
+    }
+    pieces
+}
+
+/// One piece of a row's text, measured against the shaped line it was cut out of.
+fn row_piece(
+    row: usize,
+    row_text: &str,
+    row_start: usize,
+    range: Range<usize>,
+    swell: Option<Arc<growth::GrowingWord>>,
+    shaped: &gpui::ShapedLine,
+) -> RowPiece {
+    let origin = shaped.x_for_index(row_start);
+    let left = shaped.x_for_index(row_start + range.start);
+    let right = shaped.x_for_index(row_start + range.end);
+    RowPiece {
+        row,
+        text: SharedString::from(row_text[range].to_owned()),
+        offset: left - origin,
+        width: right - left,
+        swell,
+    }
 }
 
 // a fragment's own slice of the word it belongs to
@@ -3022,7 +3382,8 @@ fn lanes_room(
 
 fn wrapped_rows(text: &str, size: Pixels, width: Pixels, window: &mut Window) -> usize {
     let parts = lyrics_parts(text, None);
-    lyrics_wrap_rows(&parts, size, width, window).map_or(1, |wrapped| wrapped.rows.len().max(1))
+    lyrics_wrap_rows(&parts, None, size, width, window)
+        .map_or(1, |wrapped| wrapped.rows.len().max(1))
 }
 
 /// Draws a sheet row `shift` away from where layout put it. A moved row goes in a wrapper, so the

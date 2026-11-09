@@ -1,14 +1,13 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{App, Entity, MouseDownEvent, SharedString, Window, div};
+use gpui::{App, Entity, SharedString};
 use music::Track;
 use state::Playback;
-use ui::{ActiveTheme as _, Card, Text, clock, tabular};
+use ui::{ActiveTheme as _, Card};
 
 use crate::shared::cards;
 
-pub(crate) type ContextHandler = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
 pub(crate) type StartHandler = Rc<dyn Fn(usize, &mut App)>;
 
 pub(crate) struct TrackCard {
@@ -17,7 +16,6 @@ pub(crate) struct TrackCard {
     tracks: Rc<Vec<Track>>,
     playback: Entity<Playback>,
     detailed: bool,
-    context: Option<ContextHandler>,
     start: Option<StartHandler>,
 }
 
@@ -34,18 +32,12 @@ impl TrackCard {
             tracks,
             playback,
             detailed: false,
-            context: None,
             start: None,
         }
     }
 
     pub(crate) fn detailed(mut self, detailed: bool) -> Self {
         self.detailed = detailed;
-        self
-    }
-
-    pub(crate) fn context(mut self, context: Option<ContextHandler>) -> Self {
-        self.context = context;
         self
     }
 
@@ -68,13 +60,6 @@ impl TrackCard {
 
         let artists = (!self.detailed || featured(track))
             .then(|| cards::track_artists(SharedString::new_static("pick-artist"), track, &theme));
-        let length = self.detailed.then(|| {
-            div()
-                .text_size(theme.text(Text::Small))
-                .text_color(theme.muted_foreground)
-                .font_features(tabular())
-                .child(clock(track.duration))
-        });
 
         let total = self.tracks.len();
 
@@ -82,10 +67,6 @@ impl TrackCard {
             .aria_position_in_set(place + 1)
             .aria_size_of_set(total)
             .when_some(artists, Card::bare_meta)
-            .when_some(length, Card::trailing)
-            .when_some(self.context, |card, handler| {
-                card.menu(move |event, window, cx| handler(place, event, window, cx))
-            })
             .play(playing, move |_, _, cx| match current {
                 true => transport_playback.update(cx, |playback, cx| playback.toggle_play(cx)),
                 false => begin(

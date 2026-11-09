@@ -4,8 +4,8 @@ use std::rc::Rc;
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    App, ClickEvent, Entity, FontStyle, HighlightStyle, Pixels, SharedString, StyledText, Window,
-    div, px,
+    AnyElement, App, ClickEvent, Entity, FontStyle, HighlightStyle, Pixels, SharedString,
+    StyledText, Window, div, px,
 };
 use i18n::t;
 use router::{Destination, navigate};
@@ -27,6 +27,8 @@ pub(crate) struct AboutArtist {
     name: SharedString,
     cover: Option<String>,
     biography: Option<String>,
+    /// The artist's counts, drawn under the name where the card carries them.
+    facts: Option<AnyElement>,
     on_open: Option<Open>,
 }
 
@@ -37,8 +39,15 @@ impl AboutArtist {
             name: name.into(),
             cover: None,
             biography: None,
+            facts: None,
             on_open: None,
         }
+    }
+
+    /// Sets the counts to draw under the name, as a page's meta strip.
+    pub(crate) fn facts(mut self, facts: impl IntoElement) -> Self {
+        self.facts = Some(facts.into_any_element());
+        self
     }
 
     pub(crate) fn cover(mut self, cover: Option<String>) -> Self {
@@ -99,6 +108,7 @@ impl RenderOnce for AboutArtist {
                     .gap_2()
                     .child(eyebrow(t!("artist-about"), cx))
                     .child(heading(self.name, cx).min_w_0().truncate())
+                    .children(self.facts)
                     .child(
                         div()
                             .min_w_0()

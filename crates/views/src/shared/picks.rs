@@ -2,130 +2,110 @@ use std::rc::Rc;
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
-use gpui::{App, ClickEvent, Entity, MouseDownEvent, Pixels, SharedString, Window, div};
-use music::{GenreItem, Track};
-use state::Playback;
-use ui::{ActiveTheme as _, Button, Card, eyebrow, heading, snapped, vacant};
+use gpui::{
+    AnyElement, App, ClickEvent, Entity, FontWeight, MouseButton, MouseDownEvent, Pixels,
+    SharedString, Window, div, linear_color_stop, linear_gradient, px,
+};
+use i18n::t;
+use music::GenreItem;
+use router::{Destination, navigate};
+use state::{Origin, Playback};
+use ui::{ActiveTheme as _, Artwork, Button, Rail, heading, vacant};
 
 use crate::shared::cards;
-use crate::shared::track_card::{ContextHandler, StartHandler, TrackCard};
 
-const ROWS: usize = 5;
-const MAX_COLUMNS: usize = 3;
-const MIN_COLUMN_WIDTH: Pixels = gpui::px(280.);
+/// The width of one tall pick. A portrait card, like the lead row of a music service's home:
+/// taller than it is wide, so the page opens on photographs rather than another square of
+/// sleeves.
+const CARD_WIDTH: Pixels = px(212.);
+/// Height over width. Apple's lead cards are a 3:4 portrait.
+const CARD_ASPECT: f32 = 4. / 3.;
+/// Where the caption's foot begins, as a share of the card's height, so the picture darkens
+/// under the words however bright it is.
+const FOOT: f32 = 0.42;
+/// The group the play button waits on, so it is out until the pointer is over the card.
+const GROUP: &str = "top-pick";
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+type MenuHandler = Rc<dyn Fn(usize, &MouseDownEvent, &mut Window, &mut App)>;
 
-pub(crate) fn column_count(width: Pixels) -> usize {
-    ((width / MIN_COLUMN_WIDTH).floor().max(1.) as usize).min(MAX_COLUMNS)
+fn card_height() -> Pixels {
+    px(CARD_WIDTH / px(1.) * CARD_ASPECT)
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Shape {
-    pub(crate) columns: usize,
-    pub(crate) pages: usize,
+/// What a pick says: the small line over its name, the name, and who it is by.
+struct Face {
+    cover: Option<String>,
+    eyebrow: SharedString,
+    title: SharedString,
+    subtitle: SharedString,
 }
 
-impl Shape {
-    pub(crate) fn new(width: Pixels, count: usize) -> Self {
-        let columns = column_count(width);
-
-        Self {
-            columns,
-            pages: count.div_ceil(columns * ROWS).max(1),
+impl Face {
+    fn of(item: &GenreItem) -> Self {
+        match item {
+            GenreItem::Album(album) => Self {
+                cover: album.cover_large.clone().or_else(|| album.cover.clone()),
+                eyebrow: i18n::lookup(cards::release_key(album.release_type), None),
+                title: SharedString::from(album.name.clone()),
+                subtitle: SharedString::from(album.artists.clone()),
+            },
+            GenreItem::Playlist(playlist) => Self {
+                cover: playlist.cover.clone(),
+                eyebrow: t!("kind-playlist"),
+                title: SharedString::from(playlist.name.clone()),
+                subtitle: SharedString::from(playlist.owner.clone()),
+            },
+            GenreItem::Artist(artist) => Self {
+                cover: artist.cover.clone(),
+                eyebrow: t!("kind-artist"),
+                title: SharedString::from(artist.name.clone()),
+                subtitle: SharedString::default(),
+            },
+            GenreItem::Genre(genre) => Self {
+                cover: genre.cover.clone(),
+                eyebrow: SharedString::default(),
+                title: SharedString::from(genre.name.clone()),
+                subtitle: SharedString::default(),
+            },
+            GenreItem::Track(track) => Self {
+                cover: track.cover.clone(),
+                eyebrow: t!("kind-song"),
+                title: SharedString::from(track.name.clone()),
+                subtitle: SharedString::from(track.artists.clone()),
+            },
         }
     }
-
-    fn slots(self) -> usize {
-        self.columns * ROWS
-    }
 }
 
-/// What the deck lists: a run of tracks that queue together, or shelf items of any kind that
-/// each stand alone.
-enum Rows {
-    Tracks(Rc<Vec<Track>>),
-    Mixed(Rc<Vec<GenreItem>>),
-}
-
-impl Rows {
-    fn len(&self) -> usize {
-        match self {
-            Self::Tracks(tracks) => tracks.len(),
-            Self::Mixed(items) => items.len(),
-        }
-    }
-}
-
-/// A framed deck of list rows in up to three columns, paged with the arrows in its head.
+/// A lead row of tall cards for the home feed: the picks a listener's own playing has earned,
+/// each a portrait sleeve with its name on the picture. It replaces a deck of framed list rows,
+/// which read as one more box on a page already made of them.
 #[derive(IntoElement)]
 pub(crate) struct Picks {
     id: &'static str,
     title: &'static str,
-    eyebrow: Option<SharedString>,
     vacancy: &'static str,
-    rows: Rows,
+    items: Rc<Vec<GenreItem>>,
     playback: Entity<Playback>,
-    width: Pixels,
-    page: usize,
-    detailed: bool,
     loading: bool,
-    on_previous: Option<ClickHandler>,
-    on_next: Option<ClickHandler>,
-    on_context_menu: Option<ContextHandler>,
-    on_start: Option<StartHandler>,
+    on_context_menu: Option<MenuHandler>,
 }
 
 impl Picks {
-    pub(crate) fn new(
-        id: &'static str,
-        tracks: Rc<Vec<Track>>,
-        playback: Entity<Playback>,
-        width: Pixels,
-        page: usize,
-    ) -> Self {
-        Self {
-            id,
-            title: "",
-            eyebrow: None,
-            vacancy: "",
-            rows: Rows::Tracks(tracks),
-            playback,
-            width,
-            page,
-            detailed: false,
-            loading: false,
-            on_previous: None,
-            on_next: None,
-            on_context_menu: None,
-            on_start: None,
-        }
-    }
-
-    /// A deck of shelf items rather than tracks: each row plays or opens on its own, so
-    /// `on_start` goes unused, and `on_context_menu` still names the row by its place.
     pub(crate) fn mixed(
         id: &'static str,
         items: Rc<Vec<GenreItem>>,
         playback: Entity<Playback>,
-        width: Pixels,
-        page: usize,
     ) -> Self {
         Self {
             id,
             title: "",
-            eyebrow: None,
             vacancy: "",
-            rows: Rows::Mixed(items),
+            items,
             playback,
-            width,
-            page,
-            detailed: false,
             loading: false,
-            on_previous: None,
-            on_next: None,
             on_context_menu: None,
-            on_start: None,
         }
     }
 
@@ -134,40 +114,13 @@ impl Picks {
         self
     }
 
-    /// The small line over the title, already worded: a key looked up at render, or a name.
-    pub(crate) fn eyebrow(mut self, label: impl Into<SharedString>) -> Self {
-        self.eyebrow = Some(label.into());
-        self
-    }
-
     pub(crate) fn vacancy(mut self, key: &'static str) -> Self {
         self.vacancy = key;
         self
     }
 
-    pub(crate) fn detailed(mut self) -> Self {
-        self.detailed = true;
-        self
-    }
-
     pub(crate) fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
-        self
-    }
-
-    pub(crate) fn on_previous(
-        mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_previous = Some(Rc::new(handler));
-        self
-    }
-
-    pub(crate) fn on_next(
-        mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    ) -> Self {
-        self.on_next = Some(Rc::new(handler));
         self
     }
 
@@ -178,102 +131,60 @@ impl Picks {
         self.on_context_menu = Some(Rc::new(handler));
         self
     }
-
-    pub(crate) fn on_start(mut self, handler: impl Fn(usize, &mut App) + 'static) -> Self {
-        self.on_start = Some(Rc::new(handler));
-        self
-    }
 }
 
 impl RenderOnce for Picks {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = *cx.theme();
-        let shape = Shape::new(self.width, self.rows.len());
-        let page = self.page.min(shape.pages.saturating_sub(1));
-        let start = page * shape.slots();
-        let row = snapped(theme.metrics.list_row, window);
-        let rows = self.rows;
-        let empty = rows.len() == 0;
-        let barren = empty && !self.loading;
         let id = self.id;
-        let on_previous = self.on_previous;
-        let on_next = self.on_next;
-        let on_context_menu = self.on_context_menu;
-        let on_start = self.on_start;
+        let empty = self.items.is_empty();
+        let barren = empty && !self.loading;
+        let height = card_height();
+        let count = self.items.len();
+
+        let cards: Vec<AnyElement> = match empty {
+            true => (0..6)
+                .map(|_| {
+                    div()
+                        .flex_none()
+                        .w(CARD_WIDTH)
+                        .h(height)
+                        .rounded(theme.radius)
+                        .bg(theme.table_hover)
+                        .into_any_element()
+                })
+                .collect(),
+            false => self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(place, item)| {
+                    pick(
+                        id,
+                        place,
+                        item,
+                        count,
+                        &self.playback,
+                        self.on_context_menu.clone(),
+                        cx,
+                    )
+                })
+                .collect(),
+        };
 
         div()
             .w_full()
             .flex()
             .flex_col()
-            .overflow_hidden()
-            .rounded(theme.radius)
-            .border_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex()
-                    .items_end()
-                    .justify_between()
-                    .gap_4()
-                    .px_4()
-                    .pt_4()
-                    .pb_3()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_0()
-                            .children(self.eyebrow.map(|label| {
-                                eyebrow(label.clone(), cx)
-                                    .id(SharedString::from(format!("{id}-eyebrow")))
-                                    .role(Role::Label)
-                                    .aria_value(label)
-                            }))
-                            .child({
-                                let title = i18n::lookup(self.title, None);
-                                heading(title.clone(), cx)
-                                    .id(SharedString::from(format!("{id}-heading")))
-                                    .role(Role::Heading)
-                                    .aria_level(2)
-                                    .aria_label(title)
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .pb_1()
-                            .child(
-                                Button::new(SharedString::from(format!("{id}-previous")))
-                                    .small()
-                                    .outline()
-                                    .icon("icons/chevron-left.svg")
-                                    .tooltip("common-previous")
-                                    .disabled(empty || page == 0)
-                                    .when_some(on_previous, |button, handler| {
-                                        button.on_click(move |event, window, cx| {
-                                            handler(event, window, cx)
-                                        })
-                                    }),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("{id}-next")))
-                                    .small()
-                                    .outline()
-                                    .icon("icons/chevron-right.svg")
-                                    .tooltip("common-next")
-                                    .disabled(empty || page + 1 >= shape.pages)
-                                    .when_some(on_next, |button, handler| {
-                                        button.on_click(move |event, window, cx| {
-                                            handler(event, window, cx)
-                                        })
-                                    }),
-                            ),
-                    ),
-            )
+            .gap_3()
+            .child({
+                let title = i18n::lookup(self.title, None);
+                heading(title.clone(), cx)
+                    .id(SharedString::from(format!("{id}-heading")))
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label(title)
+            })
             .when(barren, |this| {
                 let vacancy = i18n::lookup(self.vacancy, None);
                 this.child(
@@ -284,109 +195,194 @@ impl RenderOnce for Picks {
                 )
             })
             .when(!barren, |this| {
-                this.child(div().flex().gap_2().p_2().when_else(
-                    empty,
-                    |this| {
-                        this.children((0..shape.columns).map(|column| {
-                            column_shell(column, theme.border)
-                                .children((0..ROWS).map(|slot| skeleton(id, column * ROWS + slot)))
-                        }))
-                    },
-                    |this| {
-                        this.children((0..shape.columns).map(|column| {
-                            column_shell(column, theme.border).children((0..ROWS).map(|slot| {
-                                let place = start + column * ROWS + slot;
-
-                                match &rows {
-                                    Rows::Tracks(tracks) if place < tracks.len() => TrackCard::new(
-                                        id,
-                                        place,
-                                        tracks.clone(),
-                                        self.playback.clone(),
-                                    )
-                                    .detailed(self.detailed)
-                                    .context(on_context_menu.clone())
-                                    .start(on_start.clone())
-                                    .render(cx)
-                                    .into_any_element(),
-
-                                    Rows::Mixed(items) if place < items.len() => {
-                                        let context = on_context_menu.clone();
-
-                                        cards::listed(
-                                            (id, place),
-                                            &items[place],
-                                            &self.playback,
-                                            cx,
-                                        )
-                                        .aria_position_in_set(place + 1)
-                                        .aria_size_of_set(items.len())
-                                        .when_some(context, |card, handler| {
-                                            card.menu(move |event, window, cx| {
-                                                handler(place, event, window, cx)
-                                            })
-                                        })
-                                        .into_any_element()
-                                    }
-
-                                    _ => div().flex_none().h(row).into_any_element(),
-                                }
-                            }))
-                        }))
-                    },
-                ))
+                this.child(Rail::new(SharedString::from(format!("{id}-rail"))).children(cards))
             })
     }
 }
 
-fn column_shell(column: usize, border: gpui::Hsla) -> gpui::Div {
+/// One tall pick: the sleeve filling the card, the picture darkening into its foot, and the
+/// name on the dark. Tapping it opens the shelf or starts the track, and its play control does
+/// the same thing the card does on any other shelf.
+fn pick(
+    id: &'static str,
+    place: usize,
+    item: &GenreItem,
+    count: usize,
+    playback: &Entity<Playback>,
+    menu: Option<MenuHandler>,
+    cx: &mut App,
+) -> AnyElement {
+    let theme = *cx.theme();
+    let face = Face::of(item);
+    let (press, play, playing) = actions(item, playback, cx);
+
     div()
-        .flex()
-        .flex_1()
-        .min_w_0()
-        .flex_col()
-        .gap_1()
-        .when(column > 0, |this| {
-            this.border_l_1().border_color(border).pl_2()
+        .id((id, place))
+        .relative()
+        .flex_none()
+        .w(CARD_WIDTH)
+        .h(card_height())
+        .rounded(theme.radius)
+        .overflow_hidden()
+        .group(GROUP)
+        .cursor_pointer()
+        .role(Role::Button)
+        .aria_label(face.title.clone())
+        .aria_position_in_set(place + 1)
+        .aria_size_of_set(count)
+        .when_some(menu, |this, handler| {
+            this.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                handler(place, event, window, cx)
+            })
         })
+        .on_click(move |event, window, cx| press(event, window, cx))
+        .child(
+            div().absolute().inset_0().child(
+                Artwork::new(face.cover.clone())
+                    .size(CARD_WIDTH)
+                    .wide(card_height())
+                    .fallback("icons/music.svg"),
+            ),
+        )
+        // The picture darkens into its foot, so the words read over any cover.
+        .child(div().absolute().inset_0().bg(linear_gradient(
+            180.,
+            linear_color_stop(theme.background.opacity(0.), 1. - FOOT),
+            linear_color_stop(theme.background.opacity(0.82), 1.),
+        )))
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .p_3()
+                .child(
+                    div()
+                        .text_size(theme.text(ui::Text::Small))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(face.eyebrow.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(theme.text(ui::Text::Title))
+                        .font_weight(FontWeight::BOLD)
+                        .truncate()
+                        .child(face.title.clone()),
+                )
+                .when(!face.subtitle.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_size(theme.text(ui::Text::Small))
+                            .text_color(theme.muted_foreground)
+                            .truncate()
+                            .child(face.subtitle.clone()),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .id("pick-play")
+                .absolute()
+                .right_2()
+                .bottom_2()
+                .when(!playing, |this| {
+                    this.invisible().group_hover(GROUP, |style| style.visible())
+                })
+                .child(
+                    Button::new(SharedString::from(format!("{id}-play-{place}")))
+                        .primary()
+                        .icon(match playing {
+                            true => "icons/pause-filled.svg",
+                            false => "icons/play-filled.svg",
+                        })
+                        .tooltip(match playing {
+                            true => "play-pause",
+                            false => "common-play",
+                        })
+                        .rounded_full()
+                        .size(px(34.))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |event, window, cx| {
+                            cx.stop_propagation();
+                            play(event, window, cx);
+                        }),
+                ),
+        )
+        .into_any_element()
 }
 
-fn skeleton(id: &'static str, place: usize) -> impl IntoElement {
-    Card::skeleton((id, place))
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::px;
-
-    use super::{ROWS, Shape, column_count};
-
-    #[test]
-    fn columns_follow_width_and_stop_at_three() {
-        assert_eq!(column_count(px(279.)), 1);
-        assert_eq!(column_count(px(560.)), 2);
-        assert_eq!(column_count(px(840.)), 3);
-        assert_eq!(column_count(px(2_000.)), 3);
-    }
-
-    #[test]
-    fn pages_include_every_track() {
-        assert_eq!(Shape::new(px(279.), 30).pages, 6);
-        assert_eq!(Shape::new(px(560.), 30).pages, 3);
-        assert_eq!(Shape::new(px(840.), 30).pages, 2);
-        assert_eq!(Shape::new(px(840.), 0).pages, 1);
-    }
-
-    #[test]
-    fn the_deck_keeps_its_shape_whatever_it_holds() {
-        for count in 0..80 {
-            for width in [px(279.), px(560.), px(840.)] {
-                let shape = Shape::new(width, count);
-
-                assert_eq!(shape.slots(), shape.columns * ROWS);
-                assert!(shape.pages * shape.slots() >= count);
-                assert!((shape.pages - 1) * shape.slots() < count.max(1));
-            }
+/// What tapping the card does, what its play control does, and whether it is the thing playing.
+fn actions(
+    item: &GenreItem,
+    playback: &Entity<Playback>,
+    cx: &App,
+) -> (ClickHandler, ClickHandler, bool) {
+    match item {
+        GenreItem::Album(album) => {
+            let origin = Origin::album(album.id.clone()).named(album.name.clone());
+            let destination = Destination::Album(SharedString::from(album.id.clone()));
+            let playing = playing_from(&origin, playback, cx);
+            (page(destination), toggle(origin, playback), playing)
+        }
+        GenreItem::Playlist(playlist) => {
+            let origin = Origin::playlist(playlist.id.clone()).named(playlist.name.clone());
+            let destination = Destination::Playlist(SharedString::from(playlist.id.clone()));
+            let playing = playing_from(&origin, playback, cx);
+            (page(destination), toggle(origin, playback), playing)
+        }
+        GenreItem::Artist(artist) => {
+            let origin = Origin::artist(artist.id.clone()).named(artist.name.clone());
+            let destination = Destination::Artist(SharedString::from(artist.id.clone()));
+            let playing = playing_from(&origin, playback, cx);
+            (page(destination), toggle(origin, playback), playing)
+        }
+        GenreItem::Track(track) => {
+            let seed = track.clone();
+            let pressed = track.clone();
+            let current = cards::track_status(track, playback, cx).0;
+            let radio = playback.clone();
+            let toggled = playback.clone();
+            let press = Rc::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let track = pressed.clone();
+                radio.update(cx, |playback, cx| playback.play_radio(&track, cx));
+            }) as ClickHandler;
+            let play = Rc::new(
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| match current {
+                    true => toggled.update(cx, |playback, cx| playback.toggle_play(cx)),
+                    false => {
+                        let seed = seed.clone();
+                        toggled.update(cx, |playback, cx| playback.play_radio(&seed, cx))
+                    }
+                },
+            ) as ClickHandler;
+            (press, play, current)
+        }
+        GenreItem::Genre(genre) => {
+            let press = page(Destination::Genre(SharedString::from(genre.id.clone())));
+            (press.clone(), press, false)
         }
     }
+}
+
+fn playing_from(origin: &Origin, playback: &Entity<Playback>, cx: &App) -> bool {
+    playback.read(cx).playing_from(origin, cx) == Some(true)
+}
+
+fn page(destination: Destination) -> ClickHandler {
+    Rc::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+        navigate(destination.clone(), cx);
+    })
+}
+
+fn toggle(origin: Origin, playback: &Entity<Playback>) -> ClickHandler {
+    let playback = playback.clone();
+    Rc::new(move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+        playback.update(cx, |playback, cx| playback.toggle_origin(&origin, cx));
+    })
 }
