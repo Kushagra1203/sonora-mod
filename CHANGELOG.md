@@ -33,10 +33,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A "Prioritize syllable lyrics" setting on the Lyrics page keeps the search going past a
   line-synced match until word-by-word lyrics turn up.
 - The languages button in the lyrics panel header translates the lines into English, and turns
-  the translation back off.
+  the translation back off. The translated line sweeps word by word with the line above it.
+- An artist page draws the artist's own signature in place of the typed name when the signature
+  service has one.
+- The word being sung lifts a little off the line as it is sung.
 
 ### Changed
 
+- The artist page's popular songs sit in four rows of five instead of five rows of four.
 - The devices button in the player bar is now the Sessions button. It shows for every streaming service and sits evenly beside the lyrics and queue buttons.
 - Spotify Jam controls sit together under a Spotify Jams submenu of the Sessions button, and the strip above the player bar is gone.
 - A text field scrolls to keep the caret in sight, so long text is cut off on the side you are not typing.
