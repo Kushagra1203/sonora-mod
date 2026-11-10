@@ -129,11 +129,16 @@ impl Drift {
     /// the wheel stops.
     ///
     /// The speed is the distance the page actually moved over the time since the last tick, so
-    /// a wheel turned slowly says little and a wheel spun hard says a lot — and a tick against
-    /// one of the page's ends, which moves nothing, says nothing at all. The running speed is a
-    /// blend, so one uneven frame neither invents momentum nor throws it away, and a tick in
-    /// the other direction replaces it outright.
-    fn tick(&mut self, step: Point<Pixels>, now: Instant) {
+    /// a wheel turned slowly says little and a wheel spun hard says a lot. The running speed is
+    /// a blend, so one uneven frame neither invents momentum nor throws it away, and a tick in
+    /// the other direction replaces it outright — while a tick with no movement of its own
+    /// keeps what the gesture has.
+    ///
+    /// `refused` says the page's own end would not take the tick. That is the one kind of tick
+    /// that leaves nothing behind: a wheel turned against an end must not carry the page away
+    /// from it. A tick that simply carried no movement — the last one the platform sends as
+    /// the fingers lift — is not that, and must not throw the flick's speed away.
+    fn tick(&mut self, step: Point<Pixels>, refused: bool, now: Instant) {
         let Some(gap) = self
             .last_tick
             .replace(now)
@@ -144,7 +149,7 @@ impl Drift {
         };
         // A pause ends the gesture: the tick after it is a fresh push, and a lone notch is
         // not a flick however far it carries.
-        if gap > COAST_TICK || step == Point::default() {
+        if gap > COAST_TICK || refused {
             self.coast = Point::default();
             return;
         }
@@ -243,12 +248,14 @@ impl Glide {
     ) {
         {
             let mut drift = self.drift.borrow_mut();
-            // Where the platform has put the page, kept inside the page's own ends: a tick
-            // against an end moves nothing, and so must leave no speed behind to carry the
-            // page away from it.
-            let landed = held(scroll.offset(), scroll);
+            // Where the platform has put the page, and whether its own end refused the tick:
+            // a tick the page could not take must leave no speed behind to carry the page away
+            // from that end. A tick that carried no movement at all is a different thing — the
+            // platform sends one as the fingers lift — and keeps the speed the gesture has.
+            let raw = scroll.offset();
+            let landed = held(raw, scroll);
             let moved = landed - drift.shown;
-            drift.tick(moved, Instant::now());
+            drift.tick(moved, raw != landed, Instant::now());
             drift.beat = None;
             drift.eased = None;
             drift.velocity = Point::default();
@@ -570,23 +577,51 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_that_moved_nothing_leaves_no_speed() {
-        // A wheel turned against the top of the page: each tick is drawn nowhere, so the
-        // gesture leaves nothing for a coast to pick up.
+    fn a_tick_an_end_refused_leaves_no_speed() {
+        // A flick the page's top would not take: with each tick refused, the gesture leaves
+        // nothing for a coast to pick up, so nothing can carry the page away from the top.
         let mut drift = Drift::default();
         let now = Instant::now();
-        drift.tick(point(px(0.), px(0.)), now);
-        drift.tick(point(px(0.), px(0.)), now + Duration::from_millis(10));
+        drift.tick(point(px(0.), px(40.)), false, now);
+        drift.tick(
+            point(px(0.), px(40.)),
+            false,
+            now + Duration::from_millis(8),
+        );
+        assert!(drift.coast.y > 0., "the gesture should be running");
 
+        drift.tick(Point::default(), true, now + Duration::from_millis(16));
         assert_eq!(drift.coast, Point::default());
+    }
+
+    #[test]
+    fn the_tick_the_fingers_lift_on_keeps_the_flick_speed() {
+        // The platform's last tick carries no movement of its own, and no end refused it. The
+        // flick's speed is what the coast has to start from.
+        let mut drift = Drift::default();
+        let now = Instant::now();
+        drift.tick(point(px(0.), px(-40.)), false, now);
+        drift.tick(
+            point(px(0.), px(-40.)),
+            false,
+            now + Duration::from_millis(8),
+        );
+        let flick = drift.coast;
+
+        drift.tick(Point::default(), false, now + Duration::from_millis(16));
+        assert_eq!(drift.coast, flick);
     }
 
     #[test]
     fn a_flick_down_leaves_a_speed_to_carry_it() {
         let mut drift = Drift::default();
         let now = Instant::now();
-        drift.tick(point(px(0.), px(-40.)), now);
-        drift.tick(point(px(0.), px(-40.)), now + Duration::from_millis(8));
+        drift.tick(point(px(0.), px(-40.)), false, now);
+        drift.tick(
+            point(px(0.), px(-40.)),
+            false,
+            now + Duration::from_millis(8),
+        );
 
         assert!(
             drift.coast.y < 0.,
