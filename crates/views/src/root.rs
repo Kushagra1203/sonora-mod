@@ -100,8 +100,6 @@ pub struct Root {
     login: Entity<LoginView>,
     title_bar: Entity<TitleBar>,
     ambient: Entity<Ambient>,
-    /// The cover driving the page wash on album/playlist pages. `None` when not on such a page.
-    page_wash_cover: Option<String>,
     /// The question before a Jam link is joined, drawn over whichever shell is up so a link
     /// opened in fullscreen is answered there.
     jam_invite: Entity<JamInvite>,
@@ -365,7 +363,6 @@ impl Root {
             },
             adaptive,
             ambient,
-            page_wash_cover: None,
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
             background: None,
@@ -394,23 +391,10 @@ impl Root {
                 cx,
             )
         });
+        // The wash is read from the page as it draws, so the root only has to hear when the
+        // page's picture changes to draw it again.
+        cx.observe(&detail, |_, _, cx| cx.notify()).detach();
         let view = cx.new(|cx| ArtistView::new(detail.clone(), self.playback.clone(), cx));
-        // Observe the detail for cover changes to drive the page wash.
-        let detail_for_wash = detail.clone();
-        cx.observe(&detail_for_wash, move |this, detail, cx| {
-            if !matches!(router::trail(cx).read(cx).current(), Destination::Artist(_)) {
-                return;
-            }
-            let artist = detail.read(cx).artist();
-            let cover = artist
-                .and_then(|a| a.banner.clone())
-                .or_else(|| artist.and_then(|a| a.cover_large.clone()));
-            if this.page_wash_cover != cover {
-                this.page_wash_cover = cover;
-                cx.notify();
-            }
-        })
-        .detach();
         // The page's own controls stand in for the title bar, so their two sidebar toggles
         // land on the shell the bar would have told.
         cx.subscribe(&view, |this, _, event, cx| match event {
@@ -456,20 +440,7 @@ impl Root {
                 cx,
             )
         });
-        // Observe the detail for cover changes to drive the page wash. Only the detail the
-        // window is actually showing may set it: the other one sits cached and still notifies.
-        let detail_for_wash = detail.clone();
-        cx.observe(&detail_for_wash, move |this, detail, cx| {
-            if !matches!(router::trail(cx).read(cx).current(), Destination::Album(_)) {
-                return;
-            }
-            let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
-            if this.page_wash_cover != cover {
-                this.page_wash_cover = cover;
-                cx.notify();
-            }
-        })
-        .detach();
+        cx.observe(&detail, |_, _, cx| cx.notify()).detach();
         let view = cx.new(|cx| {
             DetailView::new(
                 detail.clone(),
@@ -511,23 +482,7 @@ impl Root {
                 cx,
             )
         });
-        // Observe the detail for cover changes to drive the page wash. Only the detail the
-        // window is actually showing may set it: the other one sits cached and still notifies.
-        let detail_for_wash = detail.clone();
-        cx.observe(&detail_for_wash, move |this, detail, cx| {
-            if !matches!(
-                router::trail(cx).read(cx).current(),
-                Destination::Playlist(_)
-            ) {
-                return;
-            }
-            let cover = detail.read(cx).header().and_then(|h| h.cover.clone());
-            if this.page_wash_cover != cover {
-                this.page_wash_cover = cover;
-                cx.notify();
-            }
-        })
-        .detach();
+        cx.observe(&detail, |_, _, cx| cx.notify()).detach();
         let view = cx.new(|cx| {
             DetailView::new(
                 detail.clone(),
@@ -696,6 +651,33 @@ impl Root {
                 Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
             ),
             RootView::Fullscreen => false,
+        }
+    }
+
+    /// The cover the page wash is drawn from: the picture the page on show is built on. Read
+    /// from the page itself every frame rather than kept from the last change that spoke, so
+    /// the wash follows the page in and out of a nav, back and forward included.
+    fn wash_cover(&self, cx: &App) -> Option<String> {
+        match router::trail(cx).read(cx).current() {
+            Destination::Artist(_) => {
+                let artist = self.screens.artist_detail.as_ref()?.read(cx).artist()?;
+                artist.banner.clone().or_else(|| artist.cover_large.clone())
+            }
+            Destination::Album(_) => self
+                .screens
+                .album_detail
+                .as_ref()?
+                .read(cx)
+                .header()
+                .and_then(|header| header.cover.clone()),
+            Destination::Playlist(_) => self
+                .screens
+                .playlist_detail
+                .as_ref()?
+                .read(cx)
+                .header()
+                .and_then(|header| header.cover.clone()),
+            _ => None,
         }
     }
 
@@ -947,14 +929,6 @@ impl Root {
 
     fn show(&mut self, destination: Destination, cx: &mut Context<Self>) {
         clear_listing(cx);
-        // Clear the page wash when leaving album/playlist pages.
-        let is_detail = matches!(
-            destination,
-            Destination::Album(_) | Destination::Playlist(_)
-        );
-        if !is_detail {
-            self.page_wash_cover = None;
-        }
         let opening = matches!(destination, Destination::Fullscreen);
         if opening != matches!(self.view, RootView::Fullscreen) {
             self.os_follow = Some(opening);
@@ -1014,9 +988,6 @@ impl Root {
             Destination::Album(id) => {
                 let (album, detail) = self.album(cx);
                 detail.update(cx, |detail, cx| detail.open_album(&id, cx));
-                // The wash follows the page's cover, which the observer keeps up to date once
-                // the new album has loaded.
-                self.page_wash_cover = detail.read(cx).header().and_then(|h| h.cover.clone());
                 toolbar = Some(album.read(cx).toolbar());
                 album.into()
             }
@@ -1029,9 +1000,6 @@ impl Root {
             Destination::Playlist(id) => {
                 let (playlist, detail) = self.playlist(cx);
                 detail.update(cx, |detail, cx| detail.open_playlist(&id, cx));
-                // The wash follows the page's cover, which the observer keeps up to date once
-                // the new playlist has loaded.
-                self.page_wash_cover = detail.read(cx).header().and_then(|h| h.cover.clone());
                 toolbar = Some(playlist.read(cx).toolbar());
                 playlist.into()
             }
@@ -1363,8 +1331,8 @@ impl Render for Root {
             .when(ambient, |this| this.child(self.ambient.clone()))
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.
-            .when(self.page_wash_cover.is_some(), |this| {
-                let wash = PageWash::new(self.page_wash_cover.clone()).top(match fullbleed {
+            .when_some(self.wash_cover(cx), |this, cover| {
+                let wash = PageWash::new(Some(cover)).top(match fullbleed {
                     true => Pixels::ZERO,
                     false => theme.metrics.title_bar,
                 });
