@@ -48,7 +48,7 @@ mod window_shape;
 
 pub use addons::Addons;
 pub use artist::{ArtistDetail, ArtistDetailEvent};
-pub use artist_art::{ArtistArt, Ink, Poster, Signature};
+pub use artist_art::{Ink, Signature};
 pub use control::Control;
 pub use cover::Cover;
 pub use detail::{Collection, Detail, Header};

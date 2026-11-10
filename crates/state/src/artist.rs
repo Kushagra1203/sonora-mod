@@ -4,7 +4,7 @@ use gpui::{Context, Entity, EventEmitter, Task};
 use music::{Album, Artist, ArtistCatalogue, Track};
 use tokio::task::AbortHandle;
 
-use crate::{ArtistArt, Io, Library, LibraryEvent, Poster, Session, SessionEvent, join};
+use crate::{Io, Library, LibraryEvent, Session, SessionEvent, Signature, join};
 
 /// Signals that a local artist no longer has a page after the library changes.
 pub enum ArtistDetailEvent {
@@ -17,10 +17,12 @@ pub struct ArtistDetail {
     appears_on: Vec<Album>,
     loading: bool,
     error: Option<String>,
-    /// The art the page found beyond what the provider gave it: the mark drawn in place of
-    /// the typed name, and the photograph behind the header. The page shows the typed name
-    /// and the provider's own picture until these land.
-    art: Option<ArtistArt>,
+    /// The mark drawn in place of the typed name, once it has been looked up. The page shows
+    /// the typed name until then, and keeps it when there is no mark to draw.
+    signature: Option<Signature>,
+    /// How many of the page's titles the last mark lookup was proved with, so a lookup that
+    /// missed before the discography arrived is tried again with the rest.
+    proved: usize,
     session: Entity<Session>,
     io: Io,
     http: reqwest::Client,
@@ -87,7 +89,8 @@ impl ArtistDetail {
             appears_on: Vec::new(),
             loading: false,
             error: None,
-            art: None,
+            signature: None,
+            proved: 0,
             session,
             io,
             http: reqwest::Client::new(),
@@ -129,13 +132,8 @@ impl ArtistDetail {
 
     /// The artist's mark, once it has been looked up: the title logo or the autograph drawn
     /// in place of the typed name.
-    pub fn signature(&self) -> Option<&crate::Signature> {
-        self.art.as_ref().and_then(|art| art.signature.as_ref())
-    }
-
-    /// The photograph behind the header, when Apple Music keeps one for the artist.
-    pub fn poster(&self) -> Option<&Poster> {
-        self.art.as_ref().and_then(|art| art.poster.as_ref())
+    pub fn signature(&self) -> Option<&Signature> {
+        self.signature.as_ref()
     }
 
     pub fn is_loading(&self) -> bool {
@@ -252,13 +250,15 @@ impl ArtistDetail {
         let Some(artist) = self.artist.clone() else {
             return;
         };
+        // The mark is looked up straight away, on the titles the overview already carries: the
+        // discography can be a second or two behind, and the mark is worth having before it.
+        // A lookup that misses on the few titles is tried again once the rest have landed.
+        self.autograph(id, cx);
         let Some(catalog) = self.session.read(cx).catalog(id) else {
-            self.autograph(id, cx);
             return;
         };
         if let Some(catalogue) = catalog.peek_artist_catalogue(id) {
             self.absorb(&catalogue);
-            self.autograph(id, cx);
             return;
         }
 
@@ -284,8 +284,8 @@ impl ArtistDetail {
                     Ok(catalogue) => this.absorb(&catalogue),
                     Err(error) => log::warn!("artist: cannot fill the page: {error:#}"),
                 }
-                // The mark is looked up once the page carries its songs and releases: those
-                // titles are what tells one same-named artist from another.
+                // The mark was looked up on the overview's titles; the discography may have
+                // brought the rest, which is another chance to recognise the artist.
                 this.autograph(&id, cx);
                 cx.notify();
             })
@@ -293,12 +293,11 @@ impl ArtistDetail {
         }));
     }
 
-    /// Looks the artist's art up once, in the background, and redraws the page when it lands.
-    /// The mark and the poster are page decoration: a service that is down or has never heard
-    /// of the artist leaves the typed name and the provider's own picture in place, so
-    /// nothing here reports a failure.
+    /// Looks the artist's mark up once, in the background, and redraws the hero when it lands.
+    /// A mark is a page decoration: a service that is down or has never heard of the artist
+    /// leaves the typed name in its place, so nothing here reports a failure.
     fn autograph(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.art.is_some() || self.signing.is_some() || music::is_local_id(id) {
+        if self.signature.is_some() || self.signing.is_some() || music::is_local_id(id) {
             return;
         }
         let Some(artist) = self.artist.clone() else {
@@ -314,6 +313,7 @@ impl ArtistDetail {
             .map(|track| track.name.clone())
             .chain(artist.albums.iter().map(|album| album.name.clone()))
             .collect::<Vec<_>>();
+        self.proved = titles.len();
         let wanted = id.to_owned();
         let request = self
             .io
@@ -325,9 +325,23 @@ impl ArtistDetail {
                     return;
                 }
                 this.signing = None;
-                if let Ok(Some(art)) = found {
-                    this.art = Some(art);
+                if let Ok(Some(signature)) = found {
+                    this.signature = Some(signature);
                     cx.notify();
+                    return;
+                }
+                // Nothing found on the titles the page had then. If the discography has
+                // brought more since, the artist is worth asking about once more.
+                let fuller = this
+                    .artist
+                    .as_ref()
+                    .map_or(0, |artist| artist.top_tracks.len() + artist.albums.len());
+                if fuller > this.proved && this.signature.is_none() {
+                    log::info!(
+                        "artist: asking for {}'s mark again, on the fuller catalogue",
+                        this.id.as_deref().unwrap_or("")
+                    );
+                    this.autograph(&wanted, cx);
                 }
             })
             .ok();
@@ -368,7 +382,8 @@ impl ArtistDetail {
         self.id = None;
         self.artist = None;
         self.appears_on.clear();
-        self.art = None;
+        self.signature = None;
+        self.proved = 0;
         self.loading = false;
         self.filling = false;
         self.error = None;

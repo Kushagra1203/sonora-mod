@@ -35,9 +35,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The languages button in the lyrics panel header translates the lines into English, and turns
   the translation back off. The translated line sweeps word by word with the line above it.
 - An artist page draws Apple's title logo for the artist in place of the typed name, and falls
-  back to the artist's own signature when Apple has none.
-- An artist page behind which Apple Music keeps a header photograph shows that photograph
-  instead, and keeps the provider's own banner when Apple has none.
+  back to the artist's own signature when Apple has none. The mark is looked up as soon as the
+  page opens, both sources are asked at once, and a mark already seen is kept on disk, so
+  revisiting an artist draws it with no request at all.
 - The word being sung lifts a little off the line as it is sung.
 
 ### Changed
@@ -68,6 +68,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The colour behind an album, playlist or artist page follows the page as you move between
+  pages again, instead of holding the colour of the last one and going opaque on Home.
 - A slow scroll no longer picks up a rush of momentum: only a flick carries the page on, and a
   trackpad follows your fingers exactly instead of easing behind them.
 - The header of an album, playlist or artist page no longer jumps when it finishes loading.

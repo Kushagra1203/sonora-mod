@@ -10,8 +10,7 @@
 //! two public, unauthenticated requests BitChord uses find it: the iTunes search turns a name
 //! into a candidate, the artist's own page carries the logo in the JSON it embeds for
 //! hydration. A name is not an identity, so a candidate is only taken when its catalogue
-//! shares a song or release title with the page's own. The same page carries the header
-//! photograph, so the poster comes out of the request the logo did.
+//! shares a song or release title with the page's own.
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
@@ -39,8 +38,6 @@ const DEADLINE: Duration = Duration::from_secs(12);
 const RETRY: Duration = Duration::from_secs(3);
 /// The width the title logo is asked for. Apple's URL template scales on request.
 const LOGO_WIDTH: u32 = 1000;
-/// The width the header photograph is asked for, which is what the page draws it at.
-const POSTER_WIDTH: u32 = 1600;
 /// How wide a signature is guessed to be when the service does not say.
 const GUESSED_ASPECT: f32 = 2.5;
 /// The shapes a mark is allowed to be drawn in. Past these it is either a very short monogram
@@ -69,48 +66,22 @@ pub struct Signature {
     pub aspect: f32,
 }
 
-/// The photograph behind an artist's header, taken from Apple Music's own page.
-#[derive(Clone)]
-pub struct Poster {
-    /// Where the picture is, at the width the page draws it.
-    pub url: String,
-    /// The picture's width over its height, so the page can draw the whole of it rather than
-    /// crop it to fill the window.
-    pub aspect: f32,
-    /// Whether the picture is a wide one, which the page can draw sharp across the window,
-    /// rather than a portrait it has to blur.
-    pub wide: bool,
-}
-
-/// What an artist's page found: the mark drawn in place of the name, and the photograph
-/// behind the header. Either may be missing.
-#[derive(Clone, Default)]
-pub struct ArtistArt {
-    pub signature: Option<Signature>,
-    pub poster: Option<Poster>,
-}
-
-/// What Apple's own artist page carries: the title logo and the header photograph.
-struct AppleArt {
-    logo: Option<Signature>,
-    poster: Option<Poster>,
-}
-
 /// Answers already settled this session, keyed by the folded artist name and its titles. Both
 /// hits and genuine misses are kept: revisiting an artist must not wake the service again.
-static KNOWN: LazyLock<Mutex<HashMap<String, Option<ArtistArt>>>> =
+static KNOWN: LazyLock<Mutex<HashMap<String, Option<Signature>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Looks the artist's mark up, and answers with it or with nothing.
 ///
-/// Looks the artist's art up, and answers with what it found.
+/// Apple Music's title logo is asked for first, as BitChord's phone does, and the community
+/// signature service is asked at the same time for the artists Apple has nothing for — the two
+/// requests run together so the page waits on the slower one rather than on both. A service
+/// that is down, slow or answers with something that is not a picture is no different from an
+/// artist who has never signed anything: the page keeps the typed name.
 ///
-/// Apple Music's title logo and header photograph are asked for first, as BitChord's phone
-/// does, and both come out of the same page; when Apple has no logo, the community signature
-/// service is tried for one. A service that is down, slow or answers with something that is
-/// not a picture is no different from an artist who has never signed anything: the page keeps
-/// the typed name.
-pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Option<ArtistArt> {
+/// A mark that answers is written to the disk cache, so the next session draws it without a
+/// request at all.
+pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Option<Signature> {
     let name = name.trim();
     let key = fold(name);
     if key.is_empty() {
@@ -128,47 +99,45 @@ pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Opti
     {
         return known;
     }
+    if let Some(kept) = kept(&cache) {
+        log::info!("artist: {name}'s mark comes from the disk cache");
+        remember(&cache, Some(kept.clone()));
+        return Some(kept);
+    }
 
+    let (apple, signed) = futures::join!(apple(http, name, &key, &keys), signed(http, name));
     let mut settled = true;
-    let apple = match apple(http, name, &key, &keys).await {
-        Attempt::Found(art) => Some(art),
-        Attempt::Missing => None,
-        Attempt::Failed => {
-            log::warn!("artist: apple's page for {name} could not be reached");
-            settled = false;
-            None
-        }
-    };
-    let signature = match apple.as_ref().and_then(|art| art.logo.clone()) {
-        Some(signature) => {
-            log::info!("artist: {name} wears apple's title logo");
-            Some(signature)
-        }
-        None => match signed(http, name).await {
-            Attempt::Found(signature) => {
-                log::info!("artist: {name} signs with the community service");
-                Some(signature)
-            }
-            Attempt::Missing => None,
+    let (mark, source) = match apple {
+        Attempt::Found(signature) => (Some(signature), "apple's title logo"),
+        Attempt::Missing => match signed {
+            Attempt::Found(signature) => (Some(signature), "the community service"),
+            Attempt::Missing => (None, ""),
             Attempt::Failed => {
                 log::warn!("artist: the signature service could not be reached for {name}");
                 settled = false;
-                None
+                (None, "")
             }
         },
+        Attempt::Failed => {
+            log::warn!("artist: apple's page for {name} could not be reached");
+            settled = false;
+            match signed {
+                Attempt::Found(signature) => (Some(signature), "the community service"),
+                _ => (None, ""),
+            }
+        }
     };
-    let poster = apple.as_ref().and_then(|art| art.poster.clone());
 
-    if signature.is_none() && poster.is_none() {
+    let Some(mark) = mark else {
         if settled {
-            log::info!("artist: {name} has no mark and no poster");
             remember(&cache, None);
         }
         return None;
-    }
-    let art = ArtistArt { signature, poster };
-    remember(&cache, Some(art.clone()));
-    Some(art)
+    };
+    log::info!("artist: {name}'s mark comes from {source}");
+    keep(&cache, &mark);
+    remember(&cache, Some(mark.clone()));
+    Some(mark)
 }
 
 /// The cache key for an artist: the folded name, and the titles the page vouches for, since
@@ -183,9 +152,98 @@ fn cache_key(key: &str, keys: &BTreeSet<String>) -> String {
 }
 
 /// Keeps a settled answer, so a revisit costs nothing.
-fn remember(cache: &str, art: Option<ArtistArt>) {
+fn remember(cache: &str, mark: Option<Signature>) {
     if let Ok(mut known) = KNOWN.lock() {
-        known.insert(cache.to_owned(), art);
+        known.insert(cache.to_owned(), mark);
+    }
+}
+
+/// The marks kept between sessions: one file an artist, beside the cache database. Apple's page
+/// and the signature service are both slow enough that asking again on every launch is the
+/// difference between a name and a mark.
+fn folder() -> Option<std::path::PathBuf> {
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("sonora")
+        .join("artist-marks");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// The file one artist's mark lives in. The key is folded to letters, digits and dashes so it is
+/// a name every filesystem takes.
+fn path(cache: &str) -> Option<std::path::PathBuf> {
+    let name = cache.replace(':', "-");
+    Some(folder()?.join(format!("{name}.mark")))
+}
+
+/// A mark kept from an earlier session. One small header carries what the ink is and what shape
+/// it has, and the rest of the file is the picture itself.
+fn kept(cache: &str) -> Option<Signature> {
+    let bytes = std::fs::read(path(cache)?).ok()?;
+    let (head, ink) = bytes.split_at_checked(5)?;
+    let aspect = f32::from_le_bytes(head[1..5].try_into().ok()?);
+    if !aspect.is_finite() || aspect <= 0. {
+        return None;
+    }
+    let ink = Arc::from(ink);
+    Some(Signature {
+        ink: match head[0] {
+            0 => Ink::Vector(ink),
+            _ => Ink::Raster(ink),
+        },
+        aspect,
+    })
+}
+
+/// Writes a mark down for the next session, and keeps the folder from growing without bound.
+fn keep(cache: &str, mark: &Signature) {
+    let Some(path) = path(cache) else {
+        return;
+    };
+    let (kind, ink) = match &mark.ink {
+        Ink::Vector(ink) => (0u8, ink),
+        Ink::Raster(ink) => (1u8, ink),
+    };
+    let mut bytes = Vec::with_capacity(ink.len() + 5);
+    bytes.push(kind);
+    bytes.extend_from_slice(&mark.aspect.to_le_bytes());
+    bytes.extend_from_slice(ink);
+    if std::fs::write(&path, bytes).is_err() {
+        return;
+    }
+    prune(&path);
+}
+
+/// How many marks the folder keeps. Every one is a picture a page can ask for again, so the
+/// oldest go once there are more than this, and a session that visits many artists does not
+/// grow the cache without end.
+const KEPT: usize = 200;
+
+fn prune(newest: &std::path::Path) {
+    let Some(folder) = folder() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&folder) else {
+        return;
+    };
+    let mut marks = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|kind| kind == "mark"))
+        .filter_map(|entry| {
+            let touched = entry.metadata().ok()?.modified().ok()?;
+            Some((touched, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    if marks.len() <= KEPT {
+        return;
+    }
+    marks.sort();
+    let drop = marks.len() - KEPT;
+    for (_, path) in marks.into_iter().take(drop) {
+        if path != newest {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -449,13 +507,14 @@ fn luminance(pixel: &image::Rgba<u8>) -> f32 {
     (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.
 }
 
-/// Apple's own artist page: the title logo and the header photograph.
+/// Apple Music's title logo for the artist, when Apple has one and the candidate's catalogue
+/// proves it is the same artist.
 async fn apple(
     http: &reqwest::Client,
     name: &str,
     key: &str,
     keys: &BTreeSet<String>,
-) -> Attempt<AppleArt> {
+) -> Attempt<Signature> {
     if keys.is_empty() {
         return Attempt::Missing;
     }
@@ -500,7 +559,7 @@ async fn apple(
             .filter(|url| !url.is_empty())
             .unwrap_or_else(|| format!("https://music.apple.com/us/artist/{id}"));
         match apple_page(http, &page).await {
-            Ok(Some(art)) => return Attempt::Found(art),
+            Ok(Some(logo)) => return Attempt::Found(logo),
             Ok(None) => return Attempt::Missing,
             Err(()) => return Attempt::Failed,
         }
@@ -535,8 +594,8 @@ async fn shares_titles(
     }))
 }
 
-/// Reads the title logo and the header photograph out of the artist page's embedded JSON.
-async fn apple_page(http: &reqwest::Client, page: &str) -> Result<Option<AppleArt>, ()> {
+/// Reads the title logo out of the artist page's embedded JSON.
+async fn apple_page(http: &reqwest::Client, page: &str) -> Result<Option<Signature>, ()> {
     let answer = http
         .get(page)
         .header("User-Agent", BROWSER_AGENT)
@@ -558,53 +617,22 @@ async fn apple_page(http: &reqwest::Client, page: &str) -> Result<Option<AppleAr
         return Ok(None);
     };
 
-    let logo = match header
+    let Some(dictionary) = header
         .get("artistLogo")
         .and_then(|logo| logo.get("dictionary"))
-    {
-        Some(dictionary) => match fill(dictionary, LOGO_WIDTH, "png") {
-            Some(url) => match picture_bytes(http, &url).await {
-                Ok(Some(bytes)) => Some(Signature {
-                    ink: Ink::Raster(Arc::from(&bytes[..])),
-                    aspect: aspect(dictionary),
-                }),
-                Ok(None) => None,
-                Err(()) => return Err(()),
-            },
-            None => None,
-        },
-        None => None,
+    else {
+        return Ok(None);
     };
-    let poster = poster(header);
-
-    Ok(Some(AppleArt { logo, poster }))
-}
-
-/// The header photograph Apple keeps for the artist: the wide one where there is one, and
-/// the portrait otherwise.
-fn poster(header: &Value) -> Option<Poster> {
-    let mut portrait = None;
-    for key in ["wideArtwork", "artwork", "colorBackdropArtwork"] {
-        let Some(dictionary) = header.get(key).and_then(|art| art.get("dictionary")) else {
-            continue;
-        };
-        let Some(url) = fill(dictionary, POSTER_WIDTH, "jpg") else {
-            continue;
-        };
-        if aspect(dictionary) >= 1.4 {
-            return Some(Poster {
-                url,
-                aspect: aspect(dictionary),
-                wide: true,
-            });
-        }
-        portrait.get_or_insert(Poster {
-            url,
+    let Some(url) = fill(dictionary, LOGO_WIDTH, "png") else {
+        return Ok(None);
+    };
+    match picture_bytes(http, &url).await? {
+        Some(bytes) => Ok(Some(Signature {
+            ink: Ink::Raster(Arc::from(&bytes[..])),
             aspect: aspect(dictionary),
-            wide: false,
-        });
+        })),
+        None => Ok(None),
     }
-    portrait
 }
 
 /// A picture's width over its height, as Apple states it.
