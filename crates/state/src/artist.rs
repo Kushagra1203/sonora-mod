@@ -245,12 +245,13 @@ impl ArtistDetail {
         let Some(artist) = self.artist.clone() else {
             return;
         };
-        self.autograph(id, &artist.name, &artist, cx);
         let Some(catalog) = self.session.read(cx).catalog(id) else {
+            self.autograph(id, cx);
             return;
         };
         if let Some(catalogue) = catalog.peek_artist_catalogue(id) {
             self.absorb(&catalogue);
+            self.autograph(id, cx);
             return;
         }
 
@@ -276,21 +277,27 @@ impl ArtistDetail {
                     Ok(catalogue) => this.absorb(&catalogue),
                     Err(error) => log::warn!("artist: cannot fill the page: {error:#}"),
                 }
+                // The mark is looked up once the page carries its songs and releases: those
+                // titles are what tells one same-named artist from another.
+                this.autograph(&id, cx);
                 cx.notify();
             })
             .ok();
         }));
     }
 
-    /// Looks the artist's signature up once, in the background, and redraws the hero when it
-    /// lands. A signature is a page decoration: a service that is down or has never heard of the
+    /// Looks the artist's mark up once, in the background, and redraws the hero when it
+    /// lands. A mark is a page decoration: a service that is down or has never heard of the
     /// artist leaves the typed name in its place, so nothing here reports a failure.
-    fn autograph(&mut self, id: &str, name: &str, artist: &Artist, cx: &mut Context<Self>) {
+    fn autograph(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.signature.is_some() || self.signing.is_some() || music::is_local_id(id) {
             return;
         }
+        let Some(artist) = self.artist.clone() else {
+            return;
+        };
         let http = self.http.clone();
-        let name = name.to_owned();
+        let name = artist.name.clone();
         // The titles the page already vouches for, which is what proves a same-named Apple
         // Music artist is this one before its title logo is borrowed.
         let titles = artist

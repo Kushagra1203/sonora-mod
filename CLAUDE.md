@@ -106,6 +106,9 @@ sonora → views → state → music
   at the bottom of the file they cover. Accessibility regression tests in
   `crates/ui/tests/a11y_tree.rs` are the exception: extend them with every new primitive. Accessibility regression tests in
   `crates/ui/tests/a11y_tree.rs` are the exception: extend them with every new primitive.
+- **Check once, then move on.** Verify a thing when you write it; re-check it only when there is
+  real doubt that it will fail, or when the change you just made could have broken it. Repeating a
+  check "just in case" burns the time the feature needs.
 
 ## Building and checks
 

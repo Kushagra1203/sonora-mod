@@ -12,7 +12,8 @@
 //! hydration. A name is not an identity, so a candidate is only taken when its catalogue
 //! shares a song or release title with the page's own.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -82,38 +83,67 @@ pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Opti
     if key.is_empty() {
         return None;
     }
-    if let Some(known) = KNOWN.lock().ok().and_then(|known| known.get(&key).cloned()) {
+    let keys = titles
+        .iter()
+        .filter_map(|title| title_key(title))
+        .collect::<BTreeSet<_>>();
+    let cache = cache_key(&key, &keys);
+    if let Some(known) = KNOWN
+        .lock()
+        .ok()
+        .and_then(|known| known.get(&cache).cloned())
+    {
         return known;
     }
 
     let mut settled = true;
-    match logo(http, name, &key, titles).await {
+    match logo(http, name, &key, &keys).await {
         Attempt::Found(signature) => {
-            remember(&key, Some(signature.clone()));
+            log::info!("artist: {name} wears apple's title logo");
+            remember(&cache, Some(signature.clone()));
             return Some(signature);
         }
         Attempt::Missing => {}
-        Attempt::Failed => settled = false,
+        Attempt::Failed => {
+            log::warn!("artist: apple's title logo for {name} could not be reached");
+            settled = false;
+        }
     }
     match signed(http, name).await {
         Attempt::Found(signature) => {
-            remember(&key, Some(signature.clone()));
+            log::info!("artist: {name} signs with the community service");
+            remember(&cache, Some(signature.clone()));
             Some(signature)
         }
         Attempt::Missing => {
             if settled {
-                remember(&key, None);
+                log::info!("artist: {name} has no mark");
+                remember(&cache, None);
             }
             None
         }
-        Attempt::Failed => None,
+        Attempt::Failed => {
+            log::warn!("artist: the signature service could not be reached for {name}");
+            None
+        }
     }
 }
 
+/// The cache key for an artist: the folded name, and the titles the page vouches for, since
+/// two artists can share a name and each is answered for its own songs.
+fn cache_key(key: &str, keys: &BTreeSet<String>) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    for title in keys {
+        title.hash(&mut hasher);
+    }
+    format!("{key}:{:016x}", hasher.finish())
+}
+
 /// Keeps a settled answer, so a revisit costs nothing.
-fn remember(key: &str, signature: Option<Signature>) {
+fn remember(cache: &str, signature: Option<Signature>) {
     if let Ok(mut known) = KNOWN.lock() {
-        known.insert(key.to_owned(), signature);
+        known.insert(cache.to_owned(), signature);
     }
 }
 
@@ -379,11 +409,7 @@ fn luminance(pixel: &image::Rgba<u8>) -> f32 {
 
 /// Apple Music's title logo for the artist, when Apple has one and the candidate catalogue
 /// proves it is the same artist.
-async fn logo(http: &reqwest::Client, name: &str, key: &str, titles: &[String]) -> Attempt {
-    let keys = titles
-        .iter()
-        .filter_map(|title| title_key(title))
-        .collect::<Vec<_>>();
+async fn logo(http: &reqwest::Client, name: &str, key: &str, keys: &BTreeSet<String>) -> Attempt {
     if keys.is_empty() {
         return Attempt::Missing;
     }
@@ -438,7 +464,11 @@ async fn logo(http: &reqwest::Client, name: &str, key: &str, titles: &[String]) 
 
 /// Whether Apple artist `id` has a song or release whose folded title is one the page vouches
 /// for. One request covers both: each track row carries its album's name.
-async fn shares_titles(http: &reqwest::Client, id: i64, keys: &[String]) -> Result<bool, ()> {
+async fn shares_titles(
+    http: &reqwest::Client,
+    id: i64,
+    keys: &BTreeSet<String>,
+) -> Result<bool, ()> {
     let mut lookup = reqwest::Url::parse("https://itunes.apple.com/lookup").map_err(|_| ())?;
     lookup
         .query_pairs_mut()
