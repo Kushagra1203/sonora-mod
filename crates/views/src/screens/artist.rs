@@ -48,10 +48,10 @@ const SHELVES: usize = 4;
 const FAN_SCALE: f32 = 0.8;
 /// How many release placeholders the rail shows while the discography is still loading.
 const RELEASE_SKELETONS: usize = 6;
-/// The popular songs grid: 4 columns of 5 rows, read left to right, for 20 songs. Borderless,
+/// The popular songs grid: 4 rows of 5 columns, read left to right, for 20 songs. Borderless,
 /// horizontal rail when narrow.
-const POPULAR_ROWS: usize = 5;
-const POPULAR_COLUMNS: usize = 4;
+const POPULAR_ROWS: usize = 4;
+const POPULAR_COLUMNS: usize = 5;
 const POPULAR_SONGS: usize = POPULAR_ROWS * POPULAR_COLUMNS;
 const POPULAR_GAP: Pixels = px(10.);
 /// The narrowest a popular column may get before the section scrolls sideways instead.
@@ -738,8 +738,8 @@ impl ArtistView {
         Some(Origin::artist(detail.id()?).named(name))
     }
 
-    /// The popular songs as a borderless grid, three rows by four columns, that turns into a rail
-    /// when the page is too narrow to hold all four columns. Nothing frames the rows: no card
+    /// The popular songs as a borderless grid, four rows by five columns, that turns into a rail
+    /// when the page is too narrow to hold all five columns. Nothing frames the rows: no card
     /// border, no separators, just the songs over the frost.
     fn popular(&self, width: Pixels, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
@@ -755,7 +755,7 @@ impl ArtistView {
         for column_index in 0..POPULAR_COLUMNS {
             let mut rows = Vec::with_capacity(POPULAR_ROWS);
             for row_index in 0..POPULAR_ROWS {
-                // Row-major, so the first row reads as the artist's first four songs.
+                // Row-major, so the first row reads as the artist's first five songs.
                 let place = row_index * POPULAR_COLUMNS + column_index;
                 if place >= tracks.len() {
                     if loading {
