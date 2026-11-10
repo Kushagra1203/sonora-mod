@@ -70,6 +70,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The colour behind an album, playlist or artist page follows the page as you move between
   pages again, instead of holding the colour of the last one and going opaque on Home.
+- A scroll against the top or the bottom of a page no longer throws the page the other way. A
+  flick that reaches an end stops there, a wheel turned at an end leaves no momentum behind, and
+  a glide onto a new page starts from where that page is instead of carrying the last one's.
 - A slow scroll no longer picks up a rush of momentum: only a flick carries the page on, and a
   trackpad follows your fingers exactly instead of easing behind them.
 - The header of an album, playlist or artist page no longer jumps when it finishes loading.
