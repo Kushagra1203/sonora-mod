@@ -177,10 +177,24 @@ fn path(cache: &str) -> Option<std::path::PathBuf> {
     Some(folder()?.join(format!("{name}.mark")))
 }
 
+/// How old a kept mark may be before it is asked for again. Both services gain and correct
+/// entries over time, and a month-old answer is worth one request to keep up with them.
+const STALE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// A mark kept from an earlier session. One small header carries what the ink is and what shape
 /// it has, and the rest of the file is the picture itself.
 fn kept(cache: &str) -> Option<Signature> {
-    let bytes = std::fs::read(path(cache)?).ok()?;
+    let path = path(cache)?;
+    let age = std::fs::metadata(&path)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .unwrap_or_default();
+    if age > STALE {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
     let (head, ink) = bytes.split_at_checked(5)?;
     let aspect = f32::from_le_bytes(head[1..5].try_into().ok()?);
     if !aspect.is_finite() || aspect <= 0. {
