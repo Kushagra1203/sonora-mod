@@ -1,5 +1,6 @@
 mod addons;
 mod artist;
+mod artist_art;
 mod catalog;
 mod control;
 mod cover;
@@ -35,7 +36,6 @@ mod session;
 mod settings;
 mod sheets;
 mod signal;
-mod signature;
 mod snapshot;
 mod song;
 mod tags;
@@ -48,6 +48,7 @@ mod window_shape;
 
 pub use addons::Addons;
 pub use artist::{ArtistDetail, ArtistDetailEvent};
+pub use artist_art::{ArtistArt, Ink, Poster, Signature};
 pub use control::Control;
 pub use cover::Cover;
 pub use detail::{Collection, Detail, Header};
@@ -89,7 +90,6 @@ pub use settings::{
     ThemeVariant, equalizer_profile_label, remember_window, window_placement,
 };
 pub use signal::{Change, Equalizing, FLOAT_BITS, Following, Signal, SignalPath};
-pub use signature::{Ink, Signature};
 pub use song::SongDetail;
 pub use tags::{TagState, Tags};
 pub use toast::{Outcome, Target, Toast, ToastAction, Toasts};

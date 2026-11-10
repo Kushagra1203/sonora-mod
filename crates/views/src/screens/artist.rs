@@ -101,6 +101,39 @@ const BANNER_SHADE: f32 = 0.62;
 /// The blur over a portrait standing in for a missing banner, enough to leave only its colours.
 const BANNER_WASH: Pixels = px(48.);
 
+/// A picture behind an artist's page, and the shape it is drawn in.
+struct Backdrop {
+    /// Where the picture is.
+    url: String,
+    /// The picture's own width over its height, when it should keep its shape rather than
+    /// fill the window. A banner has none and fills the window as before.
+    shape: Option<f32>,
+    /// How soft the picture is drawn, for a portrait that is only a wash behind the page.
+    wash: Option<Pixels>,
+}
+
+/// The box a backdrop picture is drawn in: the window's own shape for a banner, and the
+/// picture's own shape inside the window when it should be seen whole rather than cropped.
+fn backdrop_box(
+    width: Pixels,
+    height: Pixels,
+    spread: Pixels,
+    shape: Option<f32>,
+) -> (Pixels, Pixels) {
+    let full_width = width + spread * 2.;
+    let full_height = height + spread * 2.;
+    match shape {
+        Some(shape) if shape > 0. => {
+            let by_width = full_width / shape;
+            match by_width <= full_height {
+                true => (full_width, by_width),
+                false => (full_height * shape, full_height),
+            }
+        }
+        _ => (full_width, full_height),
+    }
+}
+
 pub(crate) struct ArtistView {
     detail: Entity<ArtistDetail>,
     playback: Entity<Playback>,
@@ -305,18 +338,44 @@ impl ArtistView {
         any.then_some(facts)
     }
 
+    /// The picture behind the page: Apple's own header photograph where there is one, then
+    /// the provider's banner, then the artist's portrait with a wash over it.
+    ///
+    /// The shape is the picture's own, so a poster is seen whole rather than cropped to fill
+    /// the window. A banner has none, and keeps the window's shape as before.
+    fn backdrop_picture(&self, cx: &App) -> Option<Backdrop> {
+        let artist = self.detail.read(cx).artist()?;
+        let poster = self.detail.read(cx).poster();
+        match poster {
+            Some(poster) => Some(Backdrop {
+                url: poster.url.clone(),
+                shape: Some(poster.aspect),
+                wash: None,
+            }),
+            None => match &artist.banner {
+                Some(banner) => Some(Backdrop {
+                    url: banner.clone(),
+                    shape: None,
+                    wash: None,
+                }),
+                None if effects() => Some(Backdrop {
+                    url: artist.cover_large.clone()?,
+                    shape: None,
+                    wash: Some(BANNER_WASH),
+                }),
+                None => None,
+            },
+        }
+    }
+
     /// The static backdrop image that fills the entire window behind the page.
     /// It never moves — it's the fixed background.
     fn backdrop(&self, inset: Pixels, height: Pixels, cx: &App) -> Option<AnyElement> {
-        let artist = self.detail.read(cx).artist()?;
-        let (url, wash) = match &artist.banner {
-            Some(banner) => (banner.clone(), None),
-            None if effects() => (artist.cover_large.clone()?, Some(BANNER_WASH)),
-            None => return None,
-        };
+        let backdrop = self.backdrop_picture(cx)?;
         let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
         let theme = cx.theme();
         let spread = BANNER_WASH * 2.;
+        let (box_width, box_height) = backdrop_box(width, height, spread, backdrop.shape);
 
         Some(
             div()
@@ -326,40 +385,40 @@ impl ArtistView {
                 .right_0()
                 .h(height)
                 .overflow_hidden()
-                .map(|this| match wash {
+                .map(|this| match backdrop.wash {
                     Some(wash) => this.child(
-                        Artwork::new(Some(url.clone()))
-                            .size(width + spread * 2.)
-                            .wide(height + spread * 2.)
+                        Artwork::new(Some(backdrop.url.clone()))
+                            .size(box_width)
+                            .wide(box_height)
                             .overlay()
                             .absolute()
                             .left(relative(0.5))
-                            .ml(-(width / 2. + spread))
+                            .ml(-(box_width / 2.))
                             .top(-spread)
                             .blur(wash),
                     ),
                     None => this
                         .when(effects(), |this| {
                             this.child(
-                                Artwork::new(Some(url.clone()))
-                                    .size(width + spread * 2.)
-                                    .wide(height + spread * 2.)
+                                Artwork::new(Some(backdrop.url.clone()))
+                                    .size(box_width)
+                                    .wide(box_height)
                                     .overlay()
                                     .absolute()
                                     .left(relative(0.5))
-                                    .ml(-(width / 2. + spread))
+                                    .ml(-(box_width / 2.))
                                     .top(-spread)
                                     .blur(BANNER_WASH),
                             )
                         })
                         .child(
-                            Artwork::new(Some(url))
-                                .size(width + spread * 2.)
-                                .wide(height + spread * 2.)
+                            Artwork::new(Some(backdrop.url))
+                                .size(box_width)
+                                .wide(box_height)
                                 .overlay()
                                 .absolute()
                                 .left(relative(0.5))
-                                .ml(-(width / 2. + spread))
+                                .ml(-(box_width / 2.))
                                 .top(-spread),
                         ),
                 })
@@ -377,30 +436,26 @@ impl ArtistView {
     /// It starts at 45% of viewport, has a 10% transition zone (45%-55%),
     /// and moves up as the user scrolls.
     fn frost(&self, inset: Pixels, height: Pixels, offset: Pixels, cx: &App) -> Option<AnyElement> {
-        let artist = self.detail.read(cx).artist()?;
-        let (url, wash) = match &artist.banner {
-            Some(banner) => (banner.clone(), None),
-            None if effects() => (artist.cover_large.clone()?, Some(BANNER_WASH)),
-            None => return None,
-        };
+        let backdrop = self.backdrop_picture(cx)?;
         let width = (self.width + inset * 2.) * (1. + BANNER_SLACK);
         let theme = cx.theme();
         let spread = BANNER_WASH * 2.;
+        let (box_width, box_height) = backdrop_box(width, height, spread, backdrop.shape);
 
         // The frost edge starts at FROST_START and moves up with scroll.
         // offset is how far the page has scrolled (positive = scrolled down).
         let transition_start = height * FROST_START - offset;
 
         // One blurred copy of the backdrop — constant blur strength.
-        let frosted_picture = Artwork::new(Some(url))
-            .size(width + spread * 2.)
-            .wide(height + spread * 2.)
+        let frosted_picture = Artwork::new(Some(backdrop.url))
+            .size(box_width)
+            .wide(box_height)
             .overlay()
             .absolute()
             .left(relative(0.5))
-            .ml(-(width / 2. + spread))
+            .ml(-(box_width / 2.))
             .top(-spread)
-            .blur(match wash {
+            .blur(match backdrop.wash {
                 Some(w) => w,
                 None => BANNER_BLURS[BANNER_BLURS.len() - 1].1,
             });

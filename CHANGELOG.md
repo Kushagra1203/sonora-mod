@@ -36,6 +36,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the translation back off. The translated line sweeps word by word with the line above it.
 - An artist page draws Apple's title logo for the artist in place of the typed name, and falls
   back to the artist's own signature when Apple has none.
+- An artist page behind which Apple Music keeps a header photograph shows that photograph
+  instead, and keeps the provider's own banner when Apple has none.
 - The word being sung lifts a little off the line as it is sung.
 
 ### Changed

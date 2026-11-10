@@ -1,5 +1,5 @@
-//! The mark an artist's page puts where the typed name would be: the artist's own autograph,
-//! or the title logo Apple Music sets for them.
+//! The art an artist's page puts where the typed name would be: the artist's own autograph,
+//! or the title logo Apple Music sets for them, and the photograph behind the header.
 //!
 //! Autographs are kept by a small service that checks each one against the artist it is
 //! credited to. That service is self-hosted and may be asleep when the page asks, so a lookup
@@ -10,7 +10,8 @@
 //! two public, unauthenticated requests BitChord uses find it: the iTunes search turns a name
 //! into a candidate, the artist's own page carries the logo in the JSON it embeds for
 //! hydration. A name is not an identity, so a candidate is only taken when its catalogue
-//! shares a song or release title with the page's own.
+//! shares a song or release title with the page's own. The same page carries the header
+//! photograph, so the poster comes out of the request the logo did.
 
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
@@ -38,6 +39,8 @@ const DEADLINE: Duration = Duration::from_secs(12);
 const RETRY: Duration = Duration::from_secs(3);
 /// The width the title logo is asked for. Apple's URL template scales on request.
 const LOGO_WIDTH: u32 = 1000;
+/// The width the header photograph is asked for, which is what the page draws it at.
+const POSTER_WIDTH: u32 = 1600;
 /// How wide a signature is guessed to be when the service does not say.
 const GUESSED_ASPECT: f32 = 2.5;
 /// The shapes a mark is allowed to be drawn in. Past these it is either a very short monogram
@@ -66,18 +69,48 @@ pub struct Signature {
     pub aspect: f32,
 }
 
-/// Answers already settled this session, keyed by the folded artist name. Both hits and
-/// genuine misses are kept: revisiting an artist must not wake the service again.
-static KNOWN: LazyLock<Mutex<HashMap<String, Option<Signature>>>> =
+/// The photograph behind an artist's header, taken from Apple Music's own page.
+#[derive(Clone)]
+pub struct Poster {
+    /// Where the picture is, at the width the page draws it.
+    pub url: String,
+    /// The picture's width over its height, so the page can draw the whole of it rather than
+    /// crop it to fill the window.
+    pub aspect: f32,
+    /// Whether the picture is a wide one, which the page can draw sharp across the window,
+    /// rather than a portrait it has to blur.
+    pub wide: bool,
+}
+
+/// What an artist's page found: the mark drawn in place of the name, and the photograph
+/// behind the header. Either may be missing.
+#[derive(Clone, Default)]
+pub struct ArtistArt {
+    pub signature: Option<Signature>,
+    pub poster: Option<Poster>,
+}
+
+/// What Apple's own artist page carries: the title logo and the header photograph.
+struct AppleArt {
+    logo: Option<Signature>,
+    poster: Option<Poster>,
+}
+
+/// Answers already settled this session, keyed by the folded artist name and its titles. Both
+/// hits and genuine misses are kept: revisiting an artist must not wake the service again.
+static KNOWN: LazyLock<Mutex<HashMap<String, Option<ArtistArt>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Looks the artist's mark up, and answers with it or with nothing.
 ///
-/// Apple Music's title logo is asked for first, as BitChord's phone does; when Apple has none,
-/// the community signature service is tried. A service that is down, slow or answers with
-/// something that is not a picture is no different from an artist who has never signed
-/// anything: the page keeps the typed name.
-pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Option<Signature> {
+/// Looks the artist's art up, and answers with what it found.
+///
+/// Apple Music's title logo and header photograph are asked for first, as BitChord's phone
+/// does, and both come out of the same page; when Apple has no logo, the community signature
+/// service is tried for one. A service that is down, slow or answers with something that is
+/// not a picture is no different from an artist who has never signed anything: the page keeps
+/// the typed name.
+pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Option<ArtistArt> {
     let name = name.trim();
     let key = fold(name);
     if key.is_empty() {
@@ -97,36 +130,45 @@ pub async fn find(http: &reqwest::Client, name: &str, titles: &[String]) -> Opti
     }
 
     let mut settled = true;
-    match logo(http, name, &key, &keys).await {
-        Attempt::Found(signature) => {
-            log::info!("artist: {name} wears apple's title logo");
-            remember(&cache, Some(signature.clone()));
-            return Some(signature);
-        }
-        Attempt::Missing => {}
+    let apple = match apple(http, name, &key, &keys).await {
+        Attempt::Found(art) => Some(art),
+        Attempt::Missing => None,
         Attempt::Failed => {
-            log::warn!("artist: apple's title logo for {name} could not be reached");
+            log::warn!("artist: apple's page for {name} could not be reached");
             settled = false;
+            None
         }
-    }
-    match signed(http, name).await {
-        Attempt::Found(signature) => {
-            log::info!("artist: {name} signs with the community service");
-            remember(&cache, Some(signature.clone()));
+    };
+    let signature = match apple.as_ref().and_then(|art| art.logo.clone()) {
+        Some(signature) => {
+            log::info!("artist: {name} wears apple's title logo");
             Some(signature)
         }
-        Attempt::Missing => {
-            if settled {
-                log::info!("artist: {name} has no mark");
-                remember(&cache, None);
+        None => match signed(http, name).await {
+            Attempt::Found(signature) => {
+                log::info!("artist: {name} signs with the community service");
+                Some(signature)
             }
-            None
+            Attempt::Missing => None,
+            Attempt::Failed => {
+                log::warn!("artist: the signature service could not be reached for {name}");
+                settled = false;
+                None
+            }
+        },
+    };
+    let poster = apple.as_ref().and_then(|art| art.poster.clone());
+
+    if signature.is_none() && poster.is_none() {
+        if settled {
+            log::info!("artist: {name} has no mark and no poster");
+            remember(&cache, None);
         }
-        Attempt::Failed => {
-            log::warn!("artist: the signature service could not be reached for {name}");
-            None
-        }
+        return None;
     }
+    let art = ArtistArt { signature, poster };
+    remember(&cache, Some(art.clone()));
+    Some(art)
 }
 
 /// The cache key for an artist: the folded name, and the titles the page vouches for, since
@@ -141,16 +183,16 @@ fn cache_key(key: &str, keys: &BTreeSet<String>) -> String {
 }
 
 /// Keeps a settled answer, so a revisit costs nothing.
-fn remember(cache: &str, signature: Option<Signature>) {
+fn remember(cache: &str, art: Option<ArtistArt>) {
     if let Ok(mut known) = KNOWN.lock() {
-        known.insert(cache.to_owned(), signature);
+        known.insert(cache.to_owned(), art);
     }
 }
 
 /// What one lookup settled on. A failure is not an answer: it is not remembered, and the next
 /// visit to the page asks again.
-enum Attempt {
-    Found(Signature),
+enum Attempt<T> {
+    Found(T),
     Missing,
     Failed,
 }
@@ -160,7 +202,7 @@ enum Attempt {
 /// The service is self-hosted and may be asleep when the page opens, so a failed request is
 /// tried twice more with growing pauses. A settled answer — including "no signature" — is
 /// returned at once; only a failure waits.
-async fn signed(http: &reqwest::Client, name: &str) -> Attempt {
+async fn signed(http: &reqwest::Client, name: &str) -> Attempt<Signature> {
     for pause in [Duration::ZERO, RETRY, RETRY * 2 + Duration::from_secs(2)] {
         if !pause.is_zero() {
             tokio::time::sleep(pause).await;
@@ -173,7 +215,7 @@ async fn signed(http: &reqwest::Client, name: &str) -> Attempt {
     Attempt::Failed
 }
 
-async fn signed_once(http: &reqwest::Client, name: &str) -> Attempt {
+async fn signed_once(http: &reqwest::Client, name: &str) -> Attempt<Signature> {
     let Ok(mut endpoint) = reqwest::Url::parse(ENDPOINT) else {
         return Attempt::Failed;
     };
@@ -407,9 +449,13 @@ fn luminance(pixel: &image::Rgba<u8>) -> f32 {
     (0.299 * pixel[0] as f32 + 0.587 * pixel[1] as f32 + 0.114 * pixel[2] as f32) / 255.
 }
 
-/// Apple Music's title logo for the artist, when Apple has one and the candidate catalogue
-/// proves it is the same artist.
-async fn logo(http: &reqwest::Client, name: &str, key: &str, keys: &BTreeSet<String>) -> Attempt {
+/// Apple's own artist page: the title logo and the header photograph.
+async fn apple(
+    http: &reqwest::Client,
+    name: &str,
+    key: &str,
+    keys: &BTreeSet<String>,
+) -> Attempt<AppleArt> {
     if keys.is_empty() {
         return Attempt::Missing;
     }
@@ -453,8 +499,8 @@ async fn logo(http: &reqwest::Client, name: &str, key: &str, keys: &BTreeSet<Str
             .map(|url| url.split('?').next().unwrap_or(url).to_owned())
             .filter(|url| !url.is_empty())
             .unwrap_or_else(|| format!("https://music.apple.com/us/artist/{id}"));
-        match logo_page(http, &page).await {
-            Ok(Some(signature)) => return Attempt::Found(signature),
+        match apple_page(http, &page).await {
+            Ok(Some(art)) => return Attempt::Found(art),
             Ok(None) => return Attempt::Missing,
             Err(()) => return Attempt::Failed,
         }
@@ -489,8 +535,8 @@ async fn shares_titles(
     }))
 }
 
-/// Reads the logo out of the artist page's embedded JSON.
-async fn logo_page(http: &reqwest::Client, page: &str) -> Result<Option<Signature>, ()> {
+/// Reads the title logo and the header photograph out of the artist page's embedded JSON.
+async fn apple_page(http: &reqwest::Client, page: &str) -> Result<Option<AppleArt>, ()> {
     let answer = http
         .get(page)
         .header("User-Agent", BROWSER_AGENT)
@@ -511,26 +557,98 @@ async fn logo_page(http: &reqwest::Client, page: &str) -> Result<Option<Signatur
     let Some(header) = find_header(&page) else {
         return Ok(None);
     };
-    let Some(logo) = header
+
+    let logo = match header
         .get("artistLogo")
         .and_then(|logo| logo.get("dictionary"))
-    else {
-        return Ok(None);
+    {
+        Some(dictionary) => match fill(dictionary, LOGO_WIDTH, "png") {
+            Some(url) => match picture_bytes(http, &url).await {
+                Ok(Some(bytes)) => Some(Signature {
+                    ink: Ink::Raster(Arc::from(&bytes[..])),
+                    aspect: aspect(dictionary),
+                }),
+                Ok(None) => None,
+                Err(()) => return Err(()),
+            },
+            None => None,
+        },
+        None => None,
     };
-    let width = logo.get("width").and_then(Value::as_f64).unwrap_or(0.);
-    let height = logo.get("height").and_then(Value::as_f64).unwrap_or(0.);
-    let template = logo.get("url").and_then(Value::as_str).unwrap_or_default();
-    if width <= 0. || height <= 0. || !template.contains("{w}") {
-        return Ok(None);
+    let poster = poster(header);
+
+    Ok(Some(AppleArt { logo, poster }))
+}
+
+/// The header photograph Apple keeps for the artist: the wide one where there is one, and
+/// the portrait otherwise.
+fn poster(header: &Value) -> Option<Poster> {
+    let mut portrait = None;
+    for key in ["wideArtwork", "artwork", "colorBackdropArtwork"] {
+        let Some(dictionary) = header.get(key).and_then(|art| art.get("dictionary")) else {
+            continue;
+        };
+        let Some(url) = fill(dictionary, POSTER_WIDTH, "jpg") else {
+            continue;
+        };
+        if aspect(dictionary) >= 1.4 {
+            return Some(Poster {
+                url,
+                aspect: aspect(dictionary),
+                wide: true,
+            });
+        }
+        portrait.get_or_insert(Poster {
+            url,
+            aspect: aspect(dictionary),
+            wide: false,
+        });
     }
-    let height_at_width = (LOGO_WIDTH as f64 * height / width).round() as u32;
-    let url = template
-        .replace("{w}", &LOGO_WIDTH.to_string())
-        .replace("{h}", &height_at_width.to_string())
-        .replace("{c}", "bb")
-        .replace("{f}", "png");
+    portrait
+}
+
+/// A picture's width over its height, as Apple states it.
+fn aspect(dictionary: &Value) -> f32 {
+    let width = dictionary
+        .get("width")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.);
+    let height = dictionary
+        .get("height")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.);
+    if width <= 0. || height <= 0. {
+        return 1.;
+    }
+    (width / height) as f32
+}
+
+/// The picture Apple serves, at the width the page draws it. The URL carries the size and
+/// the format as placeholders, which the service fills in on request.
+fn fill(dictionary: &Value, width: u32, format: &str) -> Option<String> {
+    let template = dictionary.get("url").and_then(Value::as_str)?;
+    if !template.contains("{w}") {
+        return None;
+    }
+    let wide = dictionary.get("width").and_then(Value::as_f64)?;
+    let tall = dictionary.get("height").and_then(Value::as_f64)?;
+    if wide <= 0. || tall <= 0. {
+        return None;
+    }
+    let height = (width as f64 * tall / wide).round() as u32;
+    Some(
+        template
+            .replace("{w}", &width.to_string())
+            .replace("{h}", &height.to_string())
+            .replace("{c}", "bb")
+            .replace("{f}", format),
+    )
+}
+
+/// The bytes of a picture Apple serves, when it serves one.
+async fn picture_bytes(http: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>, ()> {
     let picture = http
-        .get(&url)
+        .get(url)
         .header("User-Agent", BROWSER_AGENT)
         .timeout(DEADLINE)
         .send()
@@ -540,13 +658,7 @@ async fn logo_page(http: &reqwest::Client, page: &str) -> Result<Option<Signatur
         return Ok(None);
     }
     let bytes = picture.bytes().await.map_err(|_| ())?;
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(Signature {
-        ink: Ink::Raster(Arc::from(&bytes[..])),
-        aspect: (width / height) as f32,
-    }))
+    Ok((!bytes.is_empty()).then(|| bytes.to_vec()))
 }
 
 /// The JSON inside the `<script id="serialized-server-data">` tag Apple hydrates its pages

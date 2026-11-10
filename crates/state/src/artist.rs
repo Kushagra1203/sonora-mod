@@ -4,7 +4,7 @@ use gpui::{Context, Entity, EventEmitter, Task};
 use music::{Album, Artist, ArtistCatalogue, Track};
 use tokio::task::AbortHandle;
 
-use crate::{Io, Library, LibraryEvent, Session, SessionEvent, Signature, join};
+use crate::{ArtistArt, Io, Library, LibraryEvent, Poster, Session, SessionEvent, join};
 
 /// Signals that a local artist no longer has a page after the library changes.
 pub enum ArtistDetailEvent {
@@ -17,9 +17,10 @@ pub struct ArtistDetail {
     appears_on: Vec<Album>,
     loading: bool,
     error: Option<String>,
-    /// The artist's own autograph, once the signature service answers. The page shows the
-    /// typed name until then, and keeps it when there is no autograph to show.
-    signature: Option<Signature>,
+    /// The art the page found beyond what the provider gave it: the mark drawn in place of
+    /// the typed name, and the photograph behind the header. The page shows the typed name
+    /// and the provider's own picture until these land.
+    art: Option<ArtistArt>,
     session: Entity<Session>,
     io: Io,
     http: reqwest::Client,
@@ -86,7 +87,7 @@ impl ArtistDetail {
             appears_on: Vec::new(),
             loading: false,
             error: None,
-            signature: None,
+            art: None,
             session,
             io,
             http: reqwest::Client::new(),
@@ -126,9 +127,15 @@ impl ArtistDetail {
         &self.appears_on
     }
 
-    /// The artist's autograph, once it has been looked up.
-    pub fn signature(&self) -> Option<&Signature> {
-        self.signature.as_ref()
+    /// The artist's mark, once it has been looked up: the title logo or the autograph drawn
+    /// in place of the typed name.
+    pub fn signature(&self) -> Option<&crate::Signature> {
+        self.art.as_ref().and_then(|art| art.signature.as_ref())
+    }
+
+    /// The photograph behind the header, when Apple Music keeps one for the artist.
+    pub fn poster(&self) -> Option<&Poster> {
+        self.art.as_ref().and_then(|art| art.poster.as_ref())
     }
 
     pub fn is_loading(&self) -> bool {
@@ -286,11 +293,12 @@ impl ArtistDetail {
         }));
     }
 
-    /// Looks the artist's mark up once, in the background, and redraws the hero when it
-    /// lands. A mark is a page decoration: a service that is down or has never heard of the
-    /// artist leaves the typed name in its place, so nothing here reports a failure.
+    /// Looks the artist's art up once, in the background, and redraws the page when it lands.
+    /// The mark and the poster are page decoration: a service that is down or has never heard
+    /// of the artist leaves the typed name and the provider's own picture in place, so
+    /// nothing here reports a failure.
     fn autograph(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.signature.is_some() || self.signing.is_some() || music::is_local_id(id) {
+        if self.art.is_some() || self.signing.is_some() || music::is_local_id(id) {
             return;
         }
         let Some(artist) = self.artist.clone() else {
@@ -309,7 +317,7 @@ impl ArtistDetail {
         let wanted = id.to_owned();
         let request = self
             .io
-            .spawn(async move { Ok(crate::signature::find(&http, &name, &titles).await) });
+            .spawn(async move { Ok(crate::artist_art::find(&http, &name, &titles).await) });
         self.signing = Some(cx.spawn(async move |this, cx| {
             let found = join(request).await;
             this.update(cx, |this, cx| {
@@ -317,8 +325,8 @@ impl ArtistDetail {
                     return;
                 }
                 this.signing = None;
-                if let Ok(Some(signature)) = found {
-                    this.signature = Some(signature);
+                if let Ok(Some(art)) = found {
+                    this.art = Some(art);
                     cx.notify();
                 }
             })
@@ -360,7 +368,7 @@ impl ArtistDetail {
         self.id = None;
         self.artist = None;
         self.appears_on.clear();
-        self.signature = None;
+        self.art = None;
         self.loading = false;
         self.filling = false;
         self.error = None;
