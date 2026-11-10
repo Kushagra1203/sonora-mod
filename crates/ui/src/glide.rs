@@ -52,11 +52,35 @@ const SPRING_REST: Pixels = px(0.05);
 /// delta is already in true pixels and passes through at one.
 pub const WHEEL_GAIN: f32 = 3.0;
 
+/// How long the wheel must be still before the coast takes over. A gesture that pauses for
+/// longer than this has ended, and the page carries on by itself.
+const COAST_PAUSE: Duration = Duration::from_millis(90);
+/// The longest gap between two notches that still counts as one gesture. Past this the wheel
+/// was resting, however fast the notch that followed it came.
+const COAST_TICK: Duration = Duration::from_millis(200);
+/// The speed below which there is nothing to coast on. A single deliberate notch is slower
+/// than this and stops where it landed; a wheel spun hard is faster and carries on.
+const COAST_MIN: f32 = 1_500.;
+/// The speed the coast is capped at, which bounds how far it can carry.
+const COAST_MAX: f32 = 6_600.;
+/// How quickly the coast runs down, in eights a second. The speed falls by a third every
+/// hundred milliseconds or so, so the page slows rather than stopping dead.
+const COAST_FRICTION: f32 = 5.5;
+/// The speed at which the coast gives up, well under a pixel a frame.
+const COAST_STOP: f32 = 60.;
+
 #[derive(Default)]
 struct Drift {
     shown: Point<Pixels>,
     target: Point<Pixels>,
     velocity: Point<f32>,
+    /// The speed the last gesture ended at, in pixels a second, kept so the coast can pick
+    /// it up when the wheel stops.
+    coast: Point<f32>,
+    /// When the wheel last moved, which is what says whether the gesture is over.
+    last_nudge: Option<Instant>,
+    /// Whether the page is coasting rather than easing towards a target.
+    coasting: bool,
     gliding: bool,
     springing: bool,
     armed: bool,
@@ -105,6 +129,8 @@ impl Glide {
         if !drift.gliding {
             drift.shown = scroll.offset();
             drift.velocity = Point::default();
+            drift.coast = Point::default();
+            drift.last_nudge = None;
         }
     }
 
@@ -112,6 +138,9 @@ impl Glide {
     /// what lets a wheel notch carry further than the platform's three lines while a trackpad
     /// delta passes through untouched. The tick the platform already applied is put back to the
     /// last drawn offset, so the glide is the only thing moving the region.
+    ///
+    /// The tick also says how fast the wheel was turning, which is what the coast picks up
+    /// when the wheel stops.
     pub fn nudge(&self, scroll: &impl ScrollPosition, gain: f32, window: &mut Window) {
         {
             let mut drift = self.drift.borrow_mut();
@@ -127,9 +156,44 @@ impl Glide {
             drift.springing = false;
             drift.velocity = Point::default();
             drift.eased = None;
+            drift.coasting = false;
+            self.remember(&mut drift, step);
             scroll.set_offset(drift.shown);
         }
         self.schedule_frame(scroll, window);
+    }
+
+    /// Keeps the speed the gesture is running at, so that the page can carry on by itself
+    /// once the wheel stops.
+    ///
+    /// The speed is the distance of the tick over the time since the last one, so a wheel
+    /// turned slowly says little and a wheel spun hard says a lot. The quickest speed of the
+    /// gesture is kept, which is what a flick reads as, and a tick in the other direction
+    /// replaces it outright rather than being averaged away.
+    fn remember(&self, drift: &mut Drift, step: Point<Pixels>) {
+        let now = Instant::now();
+        let gap = drift
+            .last_nudge
+            .replace(now)
+            .map(|last| now.duration_since(last).min(COAST_TICK))
+            .unwrap_or(COAST_TICK);
+        let instant = point(
+            step.x.as_f32() / gap.as_secs_f32(),
+            step.y.as_f32() / gap.as_secs_f32(),
+        );
+        // The quickest speed of the gesture is kept, and a tick the other way replaces it
+        // outright: a page that was coasting down and is now pulled up must not keep going.
+        let keep = |instant: f32, held: f32| match (instant == 0., held == 0.) {
+            (true, _) => held,
+            (_, true) => instant,
+            _ if instant.signum() != held.signum() => instant,
+            _ if instant.abs() >= held.abs() => instant,
+            _ => held,
+        };
+        drift.coast = point(
+            keep(instant.x, drift.coast.x).clamp(-COAST_MAX, COAST_MAX),
+            keep(instant.y, drift.coast.y).clamp(-COAST_MAX, COAST_MAX),
+        );
     }
 
     pub fn aim(&self, scroll: &impl ScrollPosition, to: Point<Pixels>, window: &mut Window) {
@@ -140,6 +204,9 @@ impl Glide {
             }
             drift.target = held(to, scroll);
             drift.gliding = true;
+            drift.coasting = false;
+            drift.coast = Point::default();
+            drift.last_nudge = None;
             let springing = self.spring.is_some();
             if drift.springing != springing {
                 drift.velocity = Point::default();
@@ -157,6 +224,9 @@ impl Glide {
             drift.shown = drift.target;
             drift.gliding = false;
             drift.springing = false;
+            drift.coasting = false;
+            drift.coast = Point::default();
+            drift.last_nudge = None;
             drift.velocity = Point::default();
             drift.beat = None;
             drift.eased = None;
@@ -228,6 +298,19 @@ impl Glide {
                 .unwrap_or(Duration::from_secs_f32(1. / HERTZ));
             let target = held(drift.target, scroll);
             let springing = drift.springing;
+            // The wheel has stopped and the gesture was fast enough to be worth carrying on
+            // from: the page coasts on its own until it slows to nothing.
+            if !springing
+                && !drift.coasting
+                && drift
+                    .last_nudge
+                    .is_some_and(|last| now.duration_since(last) >= COAST_PAUSE)
+                && (drift.coast.x.abs() >= COAST_MIN || drift.coast.y.abs() >= COAST_MIN)
+            {
+                drift.coasting = true;
+                drift.target = drift.shown;
+                drift.eased = None;
+            }
             let settled = if springing {
                 let spring = self.spring.expect("a springing glide has a spring");
                 let x = spring.step(
@@ -250,6 +333,27 @@ impl Glide {
                 drift.velocity = point(x.velocity, y.velocity);
                 spring.is_settled(x, target.x.as_f32(), SPRING_REST.as_f32())
                     && spring.is_settled(y, target.y.as_f32(), SPRING_REST.as_f32())
+            } else if drift.coasting {
+                let seconds = elapsed.as_secs_f32();
+                let next = point(
+                    drift.coast.x * (-COAST_FRICTION * seconds).exp(),
+                    drift.coast.y * (-COAST_FRICTION * seconds).exp(),
+                );
+                drift.shown += point(px(next.x * seconds), px(next.y * seconds));
+                // the end of the page stops the coast rather than letting it push at it
+                let reached = held(drift.shown, scroll);
+                if reached != drift.shown {
+                    drift.shown = reached;
+                    drift.coast = Point::default();
+                }
+                drift.coast = next;
+                drift.target = drift.shown;
+                let stopped = next.x.abs() < COAST_STOP && next.y.abs() < COAST_STOP;
+                if stopped {
+                    drift.coasting = false;
+                    drift.coast = Point::default();
+                }
+                stopped
             } else {
                 let pace = drift.eased.unwrap_or(EASE);
                 let ease = 1. - (1. - pace).powf(elapsed.as_secs_f32() * HERTZ);
