@@ -414,21 +414,54 @@ fn related(item: &Value) -> Option<RelatedArtist> {
 
 /// Where the "Show all" link under the top songs shelf leads, with the params the page asks for
 /// alongside the id.
-pub fn top_songs_endpoint(page: &Value) -> Option<(String, Option<String>)> {
-    let shelf = parse::find_renderer(page, "musicShelfRenderer")?;
-    let browse = shelf.at(&["bottomEndpoint", "browseEndpoint"])?;
-    Some((
-        browse.str_at(&["browseId"])?.to_owned(),
-        browse.str_at(&["params"]).map(str::to_owned),
-    ))
+///
+/// A page can lead to its top songs through more than one shelf, and which shelf comes first
+/// moves from artist to artist, so every candidate is named, the ones whose rows read as songs
+/// first.
+pub fn top_songs_endpoints(page: &Value) -> Vec<(String, Option<String>)> {
+    let mut songs = Vec::new();
+    let mut others = Vec::new();
+    for shelf in parse::find_renderers(page, "musicShelfRenderer") {
+        let Some(browse) = shelf.at(&["bottomEndpoint", "browseEndpoint"]) else {
+            continue;
+        };
+        let (Some(id), params) = (
+            browse.str_at(&["browseId"]),
+            browse.str_at(&["params"]).map(str::to_owned),
+        ) else {
+            continue;
+        };
+        let rowed = shelf
+            .items(&["contents"])
+            .iter()
+            .any(|item| parse::list_item_track(item).is_some());
+        match rowed {
+            true => songs.push((id.to_owned(), params)),
+            false => others.push((id.to_owned(), params)),
+        }
+    }
+    songs.extend(others);
+    songs
+}
+
+/// The songs an artist page carries in its own shelves, without asking for the full list. An
+/// artist whose "Show all" cannot be read still gets the rows the page already holds.
+pub fn top_songs_inline(page: &Value) -> Vec<ytmusic::Track> {
+    let mut tracks = Vec::new();
+    for shelf in parse::find_renderers(page, "musicShelfRenderer") {
+        collect_songs(shelf.items(&["contents"]), &mut tracks);
+    }
+    tracks
 }
 
 /// The songs on an artist's top songs page, in the order the page ranks them. They come back
 /// as the crate read them so the caller can swap the videos for their songs before wiring.
 pub fn top_songs(page: &Value) -> Vec<ytmusic::Track> {
     let mut tracks = Vec::new();
-    for shelf in parse::find_renderers(page, "musicPlaylistShelfRenderer") {
-        collect_songs(shelf.items(&["contents"]), &mut tracks);
+    for kind in ["musicPlaylistShelfRenderer", "musicShelfRenderer"] {
+        for shelf in parse::find_renderers(page, kind) {
+            collect_songs(shelf.items(&["contents"]), &mut tracks);
+        }
     }
     tracks
 }

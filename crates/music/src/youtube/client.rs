@@ -164,27 +164,32 @@ impl MusicApi for YouTubeClient {
         // The shelf's "Show all" leads to the artist's full top-songs list. The page itself only
         // carries five songs without lengths, so the full list is preferred and the crate's
         // per-song duration requests run only when it cannot be read.
-        let full = match &page {
-            Ok(page) => match wire::top_songs_endpoint(page) {
-                Some((browse_id, params)) => {
-                    match self.top_songs(&browse_id, params.as_deref()).await {
-                        Ok(mut tracks) if !tracks.is_empty() => {
-                            tracks.truncate(POPULAR);
-                            Some(self.resolver.swap(tracks).await)
-                        }
-                        Ok(_) => None,
-                        Err(error) => {
-                            log::debug!(
-                                "artist: cannot read all top songs of {artist_id}: {error:#}"
-                            );
-                            None
-                        }
+        let mut full = None;
+        if let Ok(page) = &page {
+            for (browse_id, params) in wire::top_songs_endpoints(page) {
+                match self.top_songs(&browse_id, params.as_deref()).await {
+                    Ok(mut tracks) if !tracks.is_empty() => {
+                        tracks.truncate(POPULAR);
+                        full = Some(self.resolver.swap(tracks).await);
+                        break;
                     }
+                    Ok(_) => {}
+                    Err(error) => log::debug!(
+                        "artist: cannot read the top songs at {browse_id} of {artist_id}: {error:#}"
+                    ),
                 }
-                None => None,
-            },
-            Err(_) => None,
-        };
+            }
+            // A page whose full list cannot be read still carries songs of its own, and those
+            // are better than a page that shows none.
+            if full.is_none() {
+                let inline = wire::top_songs_inline(page);
+                if !inline.is_empty() {
+                    let mut inline = inline;
+                    inline.truncate(POPULAR);
+                    full = Some(self.resolver.swap(inline).await);
+                }
+            }
+        }
         if full.is_none() {
             self.hydrate_durations(&mut base.top_tracks).await;
             base.top_tracks = self.resolver.swap(base.top_tracks).await;
