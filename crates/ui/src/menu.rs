@@ -1059,7 +1059,7 @@ impl RenderOnce for Menu {
                         if event.delta.precise() {
                             return;
                         }
-                        gliding.update(cx, |bar, _| bar.nudge(WHEEL_GAIN, window));
+                        gliding.update(cx, |bar, _| bar.nudge(WHEEL_GAIN, false, window));
                     })
                     .children(rows)
                     .into_any_element()

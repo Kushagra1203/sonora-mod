@@ -134,7 +134,7 @@ impl RenderOnce for Scroller {
                     true => 1.,
                     false => WHEEL_GAIN,
                 };
-                gliding.update(cx, |bar, _| bar.nudge(gain, window));
+                gliding.update(cx, |bar, _| bar.nudge(gain, event.delta.precise(), window));
             })
             .children(children);
 

@@ -244,7 +244,7 @@ impl Shelves {
                             if !sideways(event) {
                                 return;
                             }
-                            glide.nudge(&scroll, wheel_gain(event), window);
+                            glide.nudge(&scroll, wheel_gain(event), event.delta.precise(), window);
                         }
                     })
                     .child(
@@ -516,7 +516,7 @@ impl Rail {
                         if !sideways(event) {
                             return;
                         }
-                        glided.nudge(&scrolled, wheel_gain(event), window);
+                        glided.nudge(&scrolled, wheel_gain(event), event.delta.precise(), window);
                     })
                     .child(
                         Deck::new(SharedString::from(format!("{tag}-rail-{place}")))

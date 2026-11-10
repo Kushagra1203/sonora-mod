@@ -280,10 +280,9 @@ impl RenderOnce for TabBar {
                         if rails.scroll.max_offset().x <= Pixels::ZERO {
                             return;
                         }
-                        match event.delta.precise() {
-                            true => rails.glide.sync(&rails.scroll),
-                            false => rails.glide.nudge(&rails.scroll, WHEEL_GAIN, window),
-                        }
+                        rails
+                            .glide
+                            .nudge(&rails.scroll, WHEEL_GAIN, event.delta.precise(), window);
                         cx.stop_propagation();
                     })
             })

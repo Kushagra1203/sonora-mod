@@ -261,7 +261,7 @@ impl RenderOnce for Modal {
                                                     return;
                                                 }
                                                 gliding.update(cx, |bar, _| {
-                                                    bar.nudge(WHEEL_GAIN, window)
+                                                    bar.nudge(WHEEL_GAIN, false, window)
                                                 });
                                             }
                                         })

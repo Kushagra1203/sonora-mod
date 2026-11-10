@@ -153,7 +153,7 @@ impl RenderOnce for Rail {
                         true => 1.,
                         false => WHEEL_GAIN,
                     };
-                    gliding.nudge(&wheeled, gain, window);
+                    gliding.nudge(&wheeled, gain, event.delta.precise(), window);
                 }
             })
             .fade_sides(FADE, FADE)

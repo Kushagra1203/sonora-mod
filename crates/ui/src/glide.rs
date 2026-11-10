@@ -42,7 +42,7 @@ impl ScrollPosition for ListState {
 
 /// How much of the distance to the target the glide covers each step at 180 Hz. Higher arrives
 /// sooner; the exponential tail is what reads as the motion settling rather than stopping.
-const EASE: f32 = 0.2;
+const EASE: f32 = 0.16;
 const HERTZ: f32 = 180.;
 const STALL: Duration = Duration::from_millis(64);
 const REST: Pixels = px(0.5);
@@ -53,21 +53,25 @@ const SPRING_REST: Pixels = px(0.05);
 pub const WHEEL_GAIN: f32 = 3.0;
 
 /// How long the wheel must be still before the coast takes over. A gesture that pauses for
-/// longer than this has ended, and the page carries on by itself.
+/// longer than this has ended, and a fast one carries on by itself.
 const COAST_PAUSE: Duration = Duration::from_millis(90);
-/// The longest gap between two notches that still counts as one gesture. Past this the wheel
-/// was resting, however fast the notch that followed it came.
-const COAST_TICK: Duration = Duration::from_millis(200);
-/// The speed below which there is nothing to coast on. A single deliberate notch is slower
-/// than this and stops where it landed; a wheel spun hard is faster and carries on.
-const COAST_MIN: f32 = 1_500.;
+/// The longest gap between two ticks that still counts as one gesture. Past this the wheel
+/// was resting, and the tick that follows it starts a fresh gesture with no speed of its own.
+const COAST_TICK: Duration = Duration::from_millis(90);
+/// The speed below which there is nothing to coast on. A deliberate scroll is slower than this
+/// and stops where it landed; a flick is faster and carries on. The same speed is what a
+/// trackpad has to reach before its own momentum is added to.
+const COAST_MIN: f32 = 900.;
 /// The speed the coast is capped at, which bounds how far it can carry.
-const COAST_MAX: f32 = 6_600.;
-/// How quickly the coast runs down, in eights a second. The speed falls by a third every
-/// hundred milliseconds or so, so the page slows rather than stopping dead.
-const COAST_FRICTION: f32 = 5.5;
+const COAST_MAX: f32 = 7_000.;
+/// How quickly the coast runs down, in eights a second. The speed falls by half every
+/// hundred and fifty milliseconds or so, so the page slows rather than stopping dead.
+const COAST_FRICTION: f32 = 4.5;
 /// The speed at which the coast gives up, well under a pixel a frame.
-const COAST_STOP: f32 = 60.;
+const COAST_STOP: f32 = 40.;
+/// How much of a tick's own speed joins the running one. A single slow frame in a flick must
+/// not cut the coast short, and a single fast one must not invent momentum.
+const COAST_BLEND: f32 = 0.5;
 
 #[derive(Default)]
 struct Drift {
@@ -81,6 +85,9 @@ struct Drift {
     last_nudge: Option<Instant>,
     /// Whether the page is coasting rather than easing towards a target.
     coasting: bool,
+    /// Whether the platform is moving the page itself, as it does for a trackpad, and this
+    /// glide is only watching for the end of that gesture.
+    native: bool,
     gliding: bool,
     springing: bool,
     armed: bool,
@@ -131,34 +138,70 @@ impl Glide {
             drift.velocity = Point::default();
             drift.coast = Point::default();
             drift.last_nudge = None;
+            drift.native = false;
         }
     }
 
-    /// Adds one wheel tick to the glide's target. `gain` scales the tick's own delta, which is
-    /// what lets a wheel notch carry further than the platform's three lines while a trackpad
-    /// delta passes through untouched. The tick the platform already applied is put back to the
+    /// Adds one wheel tick to the glide. `gain` scales the tick's own delta, which is what
+    /// lets a wheel notch carry further than the platform's three lines while a trackpad delta
+    /// passes through untouched. The tick the platform already applied is put back to the
     /// last drawn offset, so the glide is the only thing moving the region.
     ///
-    /// The tick also says how fast the wheel was turning, which is what the coast picks up
-    /// when the wheel stops.
-    pub fn nudge(&self, scroll: &impl ScrollPosition, gain: f32, window: &mut Window) {
+    /// A precise tick — a trackpad — is different: it is drawn exactly where the platform put
+    /// it, in the same frame, and is never eased. What is kept of it is only its speed, which
+    /// is what a flick coasts on once the fingers lift. A notched tick is eased into place.
+    ///
+    /// The tick also says how fast the wheel was turning; a slow gesture says little and
+    /// stops where it landed, a flick says more and carries on.
+    pub fn nudge(
+        &self,
+        scroll: &impl ScrollPosition,
+        gain: f32,
+        precise: bool,
+        window: &mut Window,
+    ) {
         {
             let mut drift = self.drift.borrow_mut();
             let landed = scroll.offset();
-            let step = (landed - drift.shown) * gain;
-            let from = match drift.gliding {
-                true => drift.target,
-                false => drift.shown,
+            // gpui has already applied this tick to the region by the time this runs.
+            let applied = landed - drift.shown;
+            let step = match precise {
+                true => applied,
+                false => applied * gain,
             };
-
-            drift.target = held(from + step, scroll);
-            drift.gliding = true;
+            let now = Instant::now();
             drift.springing = false;
-            drift.velocity = Point::default();
-            drift.eased = None;
             drift.coasting = false;
-            self.remember(&mut drift, step);
-            scroll.set_offset(drift.shown);
+            drift.eased = None;
+            drift.velocity = Point::default();
+            match precise {
+                true => {
+                    drift.shown = landed;
+                    drift.target = landed;
+                    drift.gliding = true;
+                    drift.native = true;
+                    self.remember(&mut drift, applied, now);
+                }
+                false => {
+                    let from = match drift.native {
+                        true => drift.shown,
+                        false => drift.target,
+                    };
+                    // A tick the other way starts from where the page is now: the rest of
+                    // the old glide was going somewhere the reader no longer wants to be.
+                    let reversed = (from.x - drift.shown.x).as_f32() * step.x.as_f32() < 0.
+                        || (from.y - drift.shown.y).as_f32() * step.y.as_f32() < 0.;
+                    let from = match reversed {
+                        true => drift.shown,
+                        false => from,
+                    };
+                    drift.target = held(from + step, scroll);
+                    drift.gliding = true;
+                    drift.native = false;
+                    self.remember(&mut drift, step, now);
+                    scroll.set_offset(drift.shown);
+                }
+            }
         }
         self.schedule_frame(scroll, window);
     }
@@ -167,32 +210,34 @@ impl Glide {
     /// once the wheel stops.
     ///
     /// The speed is the distance of the tick over the time since the last one, so a wheel
-    /// turned slowly says little and a wheel spun hard says a lot. The quickest speed of the
-    /// gesture is kept, which is what a flick reads as, and a tick in the other direction
-    /// replaces it outright rather than being averaged away.
-    fn remember(&self, drift: &mut Drift, step: Point<Pixels>) {
-        let now = Instant::now();
-        let gap = drift
+    /// turned slowly says little and a wheel spun hard says a lot. The running speed is a
+    /// blend, so one uneven frame neither invents momentum nor throws it away, and a tick in
+    /// the other direction replaces it outright.
+    fn remember(&self, drift: &mut Drift, step: Point<Pixels>, now: Instant) {
+        let Some(gap) = drift
             .last_nudge
             .replace(now)
-            .map(|last| now.duration_since(last).min(COAST_TICK))
-            .unwrap_or(COAST_TICK);
-        let instant = point(
-            step.x.as_f32() / gap.as_secs_f32(),
-            step.y.as_f32() / gap.as_secs_f32(),
-        );
-        // The quickest speed of the gesture is kept, and a tick the other way replaces it
-        // outright: a page that was coasting down and is now pulled up must not keep going.
-        let keep = |instant: f32, held: f32| match (instant == 0., held == 0.) {
-            (true, _) => held,
-            (_, true) => instant,
-            _ if instant.signum() != held.signum() => instant,
-            _ if instant.abs() >= held.abs() => instant,
-            _ => held,
+            .map(|last| now.duration_since(last))
+        else {
+            drift.coast = Point::default();
+            return;
+        };
+        // A pause ends the gesture: the tick after it is a fresh push, and a lone notch is
+        // not a flick however far it carries.
+        if gap > COAST_TICK {
+            drift.coast = Point::default();
+            return;
+        }
+        let seconds = gap.max(Duration::from_millis(2)).as_secs_f32();
+        let instant = point(step.x.as_f32() / seconds, step.y.as_f32() / seconds);
+        let blend = |instant: f32, held: f32| match instant == 0. {
+            true => held,
+            false if instant.signum() != held.signum() => instant,
+            false => held + (instant - held) * COAST_BLEND,
         };
         drift.coast = point(
-            keep(instant.x, drift.coast.x).clamp(-COAST_MAX, COAST_MAX),
-            keep(instant.y, drift.coast.y).clamp(-COAST_MAX, COAST_MAX),
+            blend(instant.x, drift.coast.x).clamp(-COAST_MAX, COAST_MAX),
+            blend(instant.y, drift.coast.y).clamp(-COAST_MAX, COAST_MAX),
         );
     }
 
@@ -205,6 +250,7 @@ impl Glide {
             drift.target = held(to, scroll);
             drift.gliding = true;
             drift.coasting = false;
+            drift.native = false;
             drift.coast = Point::default();
             drift.last_nudge = None;
             let springing = self.spring.is_some();
@@ -225,6 +271,7 @@ impl Glide {
             drift.gliding = false;
             drift.springing = false;
             drift.coasting = false;
+            drift.native = false;
             drift.coast = Point::default();
             drift.last_nudge = None;
             drift.velocity = Point::default();
@@ -245,6 +292,7 @@ impl Glide {
         drift.velocity = Point::default();
         drift.gliding = false;
         drift.springing = false;
+        drift.native = false;
         drift.beat = None;
         drift.eased = None;
         true
@@ -298,6 +346,33 @@ impl Glide {
                 .unwrap_or(Duration::from_secs_f32(1. / HERTZ));
             let target = held(drift.target, scroll);
             let springing = drift.springing;
+
+            // A trackpad is moving the page itself. Nothing is drawn here until the gesture
+            // stops; then a fast one carries on and a slow one simply stops where it is.
+            if drift.native {
+                let paused = drift
+                    .last_nudge
+                    .is_some_and(|last| now.duration_since(last) >= COAST_PAUSE);
+                if !paused {
+                    drop(drift);
+                    self.schedule_frame(scroll, window);
+                    return;
+                }
+                let quick = drift.coast.x.abs() >= COAST_MIN || drift.coast.y.abs() >= COAST_MIN;
+                drift.native = false;
+                if !quick {
+                    drift.gliding = false;
+                    drift.coasting = false;
+                    drift.coast = Point::default();
+                    drift.last_nudge = None;
+                    drift.beat = None;
+                    return;
+                }
+                drift.coasting = true;
+                drift.target = drift.shown;
+                drift.eased = None;
+            }
+
             // The wheel has stopped and the gesture was fast enough to be worth carrying on
             // from: the page coasts on its own until it slows to nothing.
             if !springing
@@ -363,13 +438,20 @@ impl Glide {
             };
             match settled {
                 true => {
-                    drift.shown = target;
+                    // The coast has already moved the page to where it stopped, so the
+                    // landing is what was last drawn rather than the target as it stood
+                    // before this step.
+                    drift.shown = drift.target;
                     drift.gliding = false;
                     drift.springing = false;
+                    drift.native = false;
+                    drift.coasting = false;
+                    drift.coast = Point::default();
+                    drift.last_nudge = None;
                     drift.velocity = Point::default();
                     drift.beat = None;
                     drift.eased = None;
-                    target
+                    drift.shown
                 }
                 // layout walks the pixel grid
                 false => match springing {

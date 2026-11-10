@@ -66,6 +66,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A slow scroll no longer picks up a rush of momentum: only a flick carries the page on, and a
+  trackpad follows your fingers exactly instead of easing behind them.
 - The header of an album, playlist or artist page no longer jumps when it finishes loading.
 - An artist's popular songs list up to twenty, not twelve.
 - A release on an artist's page no longer repeats the artist's name in its caption: albums show

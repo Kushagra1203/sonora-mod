@@ -271,13 +271,14 @@ impl Scrollbar {
 
     /// Glides one wheel tick's worth of scroll into view. `gain` is what a caller scales the
     /// tick by: the wheel's three lines need widening to cross a page, a trackpad's pixels do
-    /// not.
-    pub fn nudge(&mut self, gain: f32, window: &mut Window) {
+    /// not. `precise` says the tick came from a trackpad, which is drawn where the platform
+    /// put it and only watched for the flick it ends on.
+    pub fn nudge(&mut self, gain: f32, precise: bool, window: &mut Window) {
         self.following = false;
         self.nudges = self.nudges.wrapping_add(1);
         match &self.list {
-            Some(list) => self.glide.nudge(list, gain, window),
-            None => self.glide.nudge(&self.scroll, gain, window),
+            Some(list) => self.glide.nudge(list, gain, precise, window),
+            None => self.glide.nudge(&self.scroll, gain, precise, window),
         }
     }
 
