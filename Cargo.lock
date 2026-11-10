@@ -7577,6 +7577,7 @@ dependencies = [
  "async-trait",
  "base64",
  "cli",
+ "deunicode",
  "dirs",
  "discord-rich-presence",
  "embed",

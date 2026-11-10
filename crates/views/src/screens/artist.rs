@@ -1,11 +1,12 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Pixels, Render,
-    ScrollHandle, SharedString, SpringAnimation, WeakEntity, Window, div, linear_color_stop,
-    linear_gradient, px, relative, svg,
+    AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Image,
+    ImageFormat, ImageSource, Pixels, Render, ScrollHandle, SharedString, SpringAnimation,
+    WeakEntity, Window, div, img, linear_color_stop, linear_gradient, px, relative, svg,
 };
 
 use crate::chrome::Chrome;
@@ -13,7 +14,7 @@ use crate::shared::cells;
 use i18n::t;
 use music::{ReleaseType, SavedArtist, Track};
 use router::trail;
-use state::{ArtistDetail, Origin, Playback, Sonora};
+use state::{ArtistDetail, Ink, Origin, Playback, Sonora};
 use ui::ActiveTheme as _;
 use ui::motion::Springs;
 use ui::{
@@ -60,10 +61,11 @@ const POPULAR_COLUMN: Pixels = px(220.);
 /// picks, so they are kept close to a table's density rather than given the room of a shelf.
 const POPULAR_ART: Pixels = px(44.);
 const POPULAR_ROW_PAD: Pixels = px(6.);
-/// How tall the artist's autograph stands against the typed name it replaces, and the most of
-/// the page's width it may take before it is scaled down uniformly to fit.
-const SIGNATURE_HEIGHT: f32 = 1.3;
-const SIGNATURE_ROOM: f32 = 0.62;
+/// How much of the page's width the artist's mark may span, and the tallest it may stand
+/// against the name it replaces. A signature is drawn large, as the mark it is; only a nearly
+/// square one is brought back to a height the header can carry.
+const SIGNATURE_ROOM: f32 = 0.75;
+const SIGNATURE_TALL: f32 = 2.2;
 /// How much of the window the artist poster takes, with the name and play button sitting just
 /// above the popular songs. The rest of the page begins below this share.
 const HERO_HEIGHT: f32 = 0.70;
@@ -114,6 +116,16 @@ pub(crate) struct ArtistView {
     me: WeakEntity<Self>,
     /// The recommendation rails under the releases, in page order: appears-on.
     rails: Vec<Rail>,
+    /// The artist's mark, decoded once and kept, so the page does not unpack the picture again
+    /// on every frame it draws.
+    mark: Option<Mark>,
+}
+
+/// A raster mark, decoded and ready to draw. The bytes it came from are kept so a new picture
+/// replaces it and the same one is not decoded twice.
+struct Mark {
+    bytes: Arc<[u8]>,
+    image: Arc<Image>,
 }
 
 impl ArtistView {
@@ -197,11 +209,12 @@ impl ArtistView {
             about_bar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(id)),
             about_open: false,
             me: me.downgrade(),
+            mark: None,
             rails: Vec::new(),
         }
     }
 
-    fn header(&self, cx: &Context<Self>) -> AnyElement {
+    fn header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let artist = self.detail.read(cx).artist();
         let title = artist
             .map(|artist| SharedString::from(artist.name.clone()))
@@ -219,17 +232,42 @@ impl ArtistView {
 
         // The banner is the hero here — no square avatar, just name, stats and play buttons on the artwork.
         let title_size = cx.theme().text(Text::Display) * 1.9;
-        let mark = self.detail.read(cx).signature().map(|signature| {
-            // The autograph keeps its own shape: drawn as tall as the name it stands in for, and
-            // only scaled down, never stretched, when the page is too narrow for it.
-            let height = title_size * SIGNATURE_HEIGHT;
-            let width = (height * signature.aspect).min(self.width * SIGNATURE_ROOM);
-            svg()
-                .data(&signature.svg)
-                .w(width)
-                .h(width / signature.aspect)
-                .text_color(cx.theme().foreground)
-                .into_any_element()
+        let theme = *cx.theme();
+        let signature = self.detail.read(cx).signature().cloned();
+        let mark = signature.map(|signature| {
+            // The mark keeps its own shape and is drawn large, filling the header the way a
+            // title logo does. Only a nearly square one is brought back to the title's height.
+            let height =
+                (self.width * SIGNATURE_ROOM / signature.aspect).min(title_size * SIGNATURE_TALL);
+            let width = height * signature.aspect;
+            match &signature.ink {
+                Ink::Vector(document) => svg()
+                    .data(document)
+                    .w(width)
+                    .h(height)
+                    .text_color(theme.foreground)
+                    .into_any_element(),
+                Ink::Raster(picture) => {
+                    // The picture is unpacked once and kept, so scrolling the page does not
+                    // pay for the same decoding on every frame.
+                    let image = match &self.mark {
+                        Some(mark) if Arc::ptr_eq(&mark.bytes, picture) => mark.image.clone(),
+                        _ => {
+                            let image =
+                                Arc::new(Image::from_bytes(ImageFormat::Png, picture.to_vec()));
+                            self.mark = Some(Mark {
+                                bytes: picture.clone(),
+                                image: image.clone(),
+                            });
+                            image
+                        }
+                    };
+                    img(ImageSource::Image(image))
+                        .w(width)
+                        .h(height)
+                        .into_any_element()
+                }
+            }
         });
 
         PageHero::new("artist-hero", title)

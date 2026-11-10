@@ -34,8 +34,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   line-synced match until word-by-word lyrics turn up.
 - The languages button in the lyrics panel header translates the lines into English, and turns
   the translation back off. The translated line sweeps word by word with the line above it.
-- An artist page draws the artist's own signature in place of the typed name when the signature
-  service has one.
+- An artist page draws Apple's title logo for the artist in place of the typed name, and falls
+  back to the artist's own signature when Apple has none.
 - The word being sung lifts a little off the line as it is sung.
 
 ### Changed
@@ -59,6 +59,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   shelf with filter buttons.
 - Album and single covers are larger, while the faces in the artists a page recommends are
   smaller.
+- The artist's mark is drawn large in the header, as wide as the page allows, rather than shrunk
+  to the height of the name it replaces.
 - Scrolling coasts to a stop with momentum, from a wheel or a trackpad, rather than stopping the
   moment the gesture does.
 

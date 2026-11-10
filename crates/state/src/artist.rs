@@ -245,7 +245,7 @@ impl ArtistDetail {
         let Some(artist) = self.artist.clone() else {
             return;
         };
-        self.autograph(id, &artist.name, cx);
+        self.autograph(id, &artist.name, &artist, cx);
         let Some(catalog) = self.session.read(cx).catalog(id) else {
             return;
         };
@@ -285,16 +285,24 @@ impl ArtistDetail {
     /// Looks the artist's signature up once, in the background, and redraws the hero when it
     /// lands. A signature is a page decoration: a service that is down or has never heard of the
     /// artist leaves the typed name in its place, so nothing here reports a failure.
-    fn autograph(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
+    fn autograph(&mut self, id: &str, name: &str, artist: &Artist, cx: &mut Context<Self>) {
         if self.signature.is_some() || self.signing.is_some() || music::is_local_id(id) {
             return;
         }
         let http = self.http.clone();
         let name = name.to_owned();
+        // The titles the page already vouches for, which is what proves a same-named Apple
+        // Music artist is this one before its title logo is borrowed.
+        let titles = artist
+            .top_tracks
+            .iter()
+            .map(|track| track.name.clone())
+            .chain(artist.albums.iter().map(|album| album.name.clone()))
+            .collect::<Vec<_>>();
         let wanted = id.to_owned();
         let request = self
             .io
-            .spawn(async move { Ok(crate::signature::find(&http, &name).await) });
+            .spawn(async move { Ok(crate::signature::find(&http, &name, &titles).await) });
         self.signing = Some(cx.spawn(async move |this, cx| {
             let found = join(request).await;
             this.update(cx, |this, cx| {
