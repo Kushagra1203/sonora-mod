@@ -4,7 +4,7 @@ use gpui::{Context, Entity, EventEmitter, Task};
 use music::{Album, Artist, ArtistCatalogue, Track};
 use tokio::task::AbortHandle;
 
-use crate::{Io, Library, LibraryEvent, Session, SessionEvent, join};
+use crate::{Io, Library, LibraryEvent, Session, SessionEvent, Signature, join};
 
 /// Signals that a local artist no longer has a page after the library changes.
 pub enum ArtistDetailEvent {
@@ -17,13 +17,18 @@ pub struct ArtistDetail {
     appears_on: Vec<Album>,
     loading: bool,
     error: Option<String>,
+    /// The artist's own autograph, once the signature service answers. The page shows the
+    /// typed name until then, and keeps it when there is no autograph to show.
+    signature: Option<Signature>,
     session: Entity<Session>,
     io: Io,
+    http: reqwest::Client,
     task: Option<Task<()>>,
     request: Option<AbortHandle>,
     filling: bool,
     fill: Option<Task<()>>,
     filling_request: Option<AbortHandle>,
+    signing: Option<Task<()>>,
 }
 
 impl EventEmitter<ArtistDetailEvent> for ArtistDetail {}
@@ -81,13 +86,16 @@ impl ArtistDetail {
             appears_on: Vec::new(),
             loading: false,
             error: None,
+            signature: None,
             session,
             io,
+            http: reqwest::Client::new(),
             task: None,
             request: None,
             filling: false,
             fill: None,
             filling_request: None,
+            signing: None,
         }
     }
 
@@ -116,6 +124,11 @@ impl ArtistDetail {
     /// What the artist guests on, filled in behind the overview.
     pub fn appears_on(&self) -> &[Album] {
         &self.appears_on
+    }
+
+    /// The artist's autograph, once it has been looked up.
+    pub fn signature(&self) -> Option<&Signature> {
+        self.signature.as_ref()
     }
 
     pub fn is_loading(&self) -> bool {
@@ -232,6 +245,7 @@ impl ArtistDetail {
         let Some(artist) = self.artist.clone() else {
             return;
         };
+        self.autograph(id, &artist.name, cx);
         let Some(catalog) = self.session.read(cx).catalog(id) else {
             return;
         };
@@ -268,6 +282,35 @@ impl ArtistDetail {
         }));
     }
 
+    /// Looks the artist's signature up once, in the background, and redraws the hero when it
+    /// lands. A signature is a page decoration: a service that is down or has never heard of the
+    /// artist leaves the typed name in its place, so nothing here reports a failure.
+    fn autograph(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
+        if self.signature.is_some() || self.signing.is_some() || music::is_local_id(id) {
+            return;
+        }
+        let http = self.http.clone();
+        let name = name.to_owned();
+        let wanted = id.to_owned();
+        let request = self
+            .io
+            .spawn(async move { Ok(crate::signature::find(&http, &name).await) });
+        self.signing = Some(cx.spawn(async move |this, cx| {
+            let found = join(request).await;
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() != Some(wanted.as_str()) {
+                    return;
+                }
+                this.signing = None;
+                if let Ok(Some(signature)) = found {
+                    this.signature = Some(signature);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     /// Puts the catalogue over the overview. Every list replaces what the overview carried,
     /// and an empty one leaves that part of the page alone.
     fn absorb(&mut self, catalogue: &ArtistCatalogue) {
@@ -292,6 +335,7 @@ impl ArtistDetail {
     fn clear(&mut self) {
         self.task = None;
         self.fill = None;
+        self.signing = None;
         for request in [self.request.take(), self.filling_request.take()]
             .into_iter()
             .flatten()
@@ -301,6 +345,7 @@ impl ArtistDetail {
         self.id = None;
         self.artist = None;
         self.appears_on.clear();
+        self.signature = None;
         self.loading = false;
         self.filling = false;
         self.error = None;

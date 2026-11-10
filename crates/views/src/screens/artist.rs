@@ -5,7 +5,7 @@ use gpui::prelude::*;
 use gpui::{
     AnimationExt as _, AnyElement, App, Context, Entity, EventEmitter, FontWeight, Pixels, Render,
     ScrollHandle, SharedString, SpringAnimation, WeakEntity, Window, div, linear_color_stop,
-    linear_gradient, px, relative,
+    linear_gradient, px, relative, svg,
 };
 
 use crate::chrome::Chrome;
@@ -60,6 +60,10 @@ const POPULAR_COLUMN: Pixels = px(220.);
 /// picks, so they are kept close to a table's density rather than given the room of a shelf.
 const POPULAR_ART: Pixels = px(44.);
 const POPULAR_ROW_PAD: Pixels = px(6.);
+/// How tall the artist's autograph stands against the typed name it replaces, and the most of
+/// the page's width it may take before it is scaled down uniformly to fit.
+const SIGNATURE_HEIGHT: f32 = 1.3;
+const SIGNATURE_ROOM: f32 = 0.62;
 /// How much of the window the artist poster takes, with the name and play button sitting just
 /// above the popular songs. The rest of the page begins below this share.
 const HERO_HEIGHT: f32 = 0.70;
@@ -214,13 +218,28 @@ impl ArtistView {
         );
 
         // The banner is the hero here — no square avatar, just name, stats and play buttons on the artwork.
+        let title_size = cx.theme().text(Text::Display) * 1.9;
+        let mark = self.detail.read(cx).signature().map(|signature| {
+            // The autograph keeps its own shape: drawn as tall as the name it stands in for, and
+            // only scaled down, never stretched, when the page is too narrow for it.
+            let height = title_size * SIGNATURE_HEIGHT;
+            let width = (height * signature.aspect).min(self.width * SIGNATURE_ROOM);
+            svg()
+                .data(&signature.svg)
+                .w(width)
+                .h(width / signature.aspect)
+                .text_color(cx.theme().foreground)
+                .into_any_element()
+        });
+
         PageHero::new("artist-hero", title)
             .pending(artist.is_none() && self.detail.read(cx).is_loading())
             .pin(None)
             .cover(None)
             .art(px(0.))
-            .title_size(cx.theme().text(Text::Display) * 1.9)
+            .title_size(title_size)
             .centered()
+            .title_mark(mark)
             .actions(actions)
             .into_any_element()
     }

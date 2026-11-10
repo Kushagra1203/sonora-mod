@@ -338,6 +338,9 @@ pub(crate) struct PageHero {
     /// Centers the title, stats and actions across the page rather than starting them at the
     /// left, for a poster screen that puts its name in the middle of the artwork.
     center: bool,
+    /// A picture drawn in place of the typed title, for a page whose name is a mark of its own.
+    /// The name still labels the heading for screen readers.
+    title_mark: Option<AnyElement>,
 }
 
 impl PageHero {
@@ -360,6 +363,7 @@ impl PageHero {
             art_radius: None,
             title_size: None,
             center: false,
+            title_mark: None,
         }
     }
 
@@ -385,6 +389,13 @@ impl PageHero {
     /// name in the middle of the artwork.
     pub(crate) fn centered(mut self) -> Self {
         self.center = true;
+        self
+    }
+
+    /// Draws `mark` in place of the typed title. The name `new` was given still labels the
+    /// heading, so a reader hears the page's name rather than a picture.
+    pub(crate) fn title_mark(mut self, mark: Option<AnyElement>) -> Self {
+        self.title_mark = mark;
         self
     }
 
@@ -458,6 +469,7 @@ impl RenderOnce for PageHero {
         let title_size = self.title_size.unwrap_or(theme.text(Text::Display));
         let drag_start = self.drag_start.map(Rc::from);
         let starter = drag_start.clone();
+        let title_mark = self.title_mark;
 
         if self.pending {
             return div()
@@ -557,15 +569,17 @@ impl RenderOnce for PageHero {
                                     .aria_level(1)
                                     .aria_label(self.title.clone())
                                     .min_w_0()
-                                    .truncate()
-                                    .tails()
+                                    .when(title_mark.is_none(), |this| this.truncate().tails())
                                     .when_some(drag_start, |this, drag_start: Rc<DragStart>| {
                                         this.on_mouse_down(
                                             MouseButton::Right,
                                             move |event, window, cx| drag_start(event, window, cx),
                                         )
                                     })
-                                    .child(self.title),
+                                    .when(title_mark.is_none(), |this| {
+                                        this.child(self.title.clone())
+                                    })
+                                    .when_some(title_mark, |this, mark| this.child(mark)),
                             )
                             .when(self.explicit, |this| {
                                 this.child(
