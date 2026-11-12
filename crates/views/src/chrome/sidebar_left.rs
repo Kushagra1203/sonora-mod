@@ -663,7 +663,7 @@ impl SidebarLeft {
         let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
         let tint = match active {
             true => ink,
-            false => faded(ink, theme.sidebar, 1. - ROW_DIM, TEXT_CONTRAST),
+            false => faded(ink, theme.sidebar, 1. - ROW_DIM, SHAPE_CONTRAST),
         };
         let row = nav_row(index, key, tint, accent).icon(icon);
 
@@ -695,7 +695,7 @@ impl SidebarLeft {
             let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
             let tint = match chosen {
                 true => ink,
-                false => faded(ink, theme.sidebar, 1. - ROW_DIM, TEXT_CONTRAST),
+                false => faded(ink, theme.sidebar, 1. - ROW_DIM, SHAPE_CONTRAST),
             };
 
             nav_row(id, key, tint, accent)

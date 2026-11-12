@@ -31,12 +31,9 @@ const MAX_ACCENT_SATURATION: f32 = 0.85;
 /// asks of small text. A cover's accent is held to it, so a hue the eye reads as bright (a lime
 /// green) is pushed darker than one it reads as dim (a navy) rather than both sharing a lightness.
 pub const TEXT_CONTRAST: f32 = 4.5;
-/// What the accent itself is lifted to before anything is dimmed from it. The headroom is the
-/// point: a dimmed row or a past verse steps back toward the surface from here and still lands
-/// above `TEXT_CONTRAST`, so the hierarchy never has to be paid for with legibility.
-pub const ACCENT_CONTRAST: f32 = 7.0;
 /// What a shape, an icon or a large glyph has to clear, which is the ratio WCAG asks of those.
-/// Also the floor a decorative dimmed mark steps back to.
+/// Also the floor a dimmed line steps back to: past verses, inactive rows and queued tracks keep
+/// their hierarchy without ever falling out of sight.
 pub const SHAPE_CONTRAST: f32 = 3.0;
 /// How far a control's plate has to stand off the artwork it is drawn on to be seen as a shape at
 /// all. Below this the plate is not weak, it is invisible, so the neutral one takes its place.
@@ -573,7 +570,7 @@ impl Theme {
         self.primary = legible(
             accent(if dark { 0.72 } else { 0.42 }),
             self.background,
-            ACCENT_CONTRAST,
+            TEXT_CONTRAST,
         );
         self.primary_hover = legible(
             Hsla {
@@ -581,7 +578,7 @@ impl Theme {
                 ..accent(if dark { 0.82 } else { 0.34 })
             },
             self.background,
-            ACCENT_CONTRAST,
+            TEXT_CONTRAST,
         );
         self.primary_foreground = legible(
             Hsla {
@@ -717,7 +714,7 @@ impl Theme {
                 a: 1.,
             },
             self.background,
-            ACCENT_CONTRAST,
+            TEXT_CONTRAST,
         )
     }
 
@@ -1211,7 +1208,7 @@ mod tests {
             for theme in [Theme::dark().tinted(tint), Theme::light().tinted(tint)] {
                 let surface = theme.background;
                 assert!(
-                    contrast(theme.primary, surface) >= ACCENT_CONTRAST,
+                    contrast(theme.primary, surface) >= TEXT_CONTRAST,
                     "hue {hue} on {:?}",
                     theme.background
                 );
@@ -1219,7 +1216,7 @@ mod tests {
                     contrast(theme.primary_foreground, theme.primary) >= TEXT_CONTRAST,
                     "glyph for hue {hue}"
                 );
-                assert!(contrast(theme.selection, surface) >= ACCENT_CONTRAST);
+                assert!(contrast(theme.selection, surface) >= TEXT_CONTRAST);
             }
         }
     }
@@ -1236,11 +1233,11 @@ mod tests {
         for theme in [Theme::dark().tinted(tint), Theme::light().tinted(tint)] {
             // A sidebar row is solved against the sidebar it sits in, not the page behind it:
             // the two surfaces carry the same hue but not the same lightness.
-            let ink = legible(theme.primary, theme.sidebar, ACCENT_CONTRAST);
-            let dimmed = faded(ink, theme.sidebar, 0.6, TEXT_CONTRAST);
+            let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
+            let dimmed = faded(ink, theme.sidebar, 0.6, SHAPE_CONTRAST);
 
-            assert!(contrast(dimmed, theme.sidebar) >= TEXT_CONTRAST);
-            assert!(contrast(ink, theme.sidebar) >= ACCENT_CONTRAST);
+            assert!(contrast(dimmed, theme.sidebar) >= SHAPE_CONTRAST);
+            assert!(contrast(ink, theme.sidebar) >= TEXT_CONTRAST);
         }
     }
 
