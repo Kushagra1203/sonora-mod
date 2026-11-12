@@ -53,7 +53,7 @@ pub(crate) fn window_radius(settings: &AppSettings, cx: &App, window: &Window) -
     }
 }
 
-pub(crate) fn section_label(key: &'static str, cx: &App) -> gpui::Stateful<Div> {
+pub(crate) fn section_label(key: &'static str, tint: gpui::Hsla, cx: &App) -> gpui::Stateful<Div> {
     div()
         .id(SharedString::from(format!("queue-section-{key}")))
         .role(Role::Heading)
@@ -64,7 +64,7 @@ pub(crate) fn section_label(key: &'static str, cx: &App) -> gpui::Stateful<Div> 
         .h(cx.theme().metrics.list_row)
         .px_2()
         .pb_1()
-        .child(eyebrow(i18n::lookup(key, None), cx))
+        .child(eyebrow(i18n::lookup(key, None), cx).text_color(tint))
 }
 
 pub(crate) fn cap(min: Pixels, max: Pixels, keep: Pixels, window: &Window) -> Pixels {

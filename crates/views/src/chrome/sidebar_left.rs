@@ -9,7 +9,7 @@ use ui::{
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, FontWeight, Hsla, MouseButton,
+    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, FontWeight, MouseButton,
     MouseDownEvent, Pixels, Point, Render, ScrollHandle, SharedString, svg,
 };
 use gpui::{Window, div, px};
@@ -22,20 +22,15 @@ use state::{
     AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
 };
 
+use crate::shared::ink;
 use crate::shared::menus::{ItemMenu, item_menu};
 use crate::shared::nav::nav_row;
-use crate::shared::page_art;
 use crate::shared::pins::leaving;
 use crate::shared::playlist_editor::{Edit, PlaylistEditor};
 use crate::shared::wash;
 
 /// The one drag list the pinned section keeps, so a pin dropped anywhere in it lands in order.
 const PINS: &str = "sidebar-pins";
-
-/// The panel lightness at which black overtakes white as the more readable ink. Below it white
-/// is the better of the two, above it black, and at the crossover they are equally poor — so
-/// there is no middle to get wrong.
-const INK_PIVOT: f32 = 0.46;
 
 /// The sidebar's navigation rows in order: the entry that can hide each, its icon and where it goes.
 /// Settings has no entry, so it is always shown, and it opens on the settings page last visited
@@ -86,7 +81,8 @@ const PIN_MARK: f32 = 0.7;
 /// in order while both wear the colour the player bar wears.
 const ROW_DIM: f32 = 0.75;
 /// How many header rows the brand header stands. A mark and a wordmark want air around them,
-/// and this is the one place in the panel where a taller line earns its space.
+/// and this is the one place in the panel where a taller line earns its space — but not so tall
+/// that the first navigation row drifts away from the rest.
 const BRAND_HEIGHT: f32 = 2.;
 /// The space between two pinned entries, the same as the `gap_1` between the rows above them.
 const ROW_GAP: Pixels = px(4.);
@@ -318,7 +314,7 @@ impl SidebarLeft {
     /// never reads as one more row to click.
     fn header_brand(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let ink = ink(&theme, cx);
+        let ink = ink::panel(theme.sidebar, &theme, cx).ink;
 
         div()
             .id("sidebar-brand")
@@ -665,11 +661,10 @@ impl SidebarLeft {
             Some(group) => Group::of(&current) == Some(group),
             None => destination.same_section(&current),
         };
-        // The sidebar keeps the theme's own ink — white on a dark theme, black on a light one —
-        // rather than following the cover's accent. The panel sits over artwork, so a hue the
-        // song named can vanish into it; the theme's ink is the one colour guaranteed to read
-        // on the surface the panel is drawn on. The current row is brighter than the rest.
-        let ink = ink(&theme, cx);
+        // The panel sits over artwork, so a hue the song named can vanish into it. Its ink is
+        // white or black, chosen from what the panel shows behind it, and the current row takes
+        // it whole while the rest step back.
+        let ink = ink::panel(theme.sidebar, &theme, cx).ink;
         let tint = match active {
             true => ink,
             false => ink.opacity(ROW_DIM),
@@ -699,7 +694,7 @@ impl SidebarLeft {
         let theme = *cx.theme();
         let accent = theme.sidebar_accent;
         let current = self.trail.read(cx).current();
-        let ink = ink(&theme, cx);
+        let ink = ink::panel(theme.sidebar, &theme, cx).ink;
         let tab = |id: ElementId, key: &'static str, destination: Destination| {
             let chosen = destination == current;
             let tint = match chosen {
@@ -886,6 +881,10 @@ impl Render for SidebarLeft {
                                     .gap_1()
                                     .w_full()
                                     .p_3()
+                                    // The brand header carries the air above the first row, so
+                                    // the column needs none of its own here: the gap from the
+                                    // wordmark to Home stays in step with the one between rows.
+                                    .pt_0()
                                     // Leave the last row somewhere to go, clear of the
                                     // button that floats over the bottom.
                                     .pb(ui::perch_room(cx))
@@ -935,42 +934,6 @@ pub(crate) fn sidebar_width(settings: &AppSettings) -> Pixels {
     px(settings.sidebar_width()).clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
-/// The ink the sidebar draws with: white on a dark panel, black on a light one. The panel lets
-/// the page's field through, so on a dark theme a bright banner still leaves a light surface.
-/// That is why this reads the artwork's palette rather than the theme's polarity: on a detail
-/// page a patch of the page decides, and everywhere else the theme does. The palette is looked
-/// up here rather than published ahead, so the ink changes on the same frame the wash paints
-/// the artwork on, not a frame behind it. The theme's foreground and background are the two
-/// inks it carries, so the one on the far side of the panel's brightness is always ready.
-fn ink(theme: &ui::Theme, cx: &App) -> Hsla {
-    let current = router::trail(cx).read(cx).current();
-    let frosted = matches!(
-        current,
-        Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
-    );
-    let Some(art) = page_art::cover(cx)
-        .and_then(|cover| ui::cover_palette(&cover, cx))
-        .map(|palette| palette.corner)
-        .filter(|_| frosted)
-    else {
-        return theme.foreground;
-    };
-    let shade = match matches!(current, Destination::Artist(_)) {
-        true => wash::ARTIST_SHADE,
-        false => wash::SHADE,
-    };
-    // What the panel shows: its own fill at `SIDEBAR_FROST_TINT` over the page's field.
-    let field = art * (1. - shade) + theme.background.l * shade;
-    let surface =
-        theme.sidebar.l * wash::SIDEBAR_FROST_TINT + field * (1. - wash::SIDEBAR_FROST_TINT);
-    let light = surface > INK_PIVOT;
-
-    match light == (theme.background.l > 0.5) {
-        true => theme.foreground,
-        false => theme.background,
-    }
-}
-
 /// The kind of an entry, behind a dimmed pin when it is one of the pinned ones.
 fn caption(kind: &'static str, marked: bool, cx: &App) -> impl IntoElement {
     let theme = *cx.theme();
@@ -986,7 +949,7 @@ fn caption(kind: &'static str, marked: bool, cx: &App) -> impl IntoElement {
                     .path(icons::path("icons/pin.svg"))
                     .flex_none()
                     .size(theme.text(Text::Tiny))
-                    .text_color(ink(&theme, cx).opacity(PIN_MARK)),
+                    .text_color(ink::panel(theme.sidebar, &theme, cx).ink.opacity(PIN_MARK)),
             )
         })
         .child(div().min_w_0().truncate().child(i18n::lookup(kind, None)))

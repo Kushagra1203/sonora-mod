@@ -118,9 +118,10 @@ fn lines(look: Look, sizes: (Pixels, Pixels), height: Pixels, theme: Theme) -> D
                 karaoke: look.karaoke,
                 scripts: look.scripts,
                 haze,
+                ink: theme.foreground,
+                lyric: theme.primary,
             },
             position,
-            theme,
         )
     };
     let fade = size * VERSE_FADE;

@@ -11,6 +11,7 @@ use state::{Devices, Listening, Sonora};
 use ui::{ActiveTheme as _, Button, Text, eyebrow, snapped, vacant};
 
 use crate::chrome::{jam, session};
+use crate::shared::ink;
 
 /// How many faces the summary shows before it counts the rest.
 const FACES: usize = 6;
@@ -128,6 +129,7 @@ impl Members {
 impl Render for Members {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
+        let ink = ink::panel(theme.background, &theme, cx).ink;
         let header = div()
             .flex()
             .flex_none()
@@ -136,7 +138,7 @@ impl Render for Members {
             .px_2()
             .border_b_1()
             .border_color(theme.border)
-            .child(eyebrow(t!("members-title"), cx));
+            .child(eyebrow(t!("members-title"), cx).text_color(ink));
         let root = div()
             .id("members")
             .role(Role::Complementary)
@@ -259,7 +261,7 @@ impl Render for Members {
                                 .min_w_0()
                                 .truncate()
                                 .text_size(theme.text(Text::Small))
-                                .text_color(theme.muted_foreground)
+                                .text_color(ink.opacity(ink::MUTED))
                                 .child(status),
                         ),
                 )

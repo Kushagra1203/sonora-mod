@@ -44,8 +44,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The top of the sidebar carries the Sonora mark and wordmark in place of the account row, and
   the mark is the way home. It stands taller than the bar it replaced, with no rule under it.
-- The sidebar's labels and icons pick white or black from the brightness of the page behind
-  them, instead of the cover's accent, so they stay readable whatever sleeve is playing.
+- Both sidebars pick their ink from the brightness the panel actually shows over the page behind
+  it, so the left sidebar's labels and icons stay readable whatever sleeve is playing.
+- The right sidebar keeps the song's own colour — shaded until it reads on the panel — so the
+  queue and the lyrics stay in the cover's hue, and a lyric word turns to the panel's ink, white
+  or black, as it is sung.
 - The artist page's popular songs sit in four rows of five instead of five rows of four.
 - The devices button in the player bar is now the Sessions button. It shows for every streaming service and sits evenly beside the lyrics and queue buttons.
 - Spotify Jam controls sit together under a Spotify Jams submenu of the Sessions button, and the strip above the player bar is gone.

@@ -32,6 +32,8 @@ use unicode_bidi::{BidiClass, Direction};
 use crate::chrome::growth;
 use crate::chrome::{Chrome, section_label};
 use crate::shared::effects;
+use crate::shared::ink;
+use crate::shared::ink::MUTED;
 use crate::shared::menus::ItemMenu;
 use crate::shared::pins::Pinned as _;
 
@@ -134,7 +136,8 @@ struct Sung {
     karaoke: bool,
     lane: Pixels,
     scripts: Option<RomanizationScripts>,
-    theme: ui::Theme,
+    /// The song's accent, shaded to read on the panel: the colour the words wait in.
+    lyric: gpui::Hsla,
     karaoke_tint: gpui::Hsla,
     lift: f32,
     from: gpui::Point<f32>,
@@ -154,6 +157,10 @@ pub(crate) struct VerseLook {
     pub(crate) scripts: Option<RomanizationScripts>,
     /// How far out of focus the verse sits, from 0 for sharp to 1 at the sheet's edge.
     pub(crate) haze: f32,
+    /// The ink the still picture draws with, which the caller reads off the surface behind it.
+    pub(crate) ink: gpui::Hsla,
+    /// The song's accent shaded for that surface.
+    pub(crate) lyric: gpui::Hsla,
 }
 
 #[derive(Clone, Copy)]
@@ -673,6 +680,8 @@ impl Aside {
             remote,
         } = look;
         let theme = *cx.theme();
+        let panel = panel(&theme, cx);
+        let (ink, lyric) = (panel.ink, ink::accent(theme.primary, panel));
         let queue_index = position.upcoming().filter(|_| !remote);
         let uid = Sonora::global(cx)
             .queue
@@ -683,9 +692,9 @@ impl Aside {
         let press_uid = uid.clone();
         let current = position == QueuePosition::Current;
         let title = match position {
-            QueuePosition::Past(_) => theme.primary.opacity(PAST),
-            QueuePosition::Current => theme.primary,
-            QueuePosition::Upcoming(_) => theme.primary.opacity(AHEAD),
+            QueuePosition::Past(_) => lyric.opacity(PAST),
+            QueuePosition::Current => lyric,
+            QueuePosition::Upcoming(_) => lyric.opacity(AHEAD),
         };
         let pin = track.pin();
         let menu_track = track.clone();
@@ -726,7 +735,7 @@ impl Aside {
                         SharedString::from(format!("queue-track-artist-{key}")),
                         track.artist_refs.clone(),
                         track.artists.clone(),
-                        theme.primary.opacity(PAST),
+                        lyric.opacity(PAST),
                     )
                     .text_size(theme.text(Text::Small))
                     .truncate(),
@@ -773,7 +782,7 @@ impl Aside {
                     .mr_1()
                     .icon("icons/x.svg")
                     .tooltip("menu-remove-from-queue")
-                    .tint(theme.muted_foreground)
+                    .tint(ink.opacity(MUTED))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.queue.update(cx, |queue, cx| {
@@ -841,6 +850,8 @@ impl Aside {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let theme = *cx.theme();
+        let panel = panel(&theme, cx);
+        let (ink, lyric) = (panel.ink, ink::accent(theme.primary, panel));
 
         div()
             .flex()
@@ -851,14 +862,17 @@ impl Aside {
             .h(snapped(theme.metrics.header, window))
             .px_2()
             .when(self.titled, |this| {
-                this.border_b_1().border_color(theme.border).child(eyebrow(
-                    match self.tab {
-                        SideTab::Queue => t!("queue-title"),
-                        SideTab::Lyrics => t!("lyrics-title"),
-                        SideTab::Members => t!("members-title"),
-                    },
-                    cx,
-                ))
+                this.border_b_1().border_color(theme.border).child(
+                    eyebrow(
+                        match self.tab {
+                            SideTab::Queue => t!("queue-title"),
+                            SideTab::Lyrics => t!("lyrics-title"),
+                            SideTab::Members => t!("members-title"),
+                        },
+                        cx,
+                    )
+                    .text_color(ink),
+                )
             })
             .when(!self.titled, |this| {
                 this.justify_end().pr(theme.metrics.control + px(8.))
@@ -881,8 +895,8 @@ impl Aside {
                                         .tooltip("queue-radio")
                                         .aria_toggled(Toggled::from(self.playback.read(cx).radio()))
                                         .tint(match self.playback.read(cx).radio() {
-                                            true => theme.primary,
-                                            false => theme.muted_foreground,
+                                            true => lyric,
+                                            false => ink.opacity(MUTED),
                                         })
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.playback.update(cx, |playback, cx| {
@@ -897,7 +911,7 @@ impl Aside {
                                 .ghost()
                                 .small()
                                 .label(t!("queue-reset"))
-                                .tint(theme.muted_foreground)
+                                .tint(ink.opacity(MUTED))
                                 .disabled(!self.queue.read(cx).reordered())
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.queue.update(cx, |queue, cx| queue.reset(cx));
@@ -908,7 +922,7 @@ impl Aside {
                                 .ghost()
                                 .small()
                                 .label(t!("queue-clear"))
-                                .tint(theme.muted_foreground)
+                                .tint(ink.opacity(MUTED))
                                 .disabled(sections.upcoming == 0)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.queue.update(cx, |queue, cx| queue.clear_upcoming(cx));
@@ -924,6 +938,8 @@ impl Aside {
     /// The button that turns the translation of the lines on and off.
     fn translation_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
+        let panel = panel(&theme, cx);
+        let (ink, lyric) = (panel.ink, ink::accent(theme.primary, panel));
         let on = self.settings.read(cx).lyrics_translation().is_some();
 
         Button::new("lyrics-translate")
@@ -933,8 +949,8 @@ impl Aside {
             .tooltip("lyrics-translate")
             .aria_toggled(Toggled::from(on))
             .tint(match on {
-                true => theme.primary,
-                false => theme.muted_foreground,
+                true => lyric,
+                false => ink.opacity(MUTED),
             })
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.settings.update(cx, |settings, cx| {
@@ -1011,6 +1027,8 @@ impl Aside {
 
     fn verses(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
+        let panel = panel(&theme, cx);
+        let (ink, lyric) = (panel.ink, ink::accent(theme.primary, panel));
         let playback = self.playback.read(cx);
         let (position, singing) = match playback.steered(cx) {
             Some(remote) => (remote.state.live_position(), remote.state.playing),
@@ -1071,8 +1089,8 @@ impl Aside {
             karaoke: karaoke_effects,
             lane: lane_size,
             scripts: romanization_scripts,
-            theme,
-            karaoke_tint: theme.primary,
+            lyric,
+            karaoke_tint: ink,
             lift: 1.,
             from: gpui::point(0., 0.5),
             mirrored,
@@ -1248,7 +1266,7 @@ impl Aside {
                             instrumental_progress,
                             instrumental_has_passed,
                             verse,
-                            &theme,
+                            lyric,
                         )
                         .id(("instrumental", index))
                         .role(Role::Button)
@@ -1338,13 +1356,13 @@ impl Aside {
                     let line_has_ended = active_line.is_some_and(|active| index < active)
                         || line_has_passed(line, position);
                     let worded = karaoke_effects && line.worded() && line.words.is_some();
-                    // The lyrics follow the same accent the player bar wears, so the active
-                    // line reads in the cover's hue and the others dim from it.
+                    // The lyrics wear the song's own colour, shaded to read on the panel, and
+                    // a word lands on the panel's ink as it is sung.
                     let shade = |singing: bool| match (singing, line_has_ended) {
-                        (true, _) if worded => theme.primary,
-                        (true, _) => theme.primary,
-                        (false, true) => theme.primary.opacity(PAST),
-                        (false, false) => theme.primary.opacity(AHEAD),
+                        (true, _) if worded => lyric,
+                        (true, _) => lyric,
+                        (false, true) => lyric.opacity(PAST),
+                        (false, false) => lyric.opacity(AHEAD),
                     };
                     let tint = shade(Some(index) == active_line);
 
@@ -1367,11 +1385,7 @@ impl Aside {
                         _ => tint,
                     };
                     let sung = Sung {
-                        karaoke_tint: mix(
-                            theme.foreground,
-                            tint,
-                            primary_karaoke_fade(line, active, position),
-                        ),
+                        karaoke_tint: mix(ink, tint, primary_karaoke_fade(line, active, position)),
                         lift,
                         from: match hugs_end(line.voice, sung.mirrored) {
                             true => gpui::point(1., 0.5),
@@ -1486,7 +1500,6 @@ impl Aside {
                             wrap_width,
                             position,
                             sung,
-                            &theme,
                             window,
                         ),
                         _ => None,
@@ -1502,7 +1515,7 @@ impl Aside {
                         .when_some(lane_text.clone(), |this, text| {
                             this.child(match swept_translation {
                                 Some(lane) => lane,
-                                None => romanized_lyrics_lane(text, lane_size, &theme),
+                                None => romanized_lyrics_lane(text, lane_size, lyric),
                             })
                         })
                         .children(lanes)
@@ -1626,7 +1639,7 @@ impl Aside {
                                 .gap_1()
                                 .text_size(plain_size)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme.primary)
+                                .text_color(lyric)
                                 .when(sung.mirrored, |this| this.text_right())
                                 .map(|this| match (&rows, romanized.is_some()) {
                                     (None, false) => this.child(SharedString::from(text.clone())),
@@ -1651,7 +1664,7 @@ impl Aside {
                                                         romanized_lyrics_lane(
                                                             (*line).to_owned(),
                                                             lane_size,
-                                                            &theme,
+                                                            lyric,
                                                         )
                                                         .font_weight(FontWeight::NORMAL),
                                                     )
@@ -1702,7 +1715,7 @@ impl Aside {
                 .flex()
                 .flex_col()
                 .text_size(theme.text(Text::Small))
-                .text_color(theme.muted_foreground)
+                .text_color(ink.opacity(MUTED))
                 .child(ui::spoken("lyrics-credit-source", from))
                 .children(by.map(|by| ui::spoken("lyrics-credit-writers", by)));
             body.push(adrift(note, translation, false, window));
@@ -1955,6 +1968,7 @@ impl Aside {
         let drop_gap = self.drop_gap;
         let upcoming = sections.upcoming;
         let audible = listing.playing;
+        let ink = panel(cx.theme(), cx).ink;
         // A uniform list only draws rows inside its padding, so the space under a see-through
         // player bar is made of blank rows, which keeps the songs scrolling under it drawn.
         let under = (self.bottom(cx) / cx.theme().metrics.list_row).ceil() as usize;
@@ -1970,7 +1984,7 @@ impl Aside {
                 let row = |index, cx: &mut Context<Self>| match sections.slot(index) {
                     None => div().into_any_element(),
                     Some(Slot::Header(key)) => {
-                        let label = section_label(key, cx);
+                        let label = section_label(key, ink, cx);
                         match (key, from.clone()) {
                             ("queue-now-playing", Some((name, place))) => label
                                 .w_full()
@@ -1981,10 +1995,14 @@ impl Aside {
                                     div()
                                         .flex_none()
                                         .text_size(cx.theme().text(Text::Small))
-                                        .text_color(cx.theme().muted_foreground)
+                                        .text_color(ink.opacity(MUTED))
                                         .child(BULLET),
                                 )
-                                .child(faint(cx).child(ui::spoken("queue-from", t!("queue-from"))))
+                                .child(
+                                    faint(cx)
+                                        .text_color(ink.opacity(MUTED))
+                                        .child(ui::spoken("queue-from", t!("queue-from"))),
+                                )
                                 .child(source_link(name, place, cx))
                                 .into_any_element(),
                             _ => label.into_any_element(),
@@ -2121,6 +2139,12 @@ impl Render for Aside {
     }
 }
 
+/// What the right panel shows, in the colours it draws with. The panel keeps less of its own
+/// colour than the left one, so the rule reads its background rather than its sidebar colour.
+fn panel(theme: &ui::Theme, cx: &App) -> ink::Panel {
+    ink::panel(theme.background, theme, cx)
+}
+
 /// The part of a queue row that names who queued the song: a bullet, their round picture or
 /// initials, and "Added by NAME".
 fn adder(added: &Contributor, theme: ui::Theme) -> Div {
@@ -2154,6 +2178,7 @@ fn track_place(sections: &Sections, position: QueuePosition) -> (usize, usize) {
 
 fn source_link(name: SharedString, to: Destination, cx: &App) -> impl IntoElement {
     let theme = *cx.theme();
+    let ink = panel(&theme, cx).ink;
 
     div()
         .id("queue-source")
@@ -2164,10 +2189,10 @@ fn source_link(name: SharedString, to: Destination, cx: &App) -> impl IntoElemen
         .truncate()
         .tails()
         .text_size(theme.text(Text::Small))
-        .text_color(theme.muted_foreground)
+        .text_color(ink.opacity(MUTED))
         .font_weight(FontWeight::SEMIBOLD)
         .cursor_pointer()
-        .hover(|style| style.text_color(theme.foreground).underline())
+        .hover(move |style| style.text_color(ink).underline())
         .link(to)
         .child(name)
 }
@@ -2193,25 +2218,24 @@ pub(crate) fn verse(
     line: &music::LyricsLine,
     look: VerseLook,
     position: std::time::Duration,
-    theme: ui::Theme,
 ) -> Div {
     let karaoke = look.karaoke && effects();
     let ended = line_has_passed(line, position);
     let worded = karaoke && line.worded() && line.words.is_some();
     let tint = match (look.active, ended) {
-        (true, _) if worded => theme.primary,
-        (true, _) => theme.primary,
-        (false, true) => theme.primary.opacity(PAST),
-        (false, false) => theme.primary.opacity(AHEAD),
+        (true, _) if worded => look.lyric,
+        (true, _) => look.lyric,
+        (false, true) => look.lyric.opacity(PAST),
+        (false, false) => look.lyric.opacity(AHEAD),
     };
     let mirrored = right_to_left(&line.text);
     let sung = Sung {
         karaoke,
         lane: look.lane,
         scripts: look.scripts,
-        theme,
+        lyric: look.lyric,
         karaoke_tint: mix(
-            theme.primary,
+            look.ink,
             tint,
             primary_karaoke_fade(line, look.active, position),
         ),
@@ -2265,7 +2289,7 @@ pub(crate) fn verse(
                 .child(primary)
                 .when_some(
                     selected_romanization(&line.romanized, look.scripts),
-                    |this, text| this.child(romanized_lyrics_lane(text, look.lane, &theme)),
+                    |this, text| this.child(romanized_lyrics_lane(text, look.lane, look.lyric)),
                 ),
         )
         .when(haze > 0., |this| this.opacity(1. - VEIL * haze))
@@ -2672,7 +2696,6 @@ fn secondary_lyrics_lane(
     voice: Voice,
     sung: Sung,
 ) -> gpui::AnyElement {
-    let theme = &sung.theme;
     let passed = line_passed || lane.sung_end().is_some_and(|end| position >= end);
     let shade = |singing: bool| {
         let active =
@@ -2681,10 +2704,10 @@ fn secondary_lyrics_lane(
             secondary_karaoke_visible(lane, singing, position) && sung.karaoke && lane.worded();
 
         match (active, passed, karaoke) {
-            (_, _, true) => theme.primary,
-            (true, _, false) => theme.primary,
-            (false, true, false) => theme.primary.opacity(PAST),
-            (false, false, false) => theme.primary.opacity(AHEAD),
+            (_, _, true) => sung.lyric,
+            (true, _, false) => sung.lyric,
+            (false, true, false) => sung.lyric.opacity(PAST),
+            (false, false, false) => sung.lyric.opacity(AHEAD),
         }
     };
     // a lane only shows under the line being sung
@@ -2730,7 +2753,7 @@ fn secondary_lyrics_lane(
         .child(lyrics)
         .when_some(
             selected_romanization(&lane.romanized, sung.scripts),
-            |this, text| this.child(romanized_lyrics_lane(text, size, theme)),
+            |this, text| this.child(romanized_lyrics_lane(text, size, sung.lyric)),
         )
         .into_any_element()
 }
@@ -2832,7 +2855,6 @@ fn translated_lane(
     width: Pixels,
     position: std::time::Duration,
     sung: Sung,
-    theme: &ui::Theme,
     window: &mut Window,
 ) -> Option<Div> {
     if cache
@@ -2863,14 +2885,14 @@ fn translated_lane(
             sung,
         )
         .text_size(size)
-        .text_color(theme.primary.opacity(AHEAD)),
+        .text_color(sung.lyric.opacity(AHEAD)),
     )
 }
 
-fn romanized_lyrics_lane(text: String, size: Pixels, theme: &ui::Theme) -> Div {
+fn romanized_lyrics_lane(text: String, size: Pixels, tint: gpui::Hsla) -> Div {
     div()
         .text_size(size)
-        .text_color(theme.primary.opacity(AHEAD))
+        .text_color(tint.opacity(AHEAD))
         .child(SharedString::from(text))
 }
 
@@ -3699,7 +3721,7 @@ fn background_line_singing(
     !line_active && position >= line.start && line.sung_end().is_some_and(|end| position < end)
 }
 
-fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme) -> Div {
+fn instrumental_row(progress: f32, past: bool, verse: Pixels, tint: gpui::Hsla) -> Div {
     let note_size = verse * 1.;
     div()
         .flex()
@@ -3709,8 +3731,8 @@ fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme)
         .children((0..3).map(|index| {
             let note_progress = (progress * 3. - index as f32).clamp(0., 1.);
             let tint = match past {
-                true => theme.primary.opacity(PAST),
-                false => mix(theme.primary.opacity(AHEAD), theme.primary, note_progress),
+                true => tint.opacity(PAST),
+                false => mix(tint.opacity(AHEAD), tint, note_progress),
             };
             div()
                 .size(note_size)
