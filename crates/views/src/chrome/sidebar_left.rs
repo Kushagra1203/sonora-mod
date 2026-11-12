@@ -935,17 +935,22 @@ pub(crate) fn sidebar_width(settings: &AppSettings) -> Pixels {
 
 /// The ink the sidebar draws with: white on a dark panel, black on a light one. The panel lets
 /// the page's field through, so on a dark theme a bright banner still leaves a light surface.
-/// That is why this reads the artwork's corner rather than the theme's polarity: on a detail
-/// page a patch of the page decides, and everywhere else the theme does. The theme's foreground
-/// and background are the two inks it carries, so the one on the far side of the panel's
-/// brightness is always ready.
+/// That is why this reads the artwork's palette rather than the theme's polarity: on a detail
+/// page a patch of the page decides, and everywhere else the theme does. The palette is looked
+/// up here rather than published ahead, so the ink changes on the same frame the wash paints
+/// the artwork on, not a frame behind it. The theme's foreground and background are the two
+/// inks it carries, so the one on the far side of the panel's brightness is always ready.
 fn ink(theme: &ui::Theme, cx: &App) -> Hsla {
     let current = router::trail(cx).read(cx).current();
     let frosted = matches!(
         current,
         Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
     );
-    let Some(art) = page_art::corner(cx).filter(|_| frosted) else {
+    let Some(art) = page_art::cover(cx)
+        .and_then(|cover| ui::cover_palette(&cover, cx))
+        .map(|palette| palette.corner)
+        .filter(|_| frosted)
+    else {
         return theme.foreground;
     };
     let shade = match matches!(current, Destination::Artist(_)) {
