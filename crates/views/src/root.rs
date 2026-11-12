@@ -1138,6 +1138,15 @@ impl Render for Root {
 
         let theme = *cx.theme();
         window.set_rem_size(theme.font_size);
+        // The panel beside the page sits over that page's own field, so the root hands it the
+        // lightness of the artwork's corner rather than each panel guessing from the theme. It
+        // is written only when the page has moved.
+        let page = self.wash_cover(cx);
+        let corner = page
+            .as_deref()
+            .and_then(|cover| ui::cover_palette(cover, cx))
+            .map(|palette| palette.corner);
+        crate::shared::page_art::publish(page.map(Into::into), corner, cx);
         let appearance = ui::backdrop(theme.blur_window, theme.transparent);
         if self.background != Some(appearance) {
             self.background = Some(appearance);

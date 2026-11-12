@@ -27,7 +27,13 @@ const SECONDARY_HUE: f32 = 0.05;
 /// hand. Sampling walks at most `SAMPLES` pixels, so this costs nothing beside
 /// the decode that produced the frame.
 pub(crate) fn of_image(image: &RenderImage) -> CoverPalette {
-    image.as_bytes(0).map(sampled).unwrap_or_default()
+    let size = image.size(0);
+    let (width, height) = (size.width.0.max(0) as usize, size.height.0.max(0) as usize);
+
+    image
+        .as_bytes(0)
+        .map(|pixels| sampled(pixels, width, height))
+        .unwrap_or_default()
 }
 
 /// The dominant hue of the artwork at `url`, or none for near-greyscale art.
@@ -49,6 +55,11 @@ pub struct CoverPalette {
     /// sleeve that is nearly black and one that is nearly white both land here
     /// with no primary, and only this tells them apart.
     pub lightness: f32,
+    /// The mean lightness of the art's top-left corner, which is the part the
+    /// chrome beside the page shows. A page's field can be light where the
+    /// panel sits and dark elsewhere, so the whole frame's mean cannot say
+    /// whether text drawn on the panel needs white or black.
+    pub corner: f32,
 }
 
 /// Both hues of the artwork at `url` in a single pass over its pixels. A cover the
@@ -94,13 +105,17 @@ impl Bin {
     }
 }
 
-fn sampled(pixels: &[u8]) -> CoverPalette {
+fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
     let stride = (pixels.len() / 4 / SAMPLES).max(1);
     let mut bins = [Bin::default(); BINS];
     let mut sampled = 0.;
     let mut lightness = 0.;
+    let mut corner = 0.;
+    let mut cornered = 0.;
 
-    for &[blue, green, red, alpha] in pixels.as_chunks::<4>().0.iter().step_by(stride) {
+    for (index, &[blue, green, red, alpha]) in
+        pixels.as_chunks::<4>().0.iter().enumerate().step_by(stride)
+    {
         if alpha < MIN_ALPHA {
             continue;
         }
@@ -114,19 +129,34 @@ fn sampled(pixels: &[u8]) -> CoverPalette {
         });
         lightness += colour.l;
 
+        // The panel beside the page shows the artwork's left edge, so its own corner is what
+        // tells white text from black there. A wide banner and a square sleeve are cropped
+        // differently, hence a generous share of the frame rather than a sliver.
+        if width > 0 && height > 0 {
+            let (x, y) = (index % width, index / width);
+            if x * 10 < width * 3 && y * 10 < height * 6 {
+                corner += colour.l;
+                cornered += 1.;
+            }
+        }
+
         if colour.s < MIN_SATURATION || colour.l < MIN_LIGHTNESS || colour.l > MAX_LIGHTNESS {
             continue;
         }
 
-        let index = ((colour.h * BINS as f32) as usize).min(BINS - 1);
+        let bin = ((colour.h * BINS as f32) as usize).min(BINS - 1);
         // On a dark cover the little light colour is the accent, not the
         // black around it: weight lifts with lightness so highlights win.
-        bins[index].add(colour, colour.s * (0.3 + 0.7 * colour.l));
+        bins[bin].add(colour, colour.s * (0.3 + 0.7 * colour.l));
     }
 
     let mean = match sampled > 0. {
         true => lightness / sampled,
         false => 0.,
+    };
+    let corner = match cornered > 0. {
+        true => corner / cornered,
+        false => mean,
     };
 
     let peak = (0..BINS).max_by(|&a, &b| score(&bins, a).total_cmp(&score(&bins, b)));
@@ -134,6 +164,7 @@ fn sampled(pixels: &[u8]) -> CoverPalette {
     let Some(peak) = primary else {
         return CoverPalette {
             lightness: mean,
+            corner,
             ..Default::default()
         };
     };
@@ -170,6 +201,7 @@ fn sampled(pixels: &[u8]) -> CoverPalette {
         primary,
         secondary,
         lightness: mean,
+        corner,
     }
 }
 
@@ -194,7 +226,9 @@ mod tests {
     #[test]
     fn finds_the_dominant_hue() {
         let pixels = image(&[([204, 34, 34], 900), ([32, 32, 32], 100)]);
-        let colour = sampled(&pixels).primary.expect("a red image is colourful");
+        let colour = sampled(&pixels, 32, 32)
+            .primary
+            .expect("a red image is colourful");
 
         assert!(colour.h < 0.02 || colour.h > 0.98, "hue was {}", colour.h);
         assert!(colour.s > 0.5, "saturation was {}", colour.s);
@@ -203,7 +237,9 @@ mod tests {
     #[test]
     fn averages_across_the_bin_boundary() {
         let pixels = image(&[([255, 0, 60], 500), ([255, 60, 0], 500)]);
-        let colour = sampled(&pixels).primary.expect("a red image is colourful");
+        let colour = sampled(&pixels, 32, 32)
+            .primary
+            .expect("a red image is colourful");
 
         assert!(colour.h < 0.02 || colour.h > 0.98, "hue was {}", colour.h);
     }
@@ -212,14 +248,14 @@ mod tests {
     fn ignores_greyscale_artwork() {
         let pixels = image(&[([18, 18, 18], 500), ([200, 200, 200], 500)]);
 
-        assert!(sampled(&pixels).primary.is_none());
+        assert!(sampled(&pixels, 32, 32).primary.is_none());
     }
 
     #[test]
     fn ignores_a_small_splash_of_colour() {
         let pixels = image(&[([120, 120, 120], 990), ([0, 180, 255], 10)]);
 
-        assert!(sampled(&pixels).primary.is_none());
+        assert!(sampled(&pixels, 32, 32).primary.is_none());
     }
 
     #[test]
@@ -230,7 +266,7 @@ mod tests {
             ([120, 20, 20], 100),
             ([8, 8, 8], 500),
         ]);
-        let colour = sampled(&pixels)
+        let colour = sampled(&pixels, 32, 32)
             .primary
             .expect("smeared purple names purple");
 
@@ -244,7 +280,7 @@ mod tests {
             ([120, 20, 20], 350),
             ([8, 8, 8], 300),
         ]);
-        let colour = sampled(&pixels)
+        let colour = sampled(&pixels, 32, 32)
             .primary
             .expect("a dark cover names its light accent");
 
@@ -258,7 +294,7 @@ mod tests {
             ([40, 120, 220], 300),
             ([120, 120, 120], 100),
         ]);
-        let palette = sampled(&pixels);
+        let palette = sampled(&pixels, 32, 32);
 
         assert!(palette.primary.is_some());
         let second = palette.secondary.expect("two families name two hues");
@@ -271,7 +307,7 @@ mod tests {
     #[test]
     fn one_family_names_no_runner_up() {
         let pixels = image(&[([90, 30, 130], 800), ([10, 10, 12], 200)]);
-        let palette = sampled(&pixels);
+        let palette = sampled(&pixels, 32, 32);
 
         assert!(palette.primary.is_some());
         assert!(palette.secondary.is_none());

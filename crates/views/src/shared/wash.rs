@@ -20,8 +20,9 @@ const BLEED: Pixels = px(100.);
 /// renderer still has a few texels of colour to work with.
 const BLUR: Pixels = px(84.);
 /// How much of the page colour lies over the whole field, so bright art still leaves the hero's
-/// text readable.
-const SHADE: f32 = 0.30;
+/// text readable. Shared with the chrome that sits over the field and needs to know how bright
+/// the result is.
+pub(crate) const SHADE: f32 = 0.30;
 /// Where the cover's light starts yielding to the page, and where it has fully become it.
 const FADE_FROM: f32 = 0.42;
 const FADE_TO: f32 = 0.78;
