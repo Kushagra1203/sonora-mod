@@ -312,13 +312,13 @@ impl SidebarLeft {
         rows
     }
 
-    /// The brand row: the Sonora mark and wordmark, one button, where the account row used to
-    /// sit. It goes home, the way a brand does in every player, and its label is the only text
-    /// the top of the sidebar carries.
+    /// The header's brand: the mark and wordmark, one button, where the account row used to
+    /// sit. It goes home, the way a brand does in every player, but it draws as the logo and
+    /// nothing else: no fill behind it when the pointer is over it, so the top of the sidebar
+    /// never reads as one more row to click.
     fn header_brand(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let ink = ink(&theme, cx);
-        let accent = theme.sidebar_accent;
 
         div()
             .id("sidebar-brand")
@@ -331,11 +331,8 @@ impl SidebarLeft {
             .gap_2p5()
             .h(theme.metrics.row)
             .px_3()
-            .rounded(theme.radius)
             .text_color(ink)
             .cursor_pointer()
-            .hover(|style| style.bg(accent))
-            .active(|style| style.bg(accent))
             .child(
                 svg()
                     .path(icons::path("icons/sonora.svg"))
