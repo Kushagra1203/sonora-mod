@@ -332,7 +332,7 @@ impl SidebarLeft {
                 .min_w_0()
                 .px_1()
                 .py_1()
-                .text_color(theme.primary)
+                .text_color(theme.foreground)
                 .child(mark)
                 .child(div().min_w_0().truncate().child(name))
                 .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
@@ -657,12 +657,13 @@ impl SidebarLeft {
             Some(group) => Group::of(&current) == Some(group),
             None => destination.same_section(&current),
         };
-        // The rows wear the accent the player bar wears, so the sidebar follows the cover with
-        // the rest of the app. The one that is not current is dimmed, so the current one still
-        // reads as the current one.
+        // The sidebar keeps the theme's own ink — white on a dark theme, black on a light one —
+        // rather than following the cover's accent. The panel sits over artwork, so a hue the
+        // song named can vanish into it; the theme's ink is the one colour guaranteed to read
+        // on the surface the panel is drawn on. The current row is brighter than the rest.
         let tint = match active {
-            true => theme.primary,
-            false => theme.primary.opacity(ROW_DIM),
+            true => theme.foreground,
+            false => theme.foreground.opacity(ROW_DIM),
         };
         let row = nav_row(index, key, tint, accent).icon(icon);
 
@@ -692,8 +693,8 @@ impl SidebarLeft {
         let tab = |id: ElementId, key: &'static str, destination: Destination| {
             let chosen = destination == current;
             let tint = match chosen {
-                true => theme.primary,
-                false => theme.primary.opacity(ROW_DIM),
+                true => theme.foreground,
+                false => theme.foreground.opacity(ROW_DIM),
             };
 
             nav_row(id, key, tint, accent)
@@ -939,7 +940,7 @@ fn caption(kind: &'static str, marked: bool, cx: &App) -> impl IntoElement {
                     .path(icons::path("icons/pin.svg"))
                     .flex_none()
                     .size(theme.text(Text::Tiny))
-                    .text_color(theme.primary.opacity(PIN_MARK)),
+                    .text_color(theme.foreground.opacity(PIN_MARK)),
             )
         })
         .child(div().min_w_0().truncate().child(i18n::lookup(kind, None)))

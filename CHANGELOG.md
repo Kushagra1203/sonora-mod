@@ -42,6 +42,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The sidebar's labels and icons keep the theme's own ink — white on a dark theme, black on a
+  light one — instead of the cover's accent, so they stay readable whatever sleeve is playing.
 - The artist page's popular songs sit in four rows of five instead of five rows of four.
 - The devices button in the player bar is now the Sessions button. It shows for every streaming service and sits evenly beside the lyrics and queue buttons.
 - Spotify Jam controls sit together under a Spotify Jams submenu of the Sessions button, and the strip above the player bar is gone.
