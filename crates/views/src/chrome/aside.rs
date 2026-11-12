@@ -3700,14 +3700,14 @@ fn background_line_singing(
 }
 
 /// The accent stepped back for a verse or a row that is not the one in focus: the cover's hue,
-/// `fade` of the way toward the panel behind it, and never under the large-text ratio. The
+/// `fade` of the way toward the panel behind it, and never under the body-text ratio. The
 /// hierarchy of dimmed lyrics and queued songs survives without depending on the hue's brightness.
 fn dimmed(theme: &ui::Theme, fade: f32) -> Hsla {
     faded(
         legible(theme.primary, theme.background, TEXT_CONTRAST),
         theme.background,
         fade,
-        SHAPE_CONTRAST,
+        TEXT_CONTRAST,
     )
 }
 

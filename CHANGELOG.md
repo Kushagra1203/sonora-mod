@@ -73,6 +73,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The adaptive theme keeps its text readable whatever colour a song brings: the accent is
   measured for contrast against the surface it sits on, so a bright sleeve's green or a washed
   red no longer fades into the sidebar.
+- A sidebar keeps its own colour over a bright artist page instead of becoming the artwork, so
+  its rows and the lyrics beside it stay readable on any sleeve.
 - A scroll against the top or the bottom of a page no longer throws the page the other way. A
   flick that reaches an end stops there, a wheel turned at an end leaves no momentum behind, and
   a glide onto a new page starts from where that page is instead of carrying the last one's.

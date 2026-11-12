@@ -27,14 +27,16 @@ const FADE_FROM: f32 = 0.42;
 const FADE_TO: f32 = 0.78;
 
 /// How much of a sidebar's own colour it keeps when it frosts the page wash instead of sitting
-/// on it, and how hard it blurs the artwork behind. Kept light: most of the colour comes from
-/// the wash itself, and the blur and grain do the diffusing rather than a slab of tint.
-pub(crate) const SIDEBAR_FROST_TINT: f32 = 0.18;
+/// on it. Most of the panel, so the artwork behind it tints the surface rather than becoming it:
+/// a bright banner can no longer decide the luminance the sidebar's text has to be read against,
+/// and the accent solved against `Theme::sidebar` is finally measuring the surface it is drawn on.
+pub(crate) const SIDEBAR_FROST_TINT: f32 = 0.78;
 pub(crate) const SIDEBAR_FROST_BLUR: Pixels = px(38.);
 
 /// The lighter shade an artist page's wash keeps: its artwork reaches the fold, so the wash
-/// stays close to the artwork's own colour instead of settling into the page behind it.
-pub(crate) const ARTIST_SHADE: f32 = 0.12;
+/// stays close to the artwork's own colour instead of settling into the page behind it. Enough
+/// of the page colour still lies over it that the artwork cannot out-brighten the text on top.
+pub(crate) const ARTIST_SHADE: f32 = 0.30;
 
 /// The wash behind a detail page. `cover` is the largest cover the page holds; without one the
 /// page keeps the plain theme background.
