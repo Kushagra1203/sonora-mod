@@ -21,6 +21,7 @@ number-group = { "," }
 # navigation
 nav-history = 历史记录
 nav-home = 首页
+brand-name = Sonora
 nav-search = 搜索
 nav-library = 你的音乐库
 nav-settings = 设置

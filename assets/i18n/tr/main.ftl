@@ -21,6 +21,7 @@ number-group = { "." }
 # navigation
 nav-history = Geçmiş
 nav-home = Ana sayfa
+brand-name = Sonora
 nav-search = Ara
 nav-library = Kitaplığın
 nav-settings = Ayarlar

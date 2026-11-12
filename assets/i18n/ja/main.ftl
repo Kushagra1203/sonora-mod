@@ -21,6 +21,7 @@ number-group = { "," }
 # navigation
 nav-history = 履歴
 nav-home = ホーム
+brand-name = Sonora
 nav-search = 検索
 nav-library = ライブラリ
 nav-settings = 設定

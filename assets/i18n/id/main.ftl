@@ -21,6 +21,7 @@ number-group = { "," }
 # navigation
 nav-history = Riwayat
 nav-home = Beranda
+brand-name = Sonora
 nav-search = Cari
 nav-library = Koleksi Anda
 nav-settings = Pengaturan

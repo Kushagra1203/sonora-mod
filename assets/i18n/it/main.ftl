@@ -21,6 +21,7 @@ number-group = { "\u00A0" }
 # navigation
 nav-history = Cronologia
 nav-home = Schermata principale
+brand-name = Sonora
 nav-search = Cerca
 nav-library = La tua libreria
 nav-settings = Impostazioni

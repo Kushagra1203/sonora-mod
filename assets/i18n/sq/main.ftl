@@ -21,6 +21,7 @@ number-group = { "." }
 # navigation
 nav-history = Historiku
 nav-home = Kryefaqja
+brand-name = Sonora
 nav-search = Kërko
 nav-library = Biblioteka jote
 nav-settings = Cilësimet

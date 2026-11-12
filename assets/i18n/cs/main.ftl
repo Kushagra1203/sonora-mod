@@ -21,6 +21,7 @@ number-group = { "\u00A0" }
 # navigation
 nav-history = Historie
 nav-home = Domů
+brand-name = Sonora
 nav-search = Hledat
 nav-library = Tvoje knihovna
 nav-settings = Nastavení

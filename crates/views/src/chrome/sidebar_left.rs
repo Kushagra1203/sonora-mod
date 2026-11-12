@@ -1,16 +1,16 @@
 use std::rc::Rc;
 
 use ui::{
-    ActiveTheme as _, Avatar, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel, Picker, Pin,
-    PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy,
-    drop_gap, drop_into, drop_marker, snapped,
+    ActiveTheme as _, Card, Deck, DraggedPin, Edge, MenuItem, Panel, Picker, Pin, PinKind,
+    Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy, drop_gap,
+    drop_into, drop_marker, snapped,
 };
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, Hsla, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollHandle, SharedString, svg,
+    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, FontWeight, Hsla, MouseButton,
+    MouseDownEvent, Pixels, Point, Render, ScrollHandle, SharedString, svg,
 };
 use gpui::{Window, div, px};
 use music::Shape;
@@ -19,8 +19,7 @@ use router::{
     open_settings,
 };
 use state::{
-    AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, SessionState, Shelf,
-    Sonora,
+    AppSettings, Leaving, Library, Origin, PinSort, Pins, Playback, Session, Shelf, Sonora,
 };
 
 use crate::shared::menus::{ItemMenu, item_menu};
@@ -86,8 +85,9 @@ const PIN_MARK: f32 = 0.7;
 /// How far a navigation row that is not the current one dims the accent, so the rows still read
 /// in order while both wear the colour the player bar wears.
 const ROW_DIM: f32 = 0.75;
-/// The account mark that heads the sidebar.
-const ACCOUNT_MARK: Pixels = px(24.);
+/// How many header rows the brand header stands. A mark and a wordmark want air around them,
+/// and this is the one place in the panel where a taller line earns its space.
+const BRAND_HEIGHT: f32 = 2.;
 /// The space between two pinned entries, the same as the `gap_1` between the rows above them.
 const ROW_GAP: Pixels = px(4.);
 
@@ -312,58 +312,63 @@ impl SidebarLeft {
         rows
     }
 
-    /// Account row for the header bar: no pill shape, full-width, text truncates.
-    fn header_account(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The brand row: the Sonora mark and wordmark, one button, where the account row used to
+    /// sit. It goes home, the way a brand does in every player, and its label is the only text
+    /// the top of the sidebar carries.
+    fn header_brand(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let (name, avatar) = match self.session.read(cx).state() {
-            SessionState::SignedIn(profile) => {
-                (profile.display_name.clone(), profile.avatar.clone())
-            }
-            _ => return None,
-        };
-        let mark = match avatar {
-            Some(avatar) => Avatar::new(Some(avatar))
-                .size(ACCOUNT_MARK)
-                .into_any_element(),
-            None => Initials::new(name.clone(), ACCOUNT_MARK).into_any_element(),
-        };
+        let ink = ink(&theme, cx);
+        let accent = theme.sidebar_accent;
 
-        Some(
-            div()
-                .id("sidebar-header-account")
-                .flex()
-                .items_center()
-                .gap_2p5()
-                .w_full()
-                .min_w_0()
-                .px_1()
-                .py_1()
-                .text_color(ink(&theme, cx))
-                .child(mark)
-                .child(div().min_w_0().truncate().child(name))
-                .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
-                .cursor_pointer()
-                .into_any_element(),
-        )
+        div()
+            .id("sidebar-brand")
+            .role(Role::Button)
+            .aria_label(i18n::lookup("nav-home", None))
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap_2p5()
+            .h(theme.metrics.row)
+            .px_3()
+            .rounded(theme.radius)
+            .text_color(ink)
+            .cursor_pointer()
+            .hover(|style| style.bg(accent))
+            .active(|style| style.bg(accent))
+            .child(
+                svg()
+                    .path(icons::path("icons/sonora.svg"))
+                    .flex_none()
+                    .size(theme.text(Text::Title))
+                    .text_color(ink),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(theme.text(Text::Large))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(i18n::lookup("brand-name", None)),
+            )
+            .on_click(|_, _, cx| navigate(Destination::Home, cx))
+            .into_any_element()
     }
 
-    /// The header that aligns with the right sidebar's eyebrow: a frosted bar with the account
-    /// row when signed in, otherwise empty space of the same height so the navigation starts at
-    /// the same line as the centre and right columns.
-    fn header(&self, frosted: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The header above the navigation: the brand, at the height a logo wants rather than the
+    /// thin bar the account row needed. It carries no rule under it, so the mark sits in the
+    /// panel instead of on a shelf.
+    fn header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let height = snapped(theme.metrics.header, window);
+        let height = snapped(theme.metrics.header * BRAND_HEIGHT, window);
 
         div()
             .flex()
             .flex_none()
             .items_center()
-            .justify_between()
-            .gap_2()
             .h(height)
-            .px_2()
-            .when(frosted, |this| this.border_b_1().border_color(theme.border))
-            .when_some(self.header_account(cx), |this, account| this.child(account))
+            .px_3()
+            .child(self.header_brand(cx))
             .into_any_element()
     }
 
@@ -865,7 +870,7 @@ impl Render for SidebarLeft {
             .when(overlaid, |this| {
                 this.occlude().absolute().left_0().top_0().bottom_0()
             })
-            .child(self.header(frosted, window, cx))
+            .child(self.header(window, cx))
             .child(
                 div()
                     .relative()
