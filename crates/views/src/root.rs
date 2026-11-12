@@ -1138,6 +1138,15 @@ impl Render for Root {
 
         let theme = *cx.theme();
         window.set_rem_size(theme.font_size);
+        // The panels beside the page wear its own colour. The wash samples the artwork anyway,
+        // so the root hands the hue it found to the chrome rather than each panel sampling it
+        // again, and writes it only when the page has moved.
+        let page = self.wash_cover(cx);
+        let page_tint = page
+            .as_deref()
+            .and_then(|cover| ui::cover_palette(cover, cx))
+            .and_then(|palette| palette.primary);
+        crate::shared::page_art::publish(page.map(Into::into), page_tint, cx);
         let appearance = ui::backdrop(theme.blur_window, theme.transparent);
         if self.background != Some(appearance) {
             self.background = Some(appearance);
