@@ -75,9 +75,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   red no longer fades into the sidebar.
 - A sidebar keeps its own colour over a bright artist page instead of becoming the artwork, so
   its rows and the lyrics beside it stay readable on any sleeve.
-- On an album, playlist or artist page the sidebars wear that page's colour in shadow rather than
-  the theme's black, so a bright cover no longer leaves the panels looking like a slab cut into
-  the artwork.
 - A scroll against the top or the bottom of a page no longer throws the page the other way. A
   flick that reaches an end stops there, a wheel turned at an end leaves no momentum behind, and
   a glide onto a new page starts from where that page is instead of carrying the last one's.

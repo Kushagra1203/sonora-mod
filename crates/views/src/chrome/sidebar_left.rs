@@ -27,6 +27,7 @@ use crate::shared::menus::{ItemMenu, item_menu};
 use crate::shared::nav::nav_row;
 use crate::shared::pins::leaving;
 use crate::shared::playlist_editor::{Edit, PlaylistEditor};
+use crate::shared::wash;
 
 /// The one drag list the pinned section keeps, so a pin dropped anywhere in it lands in order.
 const PINS: &str = "sidebar-pins";
@@ -786,16 +787,12 @@ impl Render for SidebarLeft {
         let sidebar_border = theme.sidebar_border;
 
         let current = self.trail.read(cx).current();
-        // On an album, playlist, or artist page the panel wears the page's own colour instead of
-        // the theme's: `hued` moves the surface to the artwork's hue at the same luminance, so the
-        // rows keep every ratio they were solved for while the panel belongs to the room.
+        // On an album, playlist, or artist page the panel frosts the page wash instead of sitting beside
+        // it: the artwork's colours diffuse through, with the panel's own colour over them.
         let frosted = matches!(
             current,
             Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
         );
-        let page = crate::shared::page_art::tint(cx);
-        let sidebar_bg = page.map_or(sidebar_bg, |tint| theme.hued(sidebar_bg, tint));
-        let sidebar_border = page.map_or(sidebar_border, |tint| theme.hued(sidebar_border, tint));
         self.follow(&current);
         self.adapt(super::Chrome::reserved_right(cx), window, cx);
 
@@ -848,11 +845,14 @@ impl Render for SidebarLeft {
             // In the flow the shell clips the panel as it slides, so it stays drawn while it
             // moves. Only an overlaid panel, which nothing clips, hides itself when closed.
             .when(overlaid && !self.is_open(), |this| this.hidden())
-            // The panel is a surface of its own so the rows sit on a colour the theme can solve
-            // their ink against; what makes it belong to the page is the hue it was given above.
-            .when(!theme.transparent, |this| this.bg(sidebar_bg))
+            .when(!theme.transparent, |this| match frosted {
+                true => this
+                    .bg(sidebar_bg.opacity(wash::SIDEBAR_FROST_TINT))
+                    .backdrop_blur(wash::SIDEBAR_FROST_BLUR),
+                false => this.bg(sidebar_bg),
+            })
             .border_color(sidebar_border)
-            // The grain sits under the panel's rows, so the surface has a texture the text
+            // The grain sits under the panel's rows, so the frost has a texture the text
             // keeps clear of.
             .when(frosted, |this| this.child(ui::frost_grain(window)))
             .when(overlaid, |this| {

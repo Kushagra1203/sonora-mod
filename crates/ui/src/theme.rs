@@ -41,14 +41,6 @@ pub const SHAPE_CONTRAST: f32 = 3.0;
 /// How far a control's plate has to stand off the artwork it is drawn on to be seen as a shape at
 /// all. Below this the plate is not weak, it is invisible, so the neutral one takes its place.
 const PLATE_CONTRAST: f32 = 1.6;
-/// How far a sidebar steps from the theme's own surface toward the cover's brightness once the
-/// cover has given it a hue. A panel that keeps the theme's lightness reads as a black slab
-/// beside a bright page, and one that follows the cover all the way stops being a panel: a share
-/// of the way is the page's colour in shadow.
-const PANEL_ART_SHARE: f32 = 0.22;
-/// The lightest a lifted panel goes, so the dimmest body text that sits on it — the muted
-/// foreground, a past verse — still clears its ratio.
-const PANEL_LIGHTNESS_MOST: f32 = 0.15;
 /// Art lighter than this wears a dark control and art darker than it a light
 /// one, which is the whole of what tells a white sleeve from a black one.
 const NEUTRAL_PIVOT: f32 = 0.5;
@@ -607,15 +599,6 @@ impl Theme {
             ..self.selection
         };
         self.table_active_border = self.primary;
-        // The sidebars are the room's colour rather than the theme's black. The wash above gave
-        // them the cover's hue; here they take a share of its brightness, so a bright sleeve
-        // leaves a deep coloured panel beside the page instead of a slab cut into it. Only a dark
-        // theme lifts: a light panel stepping toward a mid-lightness cover would turn the page
-        // and the chrome into one flat field.
-        if dark {
-            self.sidebar.l = (self.sidebar.l + (tint.l - self.sidebar.l) * PANEL_ART_SHARE)
-                .min(PANEL_LIGHTNESS_MOST);
-        }
         self
     }
 
@@ -717,41 +700,6 @@ impl Theme {
             self.background,
             SHAPE_CONTRAST,
         )
-    }
-
-    /// A surface of `base`'s brightness wearing `tint`'s hue, for a panel that should belong to
-    /// the page beside it. The luminance is held exactly where it was, so every ink already
-    /// solved against `base` keeps its ratio on the panel: a page can recolour the chrome
-    /// without the text having to be solved again. A hue that reads darker than the base at the
-    /// same lightness is therefore lifted until it matches, and a brighter one lowered, since
-    /// only luminance decides whether something can be read on top of it.
-    pub fn hued(&self, base: Hsla, tint: Hsla) -> Hsla {
-        let wanted = luminance(base);
-        let saturation = (base.s + tint.s * SURFACE_TINT).min(MAX_WASH_SATURATION);
-        let at = |lightness: f32| {
-            luminance(Hsla {
-                h: tint.h,
-                s: saturation,
-                l: lightness,
-                a: 1.,
-            })
-        };
-
-        let (mut dim, mut bright) = (0., 1.);
-        for _ in 0..12 {
-            let middle = (dim + bright) / 2.;
-            match at(middle) < wanted {
-                true => dim = middle,
-                false => bright = middle,
-            }
-        }
-
-        Hsla {
-            h: tint.h,
-            s: saturation,
-            l: (dim + bright) / 2.,
-            a: base.a,
-        }
     }
 
     /// The accent this theme carries once `tint` has washed through it, which
@@ -1272,15 +1220,6 @@ mod tests {
                     "glyph for hue {hue}"
                 );
                 assert!(contrast(theme.selection, surface) >= ACCENT_CONTRAST);
-
-                // A panel beside a page of this artwork wears its hue at the sidebar's own
-                // luminance, so the ink that was solved for the sidebar still clears its ratio.
-                let panel = theme.hued(theme.sidebar, tint);
-                let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
-                assert!(
-                    contrast(ink, panel) >= TEXT_CONTRAST - 0.05,
-                    "panel for hue {hue}"
-                );
             }
         }
     }

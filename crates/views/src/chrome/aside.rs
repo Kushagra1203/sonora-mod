@@ -23,9 +23,9 @@ use state::{
 };
 use ui::{
     ActiveTheme as _, Avatar, Button, Card, DraggedPin, Edge, Initials, Motion, Motioned as _,
-    PREFETCH_REACH, Pin, Pinnable as _, Popup, Scrollbar, Scroller, Spot, Springs, TEXT_CONTRAST,
-    Tails as _, Text, Vacancy, drop_gap, drop_marker, ease_out_cubic, ease_out_expo, eyebrow,
-    faded, faint, legible, mix, prefetch, snapped, vacant,
+    PREFETCH_REACH, Pin, Pinnable as _, Popup, SHAPE_CONTRAST, Scrollbar, Scroller, Spot, Springs,
+    TEXT_CONTRAST, Tails as _, Text, Vacancy, drop_gap, drop_marker, ease_out_cubic, ease_out_expo,
+    eyebrow, faded, faint, legible, mix, prefetch, snapped, vacant,
 };
 use unicode_bidi::{BidiClass, Direction};
 
@@ -3704,8 +3704,8 @@ fn background_line_singing(
 /// hierarchy of dimmed lyrics and queued songs survives without depending on the hue's brightness.
 fn dimmed(theme: &ui::Theme, fade: f32) -> Hsla {
     faded(
-        legible(theme.primary, theme.sidebar, TEXT_CONTRAST),
-        theme.sidebar,
+        legible(theme.primary, theme.background, TEXT_CONTRAST),
+        theme.background,
         fade,
         TEXT_CONTRAST,
     )
