@@ -46,9 +46,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the mark is the way home. It stands taller than the bar it replaced, with no rule under it.
 - Both sidebars pick their ink from the brightness the panel actually shows over the page behind
   it, so the left sidebar's labels and icons stay readable whatever sleeve is playing.
-- The right sidebar keeps the song's own colour — shaded until it reads on the panel — so the
-  queue and the lyrics stay in the cover's hue, and a lyric word turns to the panel's ink, white
-  or black, as it is sung.
+- The right sidebar keeps the song's own colour, so the queue and the lyrics stay in the cover's
+  hue; on a light panel it wears one fixed darker shade of that colour, and a lyric word turns to
+  the panel's ink, white or black, as it is sung.
 - The artist page's popular songs sit in four rows of five instead of five rows of four.
 - The devices button in the player bar is now the Sessions button. It shows for every streaming service and sits evenly beside the lyrics and queue buttons.
 - Spotify Jam controls sit together under a Spotify Jams submenu of the Sessions button, and the strip above the player bar is gone.
