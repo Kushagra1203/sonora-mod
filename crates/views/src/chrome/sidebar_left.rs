@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use ui::{
     ActiveTheme as _, Avatar, Card, Deck, DraggedPin, Edge, Initials, MenuItem, Panel, Picker, Pin,
-    PinKind, Pinnable as _, Popup, SHAPE_CONTRAST, SNUG, Scroller, Shield, Side, Spot,
-    TEXT_CONTRAST, Tabs, Text, Vacancy, drop_gap, drop_into, drop_marker, faded, legible, snapped,
+    PinKind, Pinnable as _, Popup, SNUG, Scroller, Shield, Side, Spot, Tabs, Text, Vacancy,
+    drop_gap, drop_into, drop_marker, snapped,
 };
 
 use gpui::accesskit::Role;
@@ -332,7 +332,7 @@ impl SidebarLeft {
                 .min_w_0()
                 .px_1()
                 .py_1()
-                .text_color(legible(theme.primary, theme.sidebar, TEXT_CONTRAST))
+                .text_color(theme.primary)
                 .child(mark)
                 .child(div().min_w_0().truncate().child(name))
                 .on_click(|_, _, cx| navigate(Destination::Settings(SettingsPage::Providers), cx))
@@ -658,12 +658,11 @@ impl SidebarLeft {
             None => destination.same_section(&current),
         };
         // The rows wear the accent the player bar wears, so the sidebar follows the cover with
-        // the rest of the app. The one that is not current steps back toward the sidebar, but
-        // only as far as a dim line can go and still be read against it.
-        let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
+        // the rest of the app. The one that is not current is dimmed, so the current one still
+        // reads as the current one.
         let tint = match active {
-            true => ink,
-            false => faded(ink, theme.sidebar, 1. - ROW_DIM, SHAPE_CONTRAST),
+            true => theme.primary,
+            false => theme.primary.opacity(ROW_DIM),
         };
         let row = nav_row(index, key, tint, accent).icon(icon);
 
@@ -692,10 +691,9 @@ impl SidebarLeft {
         let current = self.trail.read(cx).current();
         let tab = |id: ElementId, key: &'static str, destination: Destination| {
             let chosen = destination == current;
-            let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
             let tint = match chosen {
-                true => ink,
-                false => faded(ink, theme.sidebar, 1. - ROW_DIM, SHAPE_CONTRAST),
+                true => theme.primary,
+                false => theme.primary.opacity(ROW_DIM),
             };
 
             nav_row(id, key, tint, accent)
@@ -941,12 +939,7 @@ fn caption(kind: &'static str, marked: bool, cx: &App) -> impl IntoElement {
                     .path(icons::path("icons/pin.svg"))
                     .flex_none()
                     .size(theme.text(Text::Tiny))
-                    .text_color(faded(
-                        legible(theme.primary, theme.sidebar, TEXT_CONTRAST),
-                        theme.sidebar,
-                        1. - PIN_MARK,
-                        SHAPE_CONTRAST,
-                    )),
+                    .text_color(theme.primary.opacity(PIN_MARK)),
             )
         })
         .child(div().min_w_0().truncate().child(i18n::lookup(kind, None)))
