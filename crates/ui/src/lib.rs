@@ -143,8 +143,8 @@ pub use table::{
 pub use tabs::{TabBar, Tabs};
 pub use theme::{
     ActiveTheme, BACKDROP_TRANSPARENCY, CoverFill, Look, MAX_FONT, MAX_LYRICS_SCALE,
-    MAX_TRANSPARENCY, MIN_FONT, MIN_LYRICS_SCALE, Theme, ThemeKind, ThemeOverrides, WINDOW_BLUR,
-    backdrop,
+    MAX_TRANSPARENCY, MIN_FONT, MIN_LYRICS_SCALE, SHAPE_CONTRAST, TEXT_CONTRAST, Theme, ThemeKind,
+    ThemeOverrides, WINDOW_BLUR, backdrop, contrast, faded, legible,
 };
 pub use time::{clock, runtime, tabular};
 pub use toast::Toast;

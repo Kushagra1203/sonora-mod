@@ -27,6 +27,17 @@ const TEXT_TINT: f32 = 0.12;
 const MAX_WASH_SATURATION: f32 = 0.7;
 const MIN_ACCENT_SATURATION: f32 = 0.6;
 const MAX_ACCENT_SATURATION: f32 = 0.85;
+/// What coloured body text has to clear against the surface behind it, which is the ratio WCAG
+/// asks of small text. A cover's accent is held to it, so a hue the eye reads as bright (a lime
+/// green) is pushed darker than one it reads as dim (a navy) rather than both sharing a lightness.
+pub const TEXT_CONTRAST: f32 = 4.5;
+/// What a shape, an icon or a large glyph has to clear, which is the ratio WCAG asks of those.
+/// Also the floor a dimmed line steps back to: past verses, inactive rows and queued tracks keep
+/// their hierarchy without ever falling out of sight.
+pub const SHAPE_CONTRAST: f32 = 3.0;
+/// How far a control's plate has to stand off the artwork it is drawn on to be seen as a shape at
+/// all. Below this the plate is not weak, it is invisible, so the neutral one takes its place.
+const PLATE_CONTRAST: f32 = 1.6;
 /// Art lighter than this wears a dark control and art darker than it a light
 /// one, which is the whole of what tells a white sleeve from a black one.
 const NEUTRAL_PIVOT: f32 = 0.5;
@@ -552,16 +563,32 @@ impl Theme {
             a: 1.,
         };
 
-        self.primary = accent(if dark { 0.72 } else { 0.42 });
-        self.primary_hover = Hsla {
-            a: 0.7,
-            ..accent(if dark { 0.82 } else { 0.34 })
-        };
-        self.primary_foreground = Hsla {
-            s: tint.s.min(0.25),
-            l: if dark { 0.08 } else { 0.98 },
-            ..self.primary
-        };
+        // The lightness above is only a starting point: it says nothing about how bright the
+        // colour reads, and green carries several times the luminance of blue at the same
+        // lightness. Each accent is therefore nudged in lightness — hue and saturation kept —
+        // until it clears the contrast its text needs against the surface it is drawn on.
+        self.primary = legible(
+            accent(if dark { 0.72 } else { 0.42 }),
+            self.background,
+            TEXT_CONTRAST,
+        );
+        self.primary_hover = legible(
+            Hsla {
+                a: 0.7,
+                ..accent(if dark { 0.82 } else { 0.34 })
+            },
+            self.background,
+            TEXT_CONTRAST,
+        );
+        self.primary_foreground = legible(
+            Hsla {
+                s: tint.s.min(0.25),
+                l: if dark { 0.08 } else { 0.98 },
+                ..self.primary
+            },
+            self.primary,
+            TEXT_CONTRAST,
+        );
         self.progress_bar = self.primary;
         self.selection = self.accent(tint);
         self.table_active = Hsla {
@@ -574,10 +601,10 @@ impl Theme {
 
     /// The primary fill for a hue the theme is not wearing, so an element can
     /// carry a colour of its own while the theme stays put. Saturation and
-    /// lightness are pinned the way `tinted` pins them, so every cover reads at
-    /// the same weight and `primary_foreground` still sits on it.
+    /// lightness are pinned the way `tinted` pins them, then lifted until the
+    /// fill separates from the theme's own surface.
     pub fn primary_of(&self, tint: Hsla) -> Hsla {
-        Hsla {
+        let fill = Hsla {
             h: tint.h,
             s: tint.s.clamp(MIN_ACCENT_SATURATION, MAX_ACCENT_SATURATION),
             l: match self.background.l < 0.5 {
@@ -585,7 +612,9 @@ impl Theme {
                 false => 0.42,
             },
             a: 1.,
-        }
+        };
+
+        legible(fill, self.background, SHAPE_CONTRAST)
     }
 
     /// The colours a control wears over `cover`, or the theme's own primary when
@@ -602,32 +631,53 @@ impl Theme {
             };
         };
         let dark = self.background.l < 0.5;
-
-        let Some(tint) = cover.primary else {
+        let neutral = || {
             let (background, hover, foreground) = match cover.lightness < NEUTRAL_PIVOT {
                 true => (0.88, 0.97, 0.1),
                 false => (0.16, 0.06, 0.94),
             };
             let grey = |l, a| Hsla { h: 0., s: 0., l, a };
 
-            return CoverFill {
+            CoverFill {
                 background: grey(background, 1.),
                 hover: grey(hover, 0.7),
                 foreground: grey(foreground, 1.),
-            };
+            }
         };
 
+        let Some(tint) = cover.primary else {
+            return neutral();
+        };
+
+        let plate = self.primary_of(tint);
+        // The control sits on the artwork itself, so a plate as bright as the art around it
+        // melts in however strong its hue is. Art that leaves no room for the accent gets the
+        // neutral plate, which is chosen for the art's own lightness.
+        let art = Hsla {
+            h: 0.,
+            s: 0.,
+            l: cover.lightness,
+            a: 1.,
+        };
+        if contrast(plate, art) < PLATE_CONTRAST {
+            return neutral();
+        }
+
         CoverFill {
-            background: self.primary_of(tint),
+            background: plate,
             hover: self.primary_hover_of(tint),
-            foreground: Hsla {
-                s: tint.s.min(0.25),
-                l: match dark {
-                    true => 0.08,
-                    false => 0.98,
+            foreground: legible(
+                Hsla {
+                    s: tint.s.min(0.25),
+                    l: match dark {
+                        true => 0.08,
+                        false => 0.98,
+                    },
+                    ..plate
                 },
-                ..self.primary_of(tint)
-            },
+                plate,
+                TEXT_CONTRAST,
+            ),
         }
     }
 
@@ -635,29 +685,37 @@ impl Theme {
     /// theme's own polarity: lighter than the base on a dark theme, darker on a
     /// light one, and less transparent either way.
     pub fn primary_hover_of(&self, tint: Hsla) -> Hsla {
-        Hsla {
-            a: 0.7,
-            l: match self.background.l < 0.5 {
-                true => 0.82,
-                false => 0.34,
+        legible(
+            Hsla {
+                a: 0.7,
+                l: match self.background.l < 0.5 {
+                    true => 0.82,
+                    false => 0.34,
+                },
+                ..self.primary_of(tint)
             },
-            ..self.primary_of(tint)
-        }
+            self.background,
+            SHAPE_CONTRAST,
+        )
     }
 
     /// The accent this theme carries once `tint` has washed through it, which
     /// is what `tinted` stores in `selection`. Exposed so a caller can resolve
     /// a cover hue the theme's own fade has not arrived at yet.
     pub fn accent(&self, tint: Hsla) -> Hsla {
-        Hsla {
-            h: tint.h,
-            s: tint.s.clamp(MIN_ACCENT_SATURATION, MAX_ACCENT_SATURATION),
-            l: match self.background.l < 0.5 {
-                true => 0.44,
-                false => 0.5,
+        legible(
+            Hsla {
+                h: tint.h,
+                s: tint.s.clamp(MIN_ACCENT_SATURATION, MAX_ACCENT_SATURATION),
+                l: match self.background.l < 0.5 {
+                    true => 0.44,
+                    false => 0.5,
+                },
+                a: 1.,
             },
-            a: 1.,
-        }
+            self.background,
+            TEXT_CONTRAST,
+        )
     }
 
     pub fn mixed(&self, other: &Self, delta: f32) -> Self {
@@ -859,6 +917,88 @@ impl Theme {
     }
 }
 
+/// The contrast ratio between a colour and the surface behind it, from 1 (the same) to 21 (black
+/// on white). A translucent colour is composited onto the surface first, since its alpha is part
+/// of what decides whether it can be read at all.
+pub fn contrast(ink: Hsla, behind: Hsla) -> f32 {
+    let shown = luminance(over(ink, behind));
+    let surface = luminance(behind);
+    let (bright, dim) = match shown > surface {
+        true => (shown, surface),
+        false => (surface, shown),
+    };
+
+    (bright + 0.05) / (dim + 0.05)
+}
+
+/// `ink` moved in lightness — hue and saturation untouched — until it reads at `goal` against
+/// `behind`. A colour that already clears the goal is returned unchanged, and one that does not
+/// takes the nearest lightness that does, so an accent stays as close to the hue the artwork
+/// named as the floor allows. Alpha is respected, so a translucent fill is judged as drawn.
+pub fn legible(ink: Hsla, behind: Hsla, goal: f32) -> Hsla {
+    if contrast(ink, behind) >= goal {
+        return ink;
+    }
+
+    // Lightness is monotonic in luminance, so each direction can be searched for the lightness
+    // closest to the one asked for that still clears the goal.
+    let reach = |to: f32| {
+        let end = Hsla { l: to, ..ink };
+        if contrast(end, behind) < goal {
+            return None;
+        }
+
+        let (mut clears, mut fails) = (to, ink.l);
+        for _ in 0..10 {
+            let middle = (clears + fails) / 2.;
+            match contrast(Hsla { l: middle, ..ink }, behind) >= goal {
+                true => clears = middle,
+                false => fails = middle,
+            }
+        }
+        Some(Hsla { l: clears, ..ink })
+    };
+
+    let (down, up) = (reach(0.), reach(1.));
+    match (down, up) {
+        (Some(down), Some(up)) => match (down.l - ink.l).abs() <= (up.l - ink.l).abs() {
+            true => down,
+            false => up,
+        },
+        (Some(down), None) => down,
+        (None, Some(up)) => up,
+        // Neither end of the surface clears the goal: keep the hue and go as far as it can.
+        (None, None) => {
+            let (black, white) = (Hsla { l: 0., ..ink }, Hsla { l: 1., ..ink });
+
+            match contrast(white, behind) > contrast(black, behind) {
+                true => white,
+                false => black,
+            }
+        }
+    }
+}
+
+/// `ink` stepped `amount` of the way toward `behind` — the way a past verse or an inactive row
+/// recedes — but never dropping under `goal`. Hierarchy survives; legibility stops depending on
+/// which hue the artwork happened to name.
+pub fn faded(ink: Hsla, behind: Hsla, amount: f32, goal: f32) -> Hsla {
+    let step = amount.clamp(0., 1.);
+    let (ink_rgb, behind_rgb) = (channels(ink), channels(behind));
+    let channel = |ink: f32, behind: f32| ink + (behind - ink) * step;
+    let dimmed = Hsla {
+        a: ink.a,
+        ..Hsla::from(Rgba {
+            r: channel(ink_rgb.0, behind_rgb.0),
+            g: channel(ink_rgb.1, behind_rgb.1),
+            b: channel(ink_rgb.2, behind_rgb.2),
+            a: 1.,
+        })
+    };
+
+    legible(dimmed, behind, goal)
+}
+
 fn resolve(look: Look, cx: &App) -> Look {
     Look {
         kind: look.kind.resolved(cx),
@@ -899,6 +1039,51 @@ fn wash(base: Hsla, tint: Hsla, strength: f32) -> Hsla {
         l: base.l,
         a: base.a,
     }
+}
+
+/// The colour `ink` shows when laid over `behind`, with its alpha taken out.
+fn over(ink: Hsla, behind: Hsla) -> Hsla {
+    let alpha = ink.a.clamp(0., 1.);
+    let (ink, behind) = (channels(ink), channels(behind));
+    let channel = |ink: f32, behind: f32| ink * alpha + behind * (1. - alpha);
+
+    Hsla::from(Rgba {
+        r: channel(ink.0, behind.0),
+        g: channel(ink.1, behind.1),
+        b: channel(ink.2, behind.2),
+        a: 1.,
+    })
+}
+
+/// The sRGB channels of a colour, before any alpha is applied.
+fn channels(color: Hsla) -> (f32, f32, f32) {
+    let chroma = (1. - (2. * color.l - 1.).abs()) * color.s;
+    let turn = color.h * 6.;
+    let second = chroma * (1. - (turn % 2. - 1.).abs());
+    let (red, green, blue) = match turn as u32 % 6 {
+        0 => (chroma, second, 0.),
+        1 => (second, chroma, 0.),
+        2 => (0., chroma, second),
+        3 => (0., second, chroma),
+        4 => (second, 0., chroma),
+        _ => (chroma, 0., second),
+    };
+    let floor = color.l - chroma / 2.;
+
+    (red + floor, green + floor, blue + floor)
+}
+
+/// How bright a colour actually reads. Green carries most of the eye's luminance and blue the
+/// least, which is why two hues the same `Hsla::l` apart can sit nowhere near each other in
+/// luminance — the whole reason a lightness cannot stand in for a contrast ratio.
+fn luminance(color: Hsla) -> f32 {
+    let (red, green, blue) = channels(color);
+    let linear = |channel: f32| match channel <= 0.04045 {
+        true => channel / 12.92,
+        false => ((channel + 0.055) / 1.055).powf(2.4),
+    };
+
+    0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
 }
 
 fn parse_color(value: &str) -> Option<Hsla> {
@@ -1004,5 +1189,75 @@ mod tests {
 
         assert_eq!(theme.background, rgb(0x101010).into());
         assert_eq!(theme.tint, Some(TINT));
+    }
+
+    #[test]
+    fn every_cover_hue_stays_readable() {
+        // The accent keeps the cover's hue, so the ratio it lands at is the hue's own business.
+        // A sweep is what proves the lightness solve holds for all of them and not just the one
+        // that happens to be playing.
+        for step in 0..24 {
+            let hue = step as f32 / 24.;
+            let tint = Hsla {
+                h: hue,
+                s: 0.8,
+                l: 0.5,
+                a: 1.,
+            };
+
+            for theme in [Theme::dark().tinted(tint), Theme::light().tinted(tint)] {
+                let surface = theme.background;
+                assert!(
+                    contrast(theme.primary, surface) >= TEXT_CONTRAST,
+                    "hue {hue} on {:?}",
+                    theme.background
+                );
+                assert!(
+                    contrast(theme.primary_foreground, theme.primary) >= TEXT_CONTRAST,
+                    "glyph for hue {hue}"
+                );
+                assert!(contrast(theme.selection, surface) >= TEXT_CONTRAST);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dimmed_line_keeps_its_floor() {
+        let tint = Hsla {
+            h: 0.3,
+            s: 0.85,
+            l: 0.5,
+            a: 1.,
+        };
+
+        for theme in [Theme::dark().tinted(tint), Theme::light().tinted(tint)] {
+            // A sidebar row is solved against the sidebar it sits in, not the page behind it:
+            // the two surfaces carry the same hue but not the same lightness.
+            let ink = legible(theme.primary, theme.sidebar, TEXT_CONTRAST);
+            let dimmed = faded(ink, theme.sidebar, 0.6, SHAPE_CONTRAST);
+
+            assert!(contrast(dimmed, theme.sidebar) >= SHAPE_CONTRAST);
+            assert!(contrast(ink, theme.sidebar) >= TEXT_CONTRAST);
+        }
+    }
+
+    #[test]
+    fn a_bright_hue_is_pushed_darker_than_a_dim_one() {
+        // Green reads far brighter than blue at the same lightness, so a light theme has to
+        // darken it further to reach the same ratio.
+        let green = Theme::light().tinted(Hsla {
+            h: 0.3,
+            s: 0.85,
+            l: 0.5,
+            a: 1.,
+        });
+        let navy = Theme::light().tinted(Hsla {
+            h: 0.6,
+            s: 0.85,
+            l: 0.5,
+            a: 1.,
+        });
+
+        assert!(green.primary.l < navy.primary.l);
     }
 }

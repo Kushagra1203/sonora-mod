@@ -9,7 +9,7 @@ use gpui::prelude::*;
 use gpui::accesskit::{Role, Toggled};
 use gpui::{
     Animation, AnimationExt as _, App, Bounds, Context, Div, DragMoveEvent, Entity, FontWeight,
-    MouseDownEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
+    Hsla, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
     SharedString, Size, SpringConfig, SpringState, Task, UniformListScrollHandle, Window, canvas,
     div, ease_in_out, px, relative, size, svg, uniform_list,
 };
@@ -23,9 +23,9 @@ use state::{
 };
 use ui::{
     ActiveTheme as _, Avatar, Button, Card, DraggedPin, Edge, Initials, Motion, Motioned as _,
-    PREFETCH_REACH, Pin, Pinnable as _, Popup, Scrollbar, Scroller, Spot, Springs, Tails as _,
-    Text, Vacancy, drop_gap, drop_marker, ease_out_cubic, ease_out_expo, eyebrow, faint, mix,
-    prefetch, snapped, vacant,
+    PREFETCH_REACH, Pin, Pinnable as _, Popup, SHAPE_CONTRAST, Scrollbar, Scroller, Spot, Springs,
+    TEXT_CONTRAST, Tails as _, Text, Vacancy, drop_gap, drop_marker, ease_out_cubic, ease_out_expo,
+    eyebrow, faded, faint, legible, mix, prefetch, snapped, vacant,
 };
 use unicode_bidi::{BidiClass, Direction};
 
@@ -683,9 +683,9 @@ impl Aside {
         let press_uid = uid.clone();
         let current = position == QueuePosition::Current;
         let title = match position {
-            QueuePosition::Past(_) => theme.primary.opacity(PAST),
-            QueuePosition::Current => theme.primary,
-            QueuePosition::Upcoming(_) => theme.primary.opacity(AHEAD),
+            QueuePosition::Past(_) => dimmed(&theme, 1. - PAST),
+            QueuePosition::Current => legible(theme.primary, theme.background, TEXT_CONTRAST),
+            QueuePosition::Upcoming(_) => dimmed(&theme, 1. - AHEAD),
         };
         let pin = track.pin();
         let menu_track = track.clone();
@@ -726,7 +726,7 @@ impl Aside {
                         SharedString::from(format!("queue-track-artist-{key}")),
                         track.artist_refs.clone(),
                         track.artists.clone(),
-                        theme.primary.opacity(PAST),
+                        dimmed(&theme, 1. - PAST),
                     )
                     .text_size(theme.text(Text::Small))
                     .truncate(),
@@ -1343,8 +1343,8 @@ impl Aside {
                     let shade = |singing: bool| match (singing, line_has_ended) {
                         (true, _) if worded => theme.primary,
                         (true, _) => theme.primary,
-                        (false, true) => theme.primary.opacity(PAST),
-                        (false, false) => theme.primary.opacity(AHEAD),
+                        (false, true) => dimmed(&theme, 1. - PAST),
+                        (false, false) => dimmed(&theme, 1. - AHEAD),
                     };
                     let tint = shade(Some(index) == active_line);
 
@@ -2201,8 +2201,8 @@ pub(crate) fn verse(
     let tint = match (look.active, ended) {
         (true, _) if worded => theme.primary,
         (true, _) => theme.primary,
-        (false, true) => theme.primary.opacity(PAST),
-        (false, false) => theme.primary.opacity(AHEAD),
+        (false, true) => dimmed(&theme, 1. - PAST),
+        (false, false) => dimmed(&theme, 1. - AHEAD),
     };
     let mirrored = right_to_left(&line.text);
     let sung = Sung {
@@ -2683,8 +2683,8 @@ fn secondary_lyrics_lane(
         match (active, passed, karaoke) {
             (_, _, true) => theme.primary,
             (true, _, false) => theme.primary,
-            (false, true, false) => theme.primary.opacity(PAST),
-            (false, false, false) => theme.primary.opacity(AHEAD),
+            (false, true, false) => dimmed(theme, 1. - PAST),
+            (false, false, false) => dimmed(theme, 1. - AHEAD),
         }
     };
     // a lane only shows under the line being sung
@@ -2863,14 +2863,14 @@ fn translated_lane(
             sung,
         )
         .text_size(size)
-        .text_color(theme.primary.opacity(AHEAD)),
+        .text_color(dimmed(theme, 1. - AHEAD)),
     )
 }
 
 fn romanized_lyrics_lane(text: String, size: Pixels, theme: &ui::Theme) -> Div {
     div()
         .text_size(size)
-        .text_color(theme.primary.opacity(AHEAD))
+        .text_color(dimmed(theme, 1. - AHEAD))
         .child(SharedString::from(text))
 }
 
@@ -3699,6 +3699,18 @@ fn background_line_singing(
     !line_active && position >= line.start && line.sung_end().is_some_and(|end| position < end)
 }
 
+/// The accent stepped back for a verse or a row that is not the one in focus: the cover's hue,
+/// `fade` of the way toward the panel behind it, and never under the large-text ratio. The
+/// hierarchy of dimmed lyrics and queued songs survives without depending on the hue's brightness.
+fn dimmed(theme: &ui::Theme, fade: f32) -> Hsla {
+    faded(
+        legible(theme.primary, theme.background, TEXT_CONTRAST),
+        theme.background,
+        fade,
+        SHAPE_CONTRAST,
+    )
+}
+
 fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme) -> Div {
     let note_size = verse * 1.;
     div()
@@ -3709,8 +3721,12 @@ fn instrumental_row(progress: f32, past: bool, verse: Pixels, theme: &ui::Theme)
         .children((0..3).map(|index| {
             let note_progress = (progress * 3. - index as f32).clamp(0., 1.);
             let tint = match past {
-                true => theme.primary.opacity(PAST),
-                false => mix(theme.primary.opacity(AHEAD), theme.primary, note_progress),
+                true => dimmed(theme, 1. - PAST),
+                false => mix(
+                    dimmed(theme, 1. - AHEAD),
+                    legible(theme.primary, theme.background, TEXT_CONTRAST),
+                    note_progress,
+                ),
             };
             div()
                 .size(note_size)
