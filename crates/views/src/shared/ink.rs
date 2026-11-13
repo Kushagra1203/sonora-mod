@@ -11,7 +11,7 @@
 use gpui::{App, Hsla};
 use router::Destination;
 
-use crate::shared::{page_art, wash};
+use crate::shared::{haze, page_art, wash};
 
 /// The panel lightness at which black overtakes white as the more readable ink. Below it white
 /// is the better of the two, above it black, and at the crossover they are equally poor — so
@@ -45,25 +45,28 @@ pub(crate) struct Panel {
 /// The ink of a panel whose own colour is `fill`. On a page without artwork, or while the art
 /// has not been sampled yet, the theme's own background is what the panel shows, so its
 /// foreground stands. The palette is resolved here rather than published ahead, so the ink
-/// changes on the same frame the wash paints the artwork on, not a frame behind it.
+/// changes on the same frame the field paints the artwork on, not a frame behind it.
 pub(crate) fn panel(fill: Hsla, theme: &ui::Theme, cx: &App) -> Panel {
     let current = router::trail(cx).read(cx).current();
     let frosted = matches!(
         current,
-        Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
+        Destination::Home
+            | Destination::Album(_)
+            | Destination::Playlist(_)
+            | Destination::Artist(_)
     );
     let art = page_art::cover(cx)
         .and_then(|cover| ui::cover_palette(&cover, cx))
-        .map(|palette| palette.corner)
         .filter(|_| frosted);
     let lightness = match art {
-        Some(art) => {
-            let shade = match matches!(current, Destination::Artist(_)) {
-                true => wash::ARTIST_SHADE,
-                false => wash::SHADE,
+        Some(palette) => {
+            let shade = match current {
+                Destination::Artist(_) => wash::ARTIST_SHADE,
+                Destination::Home => haze::shade(palette.lightness, theme.background.l),
+                _ => wash::SHADE,
             };
             // What the panel shows: its own fill at `SIDEBAR_FROST_TINT` over the page's field.
-            let field = art * (1. - shade) + theme.background.l * shade;
+            let field = palette.corner * (1. - shade) + theme.background.l * shade;
             fill.l * wash::SIDEBAR_FROST_TINT + field * (1. - wash::SIDEBAR_FROST_TINT)
         }
         None => theme.background.l,

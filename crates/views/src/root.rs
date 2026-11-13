@@ -27,6 +27,8 @@ use crate::screens::detail::DetailEvent;
 use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
+use crate::shared::haze::Haze;
+use crate::shared::page_controls::PageEvent;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
 use crate::shared::wash::{ARTIST_SHADE, PageWash};
 use crate::shells::Shell;
@@ -100,6 +102,9 @@ pub struct Root {
     login: Entity<LoginView>,
     title_bar: Entity<TitleBar>,
     ambient: Entity<Ambient>,
+    /// The home page's field: the poster of the song that is playing, blurred and drifting
+    /// behind the page.
+    haze: Entity<Haze>,
     /// The question before a Jam link is joined, drawn over whichever shell is up so a link
     /// opened in fullscreen is answered there.
     jam_invite: Entity<JamInvite>,
@@ -210,6 +215,19 @@ impl Root {
         let io = Io::global(cx);
         let home_state = cx.new(|cx| Home::new(library.clone(), session.clone(), io.clone(), cx));
         let home = cx.new(|cx| HomeView::new(home_state, playback.clone(), cx));
+        // The page's own controls stand in for the title bar, so their two sidebar toggles
+        // land on the shell the bar would have told.
+        cx.subscribe(&home, |this, _, event, cx| match event {
+            PageEvent::ToggleSidebar => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar(cx)),
+            PageEvent::ToggleSidebarRight => this
+                .shells
+                .workspace
+                .update(cx, |workspace, cx| workspace.toggle_sidebar_right(cx)),
+        })
+        .detach();
         let history = Sonora::global(cx).history.clone();
         let history = cx.new(|cx| HistoryView::new(history, playback.clone(), window, cx));
 
@@ -251,6 +269,7 @@ impl Root {
         });
         let fullscreen = cx.new(|cx| FullscreenView::new(playback.clone(), queue.clone(), cx));
         let ambient = cx.new(Ambient::new);
+        let haze = cx.new(|cx| Haze::new(playback.clone(), cx));
 
         let title_bar = cx.new(TitleBar::new);
         cx.subscribe(&title_bar, |this, _, event, cx| match event {
@@ -363,6 +382,7 @@ impl Root {
             },
             adaptive,
             ambient,
+            haze,
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
             background: None,
@@ -642,16 +662,45 @@ impl Root {
         options
     }
 
-    /// Whether the current page runs to the window's top edge with no title bar: an album, a
-    /// playlist, or an artist page, whose own floating controls take the bar's place.
+    /// Whether the current page runs to the window's top edge with no title bar: the home
+    /// page, an album, a playlist, or an artist page, whose own floating controls take the
+    /// bar's place.
     fn fullbleed(&self, cx: &App) -> bool {
         match self.view {
             RootView::Workspace => matches!(
                 router::trail(cx).read(cx).current(),
-                Destination::Album(_) | Destination::Playlist(_) | Destination::Artist(_)
+                Destination::Home
+                    | Destination::Album(_)
+                    | Destination::Playlist(_)
+                    | Destination::Artist(_)
             ),
             RootView::Fullscreen => false,
         }
+    }
+
+    /// Whether the home page is the one on show, whose own field stands behind it.
+    fn home_page(&self, cx: &App) -> bool {
+        matches!(self.view, RootView::Workspace)
+            && matches!(router::trail(cx).read(cx).current(), Destination::Home)
+    }
+
+    /// The cover the page field is drawn from: the picture the page on show is built on, or
+    /// the song that is playing behind the home page. Read from the page itself every frame
+    /// rather than kept from the last change that spoke, so the field follows the page in and
+    /// out of a nav, back and forward included.
+    fn page_cover(&self, cx: &App) -> Option<String> {
+        match self.home_page(cx) {
+            true => self.playing_cover(cx),
+            false => self.wash_cover(cx),
+        }
+    }
+
+    /// The cover of the song the player shows, which the home page's field is drawn from.
+    fn playing_cover(&self, cx: &App) -> Option<String> {
+        self.playback
+            .read(cx)
+            .shown_track(cx)
+            .and_then(|track| track.cover)
     }
 
     /// The cover the page wash is drawn from: the picture the page on show is built on. Read
@@ -1140,8 +1189,8 @@ impl Render for Root {
         window.set_rem_size(theme.font_size);
         // The panel beside the page sits over that page's own field, so it needs to know which
         // artwork is showing. Only the cover travels here: the panel resolves its palette when
-        // it draws, which is the same frame the wash paints the artwork in.
-        let page = self.wash_cover(cx);
+        // it draws, which is the same frame the field paints the artwork in.
+        let page = self.page_cover(cx);
         crate::shared::page_art::publish(page.map(Into::into), cx);
         let appearance = ui::backdrop(theme.blur_window, theme.transparent);
         if self.background != Some(appearance) {
@@ -1219,7 +1268,11 @@ impl Render for Root {
         // the page colour under it would only stack a second alpha beneath that and leave a
         // see-through fullscreen reading nearly solid.
         let ambient = matches!(self.view, RootView::Fullscreen) && ambient::shown(cx);
-        // An album or playlist drops the title bar and draws its own controls over its artwork.
+        // The home page's field covers the window whole the same way: the poster behind it
+        // carries the window's own opacity and stands in for the page colour.
+        let haze = self.home_page(cx);
+        // The home page, an album or a playlist drops the title bar and draws its own controls
+        // over its artwork.
         let fullbleed = self.fullbleed(cx);
         // The artist page's own artwork reaches the fold, so its wash keeps its colours rather
         // than darkening toward the bottom: the frosted sidebars then show the artwork itself.
@@ -1274,7 +1327,7 @@ impl Render for Root {
             .when_some(radius, |this, radius| {
                 this.rounded(radius).overflow_hidden()
             })
-            .when(!ambient, |this| this.bg(theme.background))
+            .when(!ambient && !haze, |this| this.bg(theme.background))
             .text_color(theme.foreground)
             .capture_any_mouse_down(|_, window, cx| {
                 if ui::cancel_middle_scroll(cx) {
@@ -1334,6 +1387,9 @@ impl Render for Root {
             )
             // The ambient background sits behind everything, title bar included.
             .when(ambient, |this| this.child(self.ambient.clone()))
+            // The home page's field sits behind everything too: the poster of the song that is
+            // playing, blurred and drifting off centre.
+            .when(haze, |this| this.child(self.haze.clone()))
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.
             .when_some(self.wash_cover(cx), |this, cover| {

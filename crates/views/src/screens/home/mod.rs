@@ -2,11 +2,12 @@ use std::rc::Rc;
 
 use crate::chrome::Chrome;
 use crate::shared::menus::{Item, ItemMenu};
+use crate::shared::page_controls::{self, PageEvent};
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, MouseDownEvent, Pixels, Point, Render, ScrollHandle,
-    WeakEntity, Window, div, px,
+    AnyElement, App, Context, Entity, EventEmitter, MouseDownEvent, Pixels, Point, Render,
+    ScrollHandle, WeakEntity, Window, div, px,
 };
 use i18n::t;
 use music::GenreItem;
@@ -32,6 +33,8 @@ pub(crate) struct HomeView {
     menus: ItemMenu,
     context_menu: Option<(Item, Point<Pixels>)>,
 }
+
+impl EventEmitter<PageEvent> for HomeView {}
 
 impl HomeView {
     pub(crate) fn new(
@@ -144,54 +147,85 @@ impl HomeView {
 
 impl Render for HomeView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(failure) = self.failure(cx) {
-            return div()
+        let theme = *cx.theme();
+        // The page runs to the top of the window, so the title bar's buttons float over it
+        // instead, and ask the shell for the two sidebars.
+        let me = cx.entity();
+        let controls = page_controls::floating(
+            "home",
+            move |event, _, cx| {
+                me.update(cx, |_, cx| cx.emit(event));
+            },
+            cx,
+        );
+
+        let page = match self.failure(cx) {
+            Some(failure) => div()
                 .id("home-failure")
                 .role(Role::Alert)
                 .size_full()
                 .child(failure)
-                .into_any_element();
-        }
+                .into_any_element(),
+            None => {
+                let available = cells::content_width(window, theme.metrics.inset * 2., cx);
+                if (available - self.width).abs() >= STEADY {
+                    self.width = available;
+                }
+                let context_menu = self.context_menu.clone().map(|(item, position)| {
+                    let menu = item.menu(&self.menus, self.playback.clone(), false, cx);
+                    Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
+                        this.context_menu = None;
+                        cx.notify();
+                    }))
+                });
 
-        let theme = *cx.theme();
-        let available = cells::content_width(window, theme.metrics.inset * 2., cx);
-        if (available - self.width).abs() >= STEADY {
-            self.width = available;
-        }
-        let context_menu = self.context_menu.clone().map(|(item, position)| {
-            let menu = item.menu(&self.menus, self.playback.clone(), false, cx);
-            Popup::new(position, menu).on_close(cx.listener(|this, _, _, cx| {
-                this.context_menu = None;
-                cx.notify();
-            }))
-        });
+                let view = cx.entity();
+                let picks = Lazy::new("home-quick-picks", move |_, cx| {
+                    view.update(cx, |this, cx| this.quick_picks(cx))
+                });
+                let sections = self.home.read(cx).sections();
+                let feeding = self.home.read(cx).is_feeding();
+                let width = self.width;
+                let shelves =
+                    self.shelves
+                        .update(cx, |shelves, cx| match sections.is_empty() && feeding {
+                            true => shelves.pending(width, cx),
+                            false => vec![shelves.render(sections, Mode::Grid, width, window, cx)],
+                        });
 
-        let view = cx.entity();
-        let picks = Lazy::new("home-quick-picks", move |_, cx| {
-            view.update(cx, |this, cx| this.quick_picks(cx))
-        });
-        let sections = self.home.read(cx).sections();
-        let feeding = self.home.read(cx).is_feeding();
-        let width = self.width;
-        let shelves = self
-            .shelves
-            .update(cx, |shelves, cx| match sections.is_empty() && feeding {
-                true => shelves.pending(width, cx),
-                false => vec![shelves.render(sections, Mode::Grid, width, window, cx)],
-            });
+                Scroller::new("home-page", &self.scrollbar)
+                    .bottom_inset(crate::chrome::Chrome::bottom(cx))
+                    // The content starts below the band the floating controls stand in and
+                    // melts away under them as it scrolls up.
+                    .fade_top(theme.metrics.inset + page_controls::HEIGHT + theme.metrics.pad)
+                    .p(theme.metrics.inset)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_8()
+                            .child(picks)
+                            .children(shelves),
+                    )
+                    .when_some(context_menu, |this, menu| this.child(menu))
+                    .into_any_element()
+            }
+        };
 
-        Scroller::new("home-page", &self.scrollbar)
-            .bottom_inset(crate::chrome::Chrome::bottom(cx))
-            .p(theme.metrics.inset)
+        div()
+            .relative()
+            .size_full()
+            .child(page)
             .child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_8()
-                    .child(picks)
-                    .children(shelves),
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .px(theme.metrics.inset)
+                    .pt(theme.metrics.inset)
+                    .child(controls),
             )
-            .when_some(context_menu, |this, menu| this.child(menu))
             .into_any_element()
     }
 }
