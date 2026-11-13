@@ -27,7 +27,6 @@ use crate::screens::detail::DetailEvent;
 use crate::screens::search::SearchView;
 use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
-use crate::shared::haze::Haze;
 use crate::shared::page_controls::PageEvent;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
 use crate::shared::wash::{ARTIST_SHADE, PageWash};
@@ -102,9 +101,8 @@ pub struct Root {
     login: Entity<LoginView>,
     title_bar: Entity<TitleBar>,
     ambient: Entity<Ambient>,
-    /// The home page's field: the poster of the song that is playing, blurred and drifting
-    /// behind the page.
-    haze: Entity<Haze>,
+    /// The home page's field: the playing song's colours washed over the page.
+    field: Entity<Ambient>,
     /// The question before a Jam link is joined, drawn over whichever shell is up so a link
     /// opened in fullscreen is answered there.
     jam_invite: Entity<JamInvite>,
@@ -269,7 +267,7 @@ impl Root {
         });
         let fullscreen = cx.new(|cx| FullscreenView::new(playback.clone(), queue.clone(), cx));
         let ambient = cx.new(Ambient::new);
-        let haze = cx.new(|cx| Haze::new(playback.clone(), cx));
+        let field = cx.new(|cx| Ambient::home(playback.clone(), cx));
 
         let title_bar = cx.new(TitleBar::new);
         cx.subscribe(&title_bar, |this, _, event, cx| match event {
@@ -382,7 +380,7 @@ impl Root {
             },
             adaptive,
             ambient,
-            haze,
+            field,
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
             background: None,
@@ -1268,9 +1266,9 @@ impl Render for Root {
         // the page colour under it would only stack a second alpha beneath that and leave a
         // see-through fullscreen reading nearly solid.
         let ambient = matches!(self.view, RootView::Fullscreen) && ambient::shown(cx);
-        // The home page's field covers the window whole the same way: the poster behind it
+        // The home page's field covers the window whole the same way: the wash behind it
         // carries the window's own opacity and stands in for the page colour.
-        let haze = self.home_page(cx);
+        let field = self.home_page(cx);
         // The home page, an album or a playlist drops the title bar and draws its own controls
         // over its artwork.
         let fullbleed = self.fullbleed(cx);
@@ -1327,7 +1325,7 @@ impl Render for Root {
             .when_some(radius, |this, radius| {
                 this.rounded(radius).overflow_hidden()
             })
-            .when(!ambient && !haze, |this| this.bg(theme.background))
+            .when(!ambient && !field, |this| this.bg(theme.background))
             .text_color(theme.foreground)
             .capture_any_mouse_down(|_, window, cx| {
                 if ui::cancel_middle_scroll(cx) {
@@ -1387,9 +1385,9 @@ impl Render for Root {
             )
             // The ambient background sits behind everything, title bar included.
             .when(ambient, |this| this.child(self.ambient.clone()))
-            // The home page's field sits behind everything too: the poster of the song that is
-            // playing, blurred and drifting off centre.
-            .when(haze, |this| this.child(self.haze.clone()))
+            // The home page's field sits behind everything too: the playing song's colours,
+            // washed over the page and drifting.
+            .when(field, |this| this.child(self.field.clone()))
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.
             .when_some(self.wash_cover(cx), |this, cover| {

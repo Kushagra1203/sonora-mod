@@ -44,8 +44,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The home page drops its top bar: the sidebar, history and queue controls float over the page
   instead, and both sidebars frost the field behind them as they do on an album or artist page.
-- The home page carries the playing song's poster behind it, blurred and drifting off centre.
-  It is dimmed onto the page's own brightness, so the page's text stays readable over it.
+- The home page carries the playing song's colours behind it, washed over the page and drifting
+  off centre. The page keeps its own brightness, so the wash is a haze behind it rather than a
+  light on it.
 - The top of the sidebar carries the Sonora mark and wordmark in place of the account row, and
   the mark is the way home. It stands taller than the bar it replaced, with no rule under it.
 - Both sidebars pick their ink from the brightness the panel actually shows over the page behind

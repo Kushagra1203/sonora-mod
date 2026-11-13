@@ -23,10 +23,10 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, BoxShadow, Context, Hsla, Pixels, Render, Rgba, Task, Window, canvas,
-    div, point, px,
+    AnyElement, App, Bounds, BoxShadow, Context, Entity, Hsla, Pixels, Render, Rgba, Task, Window,
+    canvas, div, point, px,
 };
-use state::Sonora;
+use state::{Playback, Sonora};
 use ui::{ActiveTheme as _, CoverPalette, Theme};
 
 use crate::shared::adaptive;
@@ -50,6 +50,11 @@ const DOWNSCALE: f32 = 4.;
 /// an opaque stack multiplying every layer by what it lets through is the same picture, and a
 /// black sheet this strong was most of what a see-through window's alpha went on.
 const SHADE: f32 = 0.55;
+/// How much of the wash the home page's field lets through. The fullscreen stage keeps half
+/// of its colour and stands on a darkened stage of its own; the home page keeps a third of
+/// it over the page's own colour, so the page still reads as the page and the wash is a haze
+/// behind it rather than a light on it.
+pub(crate) const HOME_LIGHT: f32 = 0.34;
 
 /// One blob: base centre (fractions of the layer), diameter (fraction of the
 /// layer's smaller side), drift period in seconds, phase, drift amplitude
@@ -90,18 +95,36 @@ const PEAK: f32 = 0.72;
 /// One entry of `SPECS`.
 type Spec = (f32, f32, f32, f32, f32, f32, f32);
 
-/// The flowing colour field. One sits behind the whole window in fullscreen, and a preview can
-/// hold another of its own made with `Ambient::framed`.
+/// What stands under the field, and how much of the field's own colour reaches the page.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// The fullscreen stage: the page's colour darkened under the field, so the blobs read
+    /// against it, and the blobs carry half their own colour.
+    Fullscreen,
+    /// The home page: the page's own colour under the field, and the blobs carry a third
+    /// of theirs, so the page keeps its colour and the wash is a haze over it.
+    Home,
+}
+
+/// The flowing colour field. One sits behind the whole window in fullscreen, one behind the
+/// home page, and a preview can hold another of its own made with `Ambient::framed`.
 pub(crate) struct Ambient {
     started: Instant,
     stepped: Instant,
     bounds: Rc<Cell<Bounds<Pixels>>>,
     painted: Option<[Hsla; BLOBS]>,
-    /// The palette of the cover a framed field follows, `None` for the one behind the window.
-    framed: Option<Sampled>,
+    /// The palette the field follows when it follows one of its own: the framed preview's
+    /// cover, or the home page's playing song.
+    followed: Option<Sampled>,
+    /// Whether the field is painted flat inside a frame rather than as a window-wide layer.
+    framed: bool,
+    /// What stands under the field.
+    stage: Stage,
+    /// The player the home page's field follows, `None` for the others.
+    playback: Option<Entity<Playback>>,
 }
 
-/// The palette of the cover a framed field follows, sampled by the field itself.
+/// The palette of the cover a field follows, sampled by the field itself.
 #[derive(Default)]
 struct Sampled {
     cover: Option<String>,
@@ -122,7 +145,25 @@ impl Ambient {
             stepped: now,
             bounds: Rc::new(Cell::new(Bounds::default())),
             painted: None,
-            framed: None,
+            followed: None,
+            framed: false,
+            stage: Stage::Fullscreen,
+            playback: None,
+        }
+    }
+
+    /// The field behind the home page: the playing song's colours over the page's own colour,
+    /// dimmer than the fullscreen stage. It follows the cover whatever the adaptive theme
+    /// setting says, the way the fullscreen field does.
+    pub(crate) fn home(playback: Entity<Playback>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&playback, |this, _, cx| this.follow_track(cx))
+            .detach();
+
+        Self {
+            followed: Some(Sampled::default()),
+            stage: Stage::Home,
+            playback: Some(playback),
+            ..Self::new(cx)
         }
     }
 
@@ -131,15 +172,29 @@ impl Ambient {
     /// blur layer, so it fills its bounds edge to edge and the frame has to round it.
     pub(crate) fn framed(cx: &mut Context<Self>) -> Self {
         Self {
-            framed: Some(Sampled::default()),
+            followed: Some(Sampled::default()),
+            framed: true,
             ..Self::new(cx)
         }
     }
 
-    /// Samples `cover` for a framed field once it differs from the one sampled last. A field
-    /// behind the window takes its colours from the theme and ignores this.
+    /// Follows the song the player shows: its cover is what colours the home page's field.
+    fn follow_track(&mut self, cx: &mut Context<Self>) {
+        let Some(playback) = self.playback.clone() else {
+            return;
+        };
+        let cover = playback
+            .read(cx)
+            .shown_track(cx)
+            .and_then(|track| track.cover);
+        self.follow(cover, cx);
+    }
+
+    /// Samples `cover` for a field that follows one of its own once it differs from the one
+    /// sampled last. The field behind the fullscreen window takes its colours from the theme
+    /// and ignores this.
     pub(crate) fn follow(&mut self, cover: Option<String>, cx: &mut Context<Self>) {
-        let Some(sampled) = self.framed.as_mut() else {
+        let Some(sampled) = self.followed.as_mut() else {
             return;
         };
         if sampled.cover == cover {
@@ -156,7 +211,7 @@ impl Ambient {
         sampled._task = Some(cx.spawn(async move |this, cx| {
             let palette = palette.await;
             this.update(cx, |this, cx| {
-                if let Some(sampled) = this.framed.as_mut() {
+                if let Some(sampled) = this.followed.as_mut() {
                     sampled.palette = palette;
                     cx.notify();
                 }
@@ -168,9 +223,12 @@ impl Ambient {
     /// The theme this field is painted from: the app's own behind the window, and in a frame
     /// the one fullscreen would wear for the sampled cover. A preview draws over it with the same.
     pub(crate) fn theme(&self, cx: &App) -> Theme {
-        match &self.framed {
+        match &self.followed {
             None => *cx.theme(),
-            Some(sampled) => adaptive::stage(sampled.palette, cx),
+            Some(sampled) => match self.stage {
+                Stage::Fullscreen => adaptive::stage(sampled.palette, cx),
+                Stage::Home => adaptive::stage_on(sampled.palette, cx),
+            },
         }
     }
 
@@ -206,9 +264,15 @@ impl Ambient {
             l: light,
             a: 1.,
         };
+        // A light page takes the wash as a tint of itself: the colour is pale and the blobs
+        // read as light rather than as shadows, which is what a page's own colour needs.
+        let light = theme.background.l >= 0.5;
         // A dark theme gets a dark stage; lift the floor a little so the
         // blobs stay apart from the base.
-        let floor = (0.13 + theme.background.l * 0.8).clamp(0.13, 0.30);
+        let floor = match light {
+            true => 0.92,
+            false => (0.13 + theme.background.l * 0.8).clamp(0.13, 0.30),
+        };
 
         let Some(tint) = theme.tint else {
             return [
@@ -220,6 +284,26 @@ impl Ambient {
             ];
         };
         let accent = theme.accent(tint);
+        if light {
+            // The wash over a light page is a tint of the cover's hue: pale, and barely there.
+            let pale = |hue: f32, value: f32| Hsla {
+                h: hue.rem_euclid(1.),
+                s: (accent.s * 0.45).clamp(0.10, 0.30),
+                l: value,
+                a: 1.,
+            };
+            let second = theme
+                .tint_secondary
+                .map_or(accent.h + 0.5, |second| second.h);
+
+            return [
+                pale(accent.h, 0.90),
+                pale(accent.h, 0.95),
+                pale(second, 0.86),
+                pale(accent.h + 0.03, 0.82),
+                pale(second, 0.92),
+            ];
+        }
         let base = Hsla {
             h: accent.h,
             s: (accent.s * 0.9 + 0.04).clamp(0.45, 0.75),
@@ -287,7 +371,7 @@ impl Render for Ambient {
             true => theme.background.a,
             false => 1.,
         };
-        if self.framed.is_some() {
+        if self.framed {
             return self.flat(elapsed, colors, clarity, theme, window);
         }
         // Geometry resolves against the layer's own pixel bounds, measured a
@@ -314,10 +398,7 @@ impl Render for Ambient {
                     .absolute()
                     .inset_0()
                     .when_some(radius, |this, radius| this.rounded(radius))
-                    .bg(shaded(Hsla {
-                        a: 1.,
-                        ..theme.background
-                    })),
+                    .bg(self.base(&theme)),
             )
             // The blur spreads the blobs past any shape they could be cut to, so a rounded window
             // fades them out toward every edge instead. The fade sits on an unblurred layer the
@@ -342,6 +423,8 @@ impl Render for Ambient {
                             .blur(px(BLUR_FULL / window.scale_factor()))
                             .children(SPECS.iter().zip(colors).map(|(spec, color)| {
                                 let (x, y, grown) = drift(*spec, elapsed, wide, high);
+                                let blob = self.blob(color);
+                                let light = self.light();
                                 div()
                                     .absolute()
                                     .left(px(x - grown / 2.))
@@ -350,9 +433,10 @@ impl Render for Ambient {
                                     .children((0..DISCS).map(move |step| {
                                         let fraction = 1.
                                             - step as f32 / DISCS as f32 * (1. - 1. / DISCS as f32);
-                                        let opacity = DISC_FAINT
+                                        let opacity = (DISC_FAINT
                                             + step as f32 / (DISCS as f32 - 1.)
-                                                * (DISC_STRONG - DISC_FAINT);
+                                                * (DISC_STRONG - DISC_FAINT))
+                                            * light;
                                         let stepped = grown * fraction;
                                         div()
                                             .absolute()
@@ -360,7 +444,7 @@ impl Render for Ambient {
                                             .top(px((grown - stepped) / 2.))
                                             .size(px(stepped))
                                             .rounded_full()
-                                            .bg(shaded(color).opacity(opacity))
+                                            .bg(blob.opacity(opacity))
                                     }))
                             })),
                     ),
@@ -398,10 +482,7 @@ impl Ambient {
             .overflow_hidden()
             .opacity(clarity)
             .child(measure(&self.bounds))
-            .child(div().absolute().inset_0().bg(shaded(Hsla {
-                a: 1.,
-                ..theme.background
-            })))
+            .child(div().absolute().inset_0().bg(self.base(&theme)))
             .children(SPECS.iter().zip(colors).map(|(spec, color)| {
                 let (x, y, span) = drift(*spec, elapsed, wide, high);
                 let core = span * CORE;
@@ -415,7 +496,7 @@ impl Ambient {
                     .size(px(core))
                     .rounded_full()
                     .shadow(vec![BoxShadow {
-                        color: shaded(color).opacity(PEAK),
+                        color: self.blob(color).opacity(PEAK),
                         offset: point(px(away), px(0.)),
                         blur_radius: px(span * SOFT),
                         spread_radius: px(0.),
@@ -425,6 +506,51 @@ impl Ambient {
             .child(ui::grain(window))
             .into_any_element()
     }
+
+    /// The colour under the field: the fullscreen stage is the page's colour darkened, so the
+    /// blobs read against it; the home page keeps the page's own colour and lets the wash
+    /// settle over it.
+    fn base(&self, theme: &Theme) -> Hsla {
+        let page = Hsla {
+            a: 1.,
+            ..theme.background
+        };
+        match self.stage {
+            Stage::Fullscreen => shaded(page),
+            Stage::Home => page,
+        }
+    }
+
+    /// The colour a blob of the field is painted in: the fullscreen stage dims the colour
+    /// itself, so its blobs read against the darkened stage beneath them; the home page
+    /// paints the colour at a share of its strength over the page's own colour.
+    fn blob(&self, color: Hsla) -> Hsla {
+        match self.stage {
+            Stage::Fullscreen => shaded(color),
+            Stage::Home => color,
+        }
+    }
+
+    /// How much of a blob's colour reaches the page: all of it on the fullscreen stage, where
+    /// the colour itself carries the dimming, and a share of it on the home page.
+    fn light(&self) -> f32 {
+        match self.stage {
+            Stage::Fullscreen => 1.,
+            Stage::Home => HOME_LIGHT,
+        }
+    }
+}
+
+/// The lightness the home page's field carries over the page, for a panel beside it to read
+/// against: the page's own lightness with the wash's own mixed in at the share the wash
+/// lets through.
+pub(crate) fn field_lightness(theme: &Theme) -> f32 {
+    let wash = Ambient::colors(theme)
+        .iter()
+        .map(|color| color.l)
+        .fold(f32::MIN, f32::max);
+
+    wash * HOME_LIGHT + theme.background.l * (1. - HOME_LIGHT)
 }
 
 /// Whether the ambient background is on. Fullscreen reads it for the frosted

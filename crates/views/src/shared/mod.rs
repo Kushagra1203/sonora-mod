@@ -7,7 +7,6 @@ pub(crate) mod cells;
 pub(crate) mod confirm;
 pub(crate) mod device_code;
 pub(crate) mod equalizer;
-pub(crate) mod haze;
 pub(crate) mod hero;
 pub(crate) mod ink;
 pub(crate) mod local;

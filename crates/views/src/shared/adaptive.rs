@@ -242,6 +242,20 @@ pub(crate) fn stage(palette: CoverPalette, cx: &App) -> Theme {
     Theme::for_look(look, &stripped(settings.theme_overrides()))
 }
 
+/// The theme a field over the home page wears: the app's own kind with the cover's palette
+/// washed through it, so the wash is lit for the page it stands on rather than for the dark
+/// stage fullscreen stands on.
+pub(crate) fn stage_on(palette: CoverPalette, cx: &App) -> Theme {
+    let settings = Sonora::global(cx).settings.read(cx);
+    let look = Look {
+        kind: settings.look().kind.resolved(cx),
+        tint: palette.primary,
+        tint_secondary: palette.secondary,
+        ..settings.look()
+    };
+    Theme::for_look(look, &stripped(settings.theme_overrides()))
+}
+
 /// The overrides with every colour taken out, leaving the radius and font size.
 fn stripped(overrides: ThemeOverrides) -> ThemeOverrides {
     ThemeOverrides {
