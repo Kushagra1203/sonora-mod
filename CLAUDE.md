@@ -5,9 +5,9 @@ A native music streaming client, built with Rust and [GPUI](https://github.com/z
 
 ## Hard constraints
 
-- **This checkout must stay under 15 GB at all times.** Check `du -sh ~/sonora-mod` before and
-  after any build-heavy work. The comfortable range is 12–13 GB; nearer 10 GB is fine. Above
-  15 GB is a failure to fix immediately, not a note for later.
+- **This checkout must stay under 30 GB at all times.** Check `du -sh ~/sonora-mod` before and
+  after any build-heavy work. The comfortable range is 12–20 GB; nearer 10 GB is fine. Above
+  30 GB is a failure to fix immediately, not a note for later.
 - **Keep the build cache and the binary.** `target/debug/sonora`, `target/debug/deps` (minus
   split-debug output) and the current incremental generation per crate are what make rebuilds
   fast. Never `cargo clean` and never delete `vendor/gpui`; the fork is a path dependency.
