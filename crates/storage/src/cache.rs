@@ -94,6 +94,47 @@ impl Cache {
         Ok(())
     }
 
+    /// The values under `prefix`, each with the time it was written, so a caller can tell a
+    /// fresh answer from an old one.
+    pub fn read_prefix(&self, prefix: &str) -> Result<Vec<(String, String, i64)>> {
+        let connection = self.open()?;
+        let mut statement = connection
+            .prepare("SELECT key, value, saved_at FROM snapshots WHERE key LIKE ? || '%'")
+            .context("cannot prepare a cached read")?;
+        let rows = statement
+            .query_map(params![prefix], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .context("cannot read cached values")?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.context("cannot read a cached value")?);
+        }
+        Ok(out)
+    }
+
+    /// Stores several values in one transaction, so a page's answers are written together.
+    pub fn write_many(&self, entries: impl IntoIterator<Item = (String, String, i64)>) -> Result<()> {
+        let mut connection = self.open()?;
+        let transaction = connection
+            .transaction()
+            .context("cannot start writing values")?;
+        {
+            let mut insert = transaction
+                .prepare(
+                    "INSERT INTO snapshots (key, value, saved_at) VALUES (?, ?, ?)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, saved_at = excluded.saved_at",
+                )
+                .context("cannot prepare a write")?;
+            for (key, value, saved_at) in entries {
+                insert
+                    .execute(params![key, value, saved_at])
+                    .context("cannot write a cached value")?;
+            }
+        }
+        transaction.commit().context("cannot save cached values")
+    }
+
     /// The lyrics stored under `key` by format `version`, as the json they were written in.
     pub fn lyrics(&self, key: &str, version: u32) -> Result<Option<String>> {
         let connection = self.open()?;

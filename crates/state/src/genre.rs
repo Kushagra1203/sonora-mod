@@ -1,5 +1,6 @@
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use gpui::{Context, Entity, Task};
 use music::{Genre, GenreDetail, GenreSection, MusicApi};
@@ -11,6 +12,11 @@ use crate::{Io, Session, SessionEvent, join};
 const DRESSED: usize = 48;
 /// How many of those pictures are asked for at once.
 const AT_ONCE: usize = 4;
+/// Where the pictures are remembered, under the provider's own slug.
+const COVERS: &str = "genre-cover";
+/// How long a remembered picture is taken for. A picture changes rarely, and fetching every
+/// one of them again on every launch is what filled the heap.
+const FRESH: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 pub struct Genres {
     genres: Rc<Vec<Genre>>,
@@ -18,6 +24,8 @@ pub struct Genres {
     error: Option<String>,
     session: Entity<Session>,
     io: Io,
+    /// The pictures that were fetched before, so they are not fetched again.
+    cache: storage::Cache,
     task: Option<Task<()>>,
     /// Fetches the pictures of genres the provider listed without one.
     dressing: Option<Task<()>>,
@@ -45,6 +53,7 @@ impl Genres {
             error: None,
             session,
             io,
+            cache: storage::Cache::standard(),
             task: None,
             dressing: None,
         }
@@ -120,20 +129,45 @@ impl Genres {
     /// Fetches pictures for the first genres the provider listed without one, a few at a time,
     /// and puts each on its tile as it lands. A genre whose picture cannot be found keeps the
     /// placeholder.
+    ///
+    /// The pictures that were fetched before are put on their tiles first, so a launch that has
+    /// seen them before does not ask for them again, and what is fetched now is remembered for
+    /// the next one.
     fn dress(&mut self, client: Arc<dyn MusicApi>, cx: &mut Context<Self>) {
-        let bare: Vec<String> = self
-            .genres
-            .iter()
-            .filter(|genre| genre.cover.is_none())
-            .take(DRESSED)
-            .map(|genre| genre.id.clone())
-            .collect();
-        if bare.is_empty() {
+        let Some(provider) = self.session.read(cx).provider_slug() else {
             return;
-        }
-
+        };
+        let prefix = format!("{COVERS}/{provider}/");
+        let cache = self.cache.clone();
         let io = self.io.clone();
         self.dressing = Some(cx.spawn(async move |this, cx| {
+            let read = cache.clone();
+            let read_prefix = prefix.clone();
+            let remembered = io
+                .spawn_blocking(move || read.read_prefix(&read_prefix))
+                .await
+                .ok()
+                .and_then(|read| read.ok())
+                .unwrap_or_default();
+            let bare = this.update(cx, |this, cx| {
+                for (key, cover, saved_at) in remembered {
+                    if !fresh(saved_at) {
+                        continue;
+                    }
+                    let Some(id) = key.strip_prefix(&prefix) else {
+                        continue;
+                    };
+                    this.adopt(id, Some(cover), cx);
+                }
+                this.bare()
+            });
+            let Ok(bare) = bare else {
+                return;
+            };
+            if bare.is_empty() {
+                return;
+            }
+
             for batch in bare.chunks(AT_ONCE) {
                 let asked = batch.iter().map(|id| {
                     let client = client.clone();
@@ -141,10 +175,19 @@ impl Genres {
                     join(io.spawn(async move { client.genre_cover(&id).await }))
                 });
                 let found = futures::future::join_all(asked).await;
+                let fetched: Vec<(String, String)> = batch
+                    .iter()
+                    .zip(found.iter())
+                    .filter_map(|(id, cover)| match cover {
+                        Ok(Some(cover)) => Some((id.clone(), cover.clone())),
+                        _ => None,
+                    })
+                    .collect();
                 let kept = this.update(cx, |this, cx| {
                     for (id, cover) in batch.iter().zip(found) {
                         match cover {
-                            Ok(cover) => this.adopt(id, cover, cx),
+                            Ok(Some(cover)) => this.adopt(id, Some(cover), cx),
+                            Ok(None) => {}
                             Err(error) => log::debug!("genres: no picture for {id}: {error:#}"),
                         }
                     }
@@ -152,9 +195,48 @@ impl Genres {
                 if kept.is_err() {
                     return;
                 }
+                if fetched.is_empty() {
+                    continue;
+                }
+                // What was fetched is remembered, so the next launch does not fetch it again.
+                let cache = cache.clone();
+                let prefix = prefix.clone();
+                let now = now();
+                drop(io.spawn_blocking(move || {
+                    let entries = fetched
+                        .into_iter()
+                        .map(|(id, cover)| (format!("{prefix}{id}"), cover, now));
+                    if let Err(error) = cache.write_many(entries) {
+                        log::warn!("genres: cannot remember the pictures: {error:#}");
+                    }
+                }));
             }
         }));
     }
+
+    /// The genres that have no picture yet, up to [`DRESSED`] of them.
+    fn bare(&self) -> Vec<String> {
+        self.genres
+            .iter()
+            .filter(|genre| genre.cover.is_none())
+            .take(DRESSED)
+            .map(|genre| genre.id.clone())
+            .collect()
+    }
+}
+
+/// Whether a remembered picture is still taken for.
+fn fresh(saved_at: i64) -> bool {
+    let now = now();
+    now.saturating_sub(saved_at) < FRESH.as_secs() as i64
+}
+
+/// The time a picture was fetched at, in seconds since the epoch.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 pub struct GenreDetails {
