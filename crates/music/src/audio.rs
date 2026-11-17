@@ -286,6 +286,66 @@ impl<I: Source> Source for Chained<I> {
     }
 }
 
+/// A player's queue behind the format the device runs at, which every packet queued in it is
+/// written at already.
+///
+/// rodio's queue starts on an empty source, one channel at 48 kHz, and reports that until a
+/// sound is appended. The mixer decides what conversion to build from the format it reads when
+/// the source is added, which is always before the first packet: it builds a resampler and a
+/// channel converter for it, and because the resampler cannot say how long its next span is, the
+/// mixer never looks at the format again. Every sample of every track then goes through a
+/// sample-rate conversion in the audio callback for the rest of the process. Saying what the
+/// stream runs at, and only that, keeps the mixer on its passthrough path.
+pub(crate) struct FixedFormat<I> {
+    input: I,
+    channels: ChannelCount,
+    rate: SampleRate,
+}
+
+impl<I> FixedFormat<I> {
+    pub(crate) fn new(input: I, rate: u32, channels: u16) -> Self {
+        Self {
+            input,
+            channels: ChannelCount::new(channels).unwrap_or(ChannelCount::MIN),
+            rate: SampleRate::new(rate).unwrap_or(SampleRate::MIN),
+        }
+    }
+}
+
+impl<I: Source> Iterator for FixedFormat<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.input.next()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.input.size_hint()
+    }
+}
+
+impl<I: Source> Source for FixedFormat<I> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.input.current_span_len()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.input.total_duration()
+    }
+
+    fn try_seek(&mut self, position: Duration) -> Result<(), SeekError> {
+        self.input.try_seek(position)
+    }
+}
+
 pub struct Trimmed<I> {
     input: I,
     head: u64,

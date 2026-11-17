@@ -681,7 +681,16 @@ impl Output {
         let (sink, source) = rodio::Player::new();
         let format = audio::PublishedFormat::default();
         let integer = matches!(device.info.format.sample, Sample::Integer(_));
-        device.add(chain.apply(source, format.clone(), integer));
+        // The player's queue is empty until the first packet arrives, and reports that as one
+        // channel at 48 kHz. The mixer would take that for the stream's format and convert
+        // every sample from it, so the queue is added behind the format the device runs at.
+        let rate = device.info.format.rate;
+        let channels = device.info.format.channels;
+        device.add(chain.apply(
+            audio::FixedFormat::new(source, rate, channels),
+            format.clone(),
+            integer,
+        ));
         Ok(Self {
             chain,
             sink: Arc::new(sink),
