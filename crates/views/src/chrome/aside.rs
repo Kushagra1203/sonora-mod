@@ -45,6 +45,9 @@ const FADE: f32 = 96.;
 const REST: f32 = FADE * 0.75;
 /// Blank rows after the last queued song, on top of the ones that clear the player bar.
 const TAIL_ROWS: usize = 1;
+/// How many rows past the edges of the queue list are laid out each frame, so their covers start
+/// loading ahead of a scroll without the whole neighbourhood being built again every frame.
+const PREFETCH_ROWS: usize = 2;
 const BLUR: f32 = 0.13;
 const BACKGROUND_SINGING_BLUR: Pixels = px(0.75);
 const VEIL: f32 = 0.3;
@@ -221,6 +224,10 @@ pub(crate) struct Aside {
     context_menu: Option<ContextMenuState>,
     track_menu: ItemMenu,
     drop_gap: Option<usize>,
+    /// Which row past the edges the queue list lays out next, so a frame pays for a couple of
+    /// them rather than every row on screen's worth again. It wraps once the far rows have had
+    /// their turn.
+    prefetch_turn: usize,
     scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
     past_len: usize,
@@ -330,6 +337,7 @@ impl Aside {
             context_menu: None,
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             drop_gap: None,
+            prefetch_turn: 0,
             scroll,
             scrollbar,
             past_len: 0,
@@ -1976,10 +1984,10 @@ impl Aside {
         uniform_list(
             "queue-rows",
             sections.len() + under + TAIL_ROWS,
-            cx.processor(move |_, range: Range<usize>, window, cx| {
+            cx.processor(move |this, range: Range<usize>, window, cx| {
                 let reach = (range.len() as f32 * PREFETCH_REACH).ceil() as usize;
-                let near = (range.start.saturating_sub(reach)..range.start)
-                    .chain(range.end..(range.end + reach).min(sections.len()));
+                let before = range.start.saturating_sub(reach)..range.start;
+                let after = range.end..(range.end + reach).min(sections.len());
                 let revision = listing.revision(cx);
                 let row = |index, cx: &mut Context<Self>| match sections.slot(index) {
                     None => div().into_any_element(),
@@ -2033,8 +2041,22 @@ impl Aside {
                     }
                 };
                 let rows = range.map(|index| row(index, cx)).collect();
-                for index in near {
-                    prefetch(row(index, cx), window, cx);
+                // The rows past the edge are laid out a few at a time, each taking its turn, so
+                // their covers start loading ahead of a scroll without the whole neighbourhood
+                // being built again on every frame.
+                let near = before.len() + after.len();
+                if near > 0 {
+                    let take = PREFETCH_ROWS.min(near);
+                    let turn = this.prefetch_turn % near;
+                    this.prefetch_turn = this.prefetch_turn.wrapping_add(take);
+                    for offset in 0..take {
+                        let step = turn + offset;
+                        let index = match step < before.len() {
+                            true => before.start + step,
+                            false => after.start + (step - before.len()),
+                        };
+                        prefetch(row(index, cx), window, cx);
+                    }
                 }
                 rows
             }),
