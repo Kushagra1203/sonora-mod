@@ -329,6 +329,10 @@ struct Cached {
     value: Result<Arc<RenderImage>, ImageCacheError>,
     bytes: usize,
     used: Instant,
+    /// Whether the cover has been asked for sharply at this edge. A cover only ever drawn
+    /// soft has no sharp copy worth keeping, but one another view is drawing must not be
+    /// dropped out from under it.
+    sharp: bool,
 }
 
 struct ArtworkCache {
@@ -394,6 +398,7 @@ impl ArtworkCache {
                 value,
                 bytes,
                 used: Instant::now(),
+                sharp: false,
             },
         );
 
@@ -513,8 +518,34 @@ impl ArtworkCache {
         let Some(softened) = blurred(&image) else {
             return image;
         };
-        self.soft.insert(key, softened.clone());
+        self.soft.insert(key.clone(), softened.clone());
+        // The sharp decode was only ever the source for the blur, and a cover drawn soft is
+        // drawn across the whole screen: keeping both copies costs as much again as the
+        // screen does, for pixels the blur throws away.
+        self.discard(&key, cx);
         softened
+    }
+
+    /// Drops the sharp decode of a cover that is only ever drawn soft, along with the copy the
+    /// asset cache holds of it. A cover asked for sharply again is decoded again.
+    fn discard(&mut self, key: &ArtworkKey, cx: &mut App) {
+        let Some(cached) = self.items.remove(key) else {
+            return;
+        };
+        // Another view is drawing this one sharply, so it keeps its decode.
+        if cached.sharp {
+            self.bytes = self.bytes.saturating_add(cached.bytes);
+            self.items.insert(key.clone(), cached);
+            return;
+        }
+        self.bytes = self.bytes.saturating_sub(cached.bytes);
+        if let Ok(image) = cached.value {
+            cx.drop_image(image, None);
+        }
+        cx.remove_asset::<ArtworkResourceLoader>(&ArtworkSource {
+            resource: key.0.clone(),
+            edge: key.1,
+        });
     }
 
     fn sweep(&mut self, cx: &mut App) {
@@ -623,7 +654,7 @@ impl ImageCache for ArtworkCache {
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
-        self.load_at(resource, 0, window, cx)
+        self.load_at(resource, 0, false, window, cx)
     }
 }
 
@@ -647,17 +678,24 @@ impl ArtworkCache {
         &mut self,
         resource: &Resource,
         edge: u32,
+        soft: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
         let key = (resource.clone(), edge);
         if let Some(cached) = self.items.get_mut(&key) {
             cached.used = Instant::now();
+            if !soft {
+                cached.sharp = true;
+            }
             return Some(cached.value.clone());
         }
         // Still on screen after all, so it goes back in the cache rather than being dropped.
         if let Some(mut cached) = self.condemned.remove(&key) {
             cached.used = Instant::now();
+            if !soft {
+                cached.sharp = true;
+            }
             let value = cached.value.clone();
             self.bytes = self.bytes.saturating_add(cached.bytes);
             self.items.insert(key, cached);
@@ -1077,7 +1115,9 @@ impl RenderOnce for Artwork {
                     false => sample_edge(size, window),
                 };
                 if PREFETCHING.get() {
-                    cache.update(cx, |cache, cx| cache.load_at(&resource, edge, window, cx));
+                    cache.update(cx, |cache, cx| {
+                        cache.load_at(&resource, edge, soft, window, cx)
+                    });
                     return div().w(size).h(tall).into_any_element();
                 }
                 // Drawn at once rather than after `img`'s loading delay, and under the cover,
@@ -1091,9 +1131,9 @@ impl RenderOnce for Artwork {
                         {
                             return Some(Ok(prepared));
                         }
-                        let Some(loaded) = cache
-                            .update(cx, |cache, cx| cache.load_at(&resource, edge, window, cx))
-                        else {
+                        let Some(loaded) = cache.update(cx, |cache, cx| {
+                            cache.load_at(&resource, edge, soft, window, cx)
+                        }) else {
                             return match soft {
                                 true => None,
                                 false => cache
