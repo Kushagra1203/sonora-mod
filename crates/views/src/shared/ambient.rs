@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::f32::consts::TAU;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
@@ -85,6 +85,10 @@ const DISC_STRONG: f32 = 0.079;
 /// Time constant of the exponential ease onto a new palette, in seconds. The
 /// field lands within a few percent of the target after about three of these.
 const WASH: f32 = 0.8;
+/// How often the drifting field asks for a frame. A frame rebuilds and repaints the whole
+/// window, and the drift moves a blob well under a pixel in this time, so half the display's
+/// rate is as smooth as the field can be seen and half the work of following the display.
+const FRAMES_PER_SECOND: f32 = 30.;
 /// A framed field's blob, drawn as the blurred shadow of a circle rather than through a blur
 /// layer: how much of the blob's span the sharp circle takes, how far its blur reaches as a
 /// share of that span, and how strong its core is, which together match the stacked discs.
@@ -112,6 +116,10 @@ pub(crate) struct Ambient {
     started: Instant,
     stepped: Instant,
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Whether the next frame the drift asks for is already on its way. A frame that is
+    /// already coming must not have another scheduled for it, or the two would double the
+    /// rate they are meant to keep.
+    pending: Rc<Cell<bool>>,
     painted: Option<[Hsla; BLOBS]>,
     /// The palette the field follows when it follows one of its own: the framed preview's
     /// cover, or the home page's playing song.
@@ -144,6 +152,7 @@ impl Ambient {
             started: now,
             stepped: now,
             bounds: Rc::new(Cell::new(Bounds::default())),
+            pending: Rc::new(Cell::new(false)),
             painted: None,
             followed: None,
             framed: false,
@@ -350,14 +359,14 @@ impl Render for Ambient {
         // or the setting of its own is enough to stop it.
         let animates =
             ui::motion::animates(cx) && Sonora::global(cx).settings.read(cx).ambient_motion();
-        // The drift asks for the next frame off the display's own clock rather than a timer of
-        // its own. A timer is never in phase with the refresh, so a blob that moves a fraction
-        // of a pixel per frame lands on one vsync, skips the next and doubles the one after,
-        // which reads as a twitch however slow the motion is. Cost belongs in the field below,
-        // not in the frame rate.
+        // The drift asks for its own frames at half the display's rate: a frame costs the
+        // whole window's layout and paint, and at this pace a blob travels well under a pixel
+        // in one, so the slower clock is as smooth as the field can be seen. Positions come
+        // from the elapsed time rather than the frame count, so a frame that lands late moves
+        // the blobs further and the drift keeps its speed.
         let elapsed = match animates {
             true => {
-                window.request_animation_frame();
+                self.tick(cx);
                 self.started.elapsed().as_secs_f32()
             }
             false => 0.,
@@ -459,6 +468,24 @@ impl Render for Ambient {
 }
 
 impl Ambient {
+    /// Asks for one more frame, `1 / FRAMES_PER_SECOND` from now, unless one is already on its
+    /// way, which a frame drawn for anything else between two of them may already have asked
+    /// for.
+    fn tick(&self, cx: &mut Context<Self>) {
+        if self.pending.replace(true) {
+            return;
+        }
+        let pending = self.pending.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(1. / FRAMES_PER_SECOND))
+                .await;
+            pending.set(false);
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
     /// The field of a framed preview, painted with no layer of its own so it is the same
     /// picture wherever the frame sits, under a scroller's fade included. Each blob is the
     /// blurred shadow of a circle, which falls off as smoothly as the blurred discs do. The
