@@ -5,6 +5,10 @@ use state::Sonora;
 
 /// How often the footprint is logged under debug logging.
 const INTERVAL: Duration = Duration::from_secs(10);
+/// How much free heap glibc holds before the pages are handed back to the system. A burst of
+/// large allocations grows the arena, which glibc keeps afterwards: the room is gone from the
+/// app's point of view but not from the machine's.
+const TRIM_BYTES: usize = 16 * 1024 * 1024;
 
 /// Keeps glibc to one malloc arena and sends every block of 256 KiB or more straight to mmap.
 /// Every arena holds on to the holes its own threads leave, so one shared arena reuses them where
@@ -21,20 +25,45 @@ pub fn tune() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub fn tune() {}
 
-/// Logs the memory footprint every `INTERVAL` while debug logging is on, and does nothing
-/// otherwise.
-pub fn watch(cx: &mut App) {
-    if !log::log_enabled!(log::Level::Debug) {
-        return;
+/// Hands the heap's free pages back to the operating system.
+///
+/// The arena grows to whatever the biggest burst of allocations needed and keeps the room
+/// afterwards, so a page the app has finished with stays with the app. Trimming gives those
+/// pages back, which is worth doing once the burst is over and not worth doing while the app
+/// is still filling the heap.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub fn trim() -> bool {
+    let info = unsafe { libc::mallinfo2() };
+    if info.fordblks < TRIM_BYTES {
+        return false;
     }
+    unsafe { libc::malloc_trim(0) != 0 }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub fn trim() -> bool {
+    false
+}
+
+/// Watches the heap for pages to give back, and logs the footprint every `INTERVAL` while debug
+/// logging is on.
+pub fn watch(cx: &mut App) {
+    let logging = log::log_enabled!(log::Level::Debug);
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(INTERVAL).await;
-            let probed = cx
-                .background_executor()
-                .spawn(async { (footprint().unwrap_or_default(), resident()) })
+            if logging {
+                let probed = cx
+                    .background_executor()
+                    .spawn(async { (footprint().unwrap_or_default(), resident()) })
+                    .await;
+                cx.update(|cx| report(probed, cx));
+            }
+            // The trim walks the arena's free lists, so it runs off the main thread and only
+            // when the heap is holding room it has no use for.
+            cx.background_executor()
+                .spawn(async { trim() })
                 .await;
-            cx.update(|cx| report(probed, cx));
         }
     })
     .detach();
