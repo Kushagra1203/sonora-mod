@@ -579,9 +579,7 @@ impl MusicApi for YouTubeClient {
 
     /// The first cover on the category's own page, since the category buttons carry only a colour.
     async fn genre_cover(&self, genre_id: &str) -> Result<Option<String>> {
-        Ok(genres::genre(&self.api, &self.resolver, genre_id)
-            .await?
-            .cover())
+        genres::genre_cover(&self.api, genre_id).await
     }
 }
 

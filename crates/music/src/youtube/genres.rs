@@ -231,6 +231,41 @@ pub(crate) async fn genre(
     Ok(detail)
 }
 
+/// The picture a genre tile wears, found without the rest of the page.
+///
+/// The page is the one the genre opens, so the picture is the one it wears there: the first
+/// album's cover on it, else the first playlist's. Only the covers are looked for, so the
+/// shelves are never read into items and their songs are never resolved to their audio.
+pub(crate) async fn genre_cover(api: &Arc<YtMusic>, params: &str) -> Result<Option<String>> {
+    let answer = wire::patience(|| {
+        api.execute(
+            "browse",
+            Client::Music,
+            json!({ "browseId": CATEGORY, "params": params }),
+        )
+    })
+    .await?;
+
+    let mut playlist = None;
+    for shelf in parse::find_renderers(&answer, "musicCarouselShelfRenderer") {
+        for node in shelf.items(&["contents"]) {
+            // A card is a playlist or an album, a playlist first, as the page reads them.
+            if let Some(source) = parse::two_row_playlist(node) {
+                if playlist.is_none() {
+                    playlist = thumb(&source.thumbnails);
+                }
+                continue;
+            }
+            if let Some(source) = parse::two_row_album(node)
+                && let Some(cover) = thumb(&source.thumbnails)
+            {
+                return Ok(Some(cover));
+            }
+        }
+    }
+    Ok(playlist)
+}
+
 fn section(shelf: &Value) -> Option<GenreSection> {
     let title = shelf_title(shelf).unwrap_or_default();
     let items = items(shelf);
