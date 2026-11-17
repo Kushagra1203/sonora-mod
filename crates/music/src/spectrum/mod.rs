@@ -2,8 +2,9 @@
 //! what reaches the device. `analyzer` reads the music on its way into the equalizer, finely
 //! enough to draw behind its response. `feed` carries a stage's samples to either.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::Thread;
 use std::time::Duration;
 
 use rustfft::FftPlanner;
@@ -35,6 +36,9 @@ const IDLE_POLL: Duration = Duration::from_millis(4);
 /// in a row, since paused the tap stays silent for hours. The ring holds far more audio.
 const QUIET_POLL: Duration = Duration::from_millis(50);
 const QUIET_AFTER: u32 = 250;
+/// How long the analyzer sleeps on an empty ring while nothing holds a listen. The taps send
+/// nothing then, so only a new listen can give it work, and that unparks it at once.
+const UNWATCHED_POLL: Duration = Duration::from_millis(250);
 
 /// The band levels of one channel, published by the analyzer thread and read by the UI.
 #[derive(Clone)]
@@ -49,11 +53,15 @@ impl Lane {
         }
     }
 
-    fn read(&self) -> Vec<f32> {
-        self.bands
-            .iter()
-            .map(|band| f32::from_bits(band.load(Ordering::Relaxed)))
-            .collect()
+    /// The band's levels, written into `out`, which is resized to the band's count. The
+    /// caller keeps the buffer, so a frame that reads the spectrum allocates nothing.
+    fn read(&self, out: &mut Vec<f32>) {
+        out.clear();
+        out.extend(
+            self.bands
+                .iter()
+                .map(|band| f32::from_bits(band.load(Ordering::Relaxed))),
+        );
     }
 
     fn set(&self, index: usize, value: f32) {
@@ -71,6 +79,9 @@ pub struct Spectrum {
     absolute: Arc<AtomicBool>,
     /// How many `Listening` guards are held. The taps send nothing while there are none.
     listeners: Arc<AtomicUsize>,
+    /// The analyzer thread, so a first listen wakes it out of its long wait instead of leaving
+    /// the visualizer flat until the wait runs out.
+    idle: Arc<Idle>,
 }
 
 /// Keeps the taps feeding the analyzer while held. Dropping the last one stops them.
@@ -82,6 +93,31 @@ impl Drop for Listening {
     }
 }
 
+/// The analyzer thread's handle on itself, so a listen can wake it while it waits on an empty
+/// ring with nothing watching. The wait is a park, so waking it costs one token rather than a
+/// channel or a clock of its own.
+#[derive(Default)]
+struct Idle(Mutex<Option<Thread>>);
+
+impl Idle {
+    /// Files the calling thread, which is the analyzer, so `wake` can reach it.
+    fn settle(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(std::thread::current());
+    }
+
+    /// Sleeps up to `limit`, ending early when `wake` arrives.
+    fn wait(&self, limit: Duration) {
+        std::thread::park_timeout(limit);
+    }
+
+    /// Wakes the analyzer out of a wait, for work a long one would delay.
+    fn wake(&self) {
+        if let Some(thread) = self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            thread.unpark();
+        }
+    }
+}
+
 impl Spectrum {
     pub fn new() -> Self {
         Self {
@@ -89,12 +125,15 @@ impl Spectrum {
             right: Lane::new(),
             absolute: Arc::new(AtomicBool::new(false)),
             listeners: Arc::new(AtomicUsize::new(0)),
+            idle: Arc::new(Idle::default()),
         }
     }
 
     /// Has the taps feed the analyzer for as long as the returned guard is held.
     pub fn listen(&self) -> Listening {
         self.listeners.fetch_add(1, Ordering::Relaxed);
+        // The analyzer may be asleep with nothing to do; a first listen gives it something.
+        self.idle.wake();
         Listening(self.listeners.clone())
     }
 
@@ -104,23 +143,22 @@ impl Spectrum {
         self.absolute.store(absolute, Ordering::Relaxed);
     }
 
-    /// The left channel's bands.
-    pub fn left(&self) -> Vec<f32> {
-        self.left.read()
+    /// The left channel's bands, written into `out`.
+    pub fn left(&self, out: &mut Vec<f32>) {
+        self.left.read(out);
     }
 
-    /// The right channel's bands.
-    pub fn right(&self) -> Vec<f32> {
-        self.right.read()
+    /// The right channel's bands, written into `out`.
+    pub fn right(&self, out: &mut Vec<f32>) {
+        self.right.read(out);
     }
 
-    /// Both channels folded together, the louder of the two per band.
-    pub fn bands(&self) -> Vec<f32> {
-        let mut bands = self.left.read();
-        for (band, right) in bands.iter_mut().zip(self.right.read()) {
-            *band = band.max(right);
+    /// Both channels folded together, the louder of the two per band, written into `out`.
+    pub fn bands(&self, out: &mut Vec<f32>) {
+        self.left.read(out);
+        for (band, right) in out.iter_mut().zip(self.right.bands.iter()) {
+            *band = band.max(f32::from_bits(right.load(Ordering::Relaxed)));
         }
-        bands
     }
 
     /// Starts the analyzer thread and returns the tap that feeds it. The tap has to be told
@@ -129,9 +167,13 @@ impl Spectrum {
     pub fn attach(&self) -> Tap {
         let (feed, listener) = feed::channel(RING_CAPACITY);
         let target = self.clone();
+        let idle = self.idle.clone();
         let spawned = std::thread::Builder::new()
             .name("spectrum".to_owned())
-            .spawn(move || analyze(listener, target));
+            .spawn(move || {
+                idle.settle();
+                analyze(listener, target, idle);
+            });
         if let Err(error) = spawned {
             log::error!("spectrum: cannot spawn analyzer thread: {error}");
         }
@@ -223,7 +265,7 @@ fn band_edges(rate: f32) -> Vec<usize> {
         .collect()
 }
 
-fn analyze(mut listener: Listener, spectrum: Spectrum) {
+fn analyze(mut listener: Listener, spectrum: Spectrum, idle: Arc<Idle>) {
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(FFT_SIZE);
     let window = hann_window();
@@ -243,10 +285,17 @@ fn analyze(mut listener: Listener, spectrum: Spectrum) {
                 return;
             }
             empty = empty.saturating_add(1);
-            std::thread::sleep(match empty > QUIET_AFTER {
-                true => QUIET_POLL,
-                false => IDLE_POLL,
-            });
+            // Nothing watching means the taps send nothing, so only a listen can give the
+            // analyzer work, and that unparks it at once. While something watches it keeps a
+            // short clock, since a paused track stays silent for hours.
+            let wait = match spectrum.listeners.load(Ordering::Relaxed) > 0 {
+                true => match empty > QUIET_AFTER {
+                    true => QUIET_POLL,
+                    false => IDLE_POLL,
+                },
+                false => UNWATCHED_POLL,
+            };
+            idle.wait(wait);
             continue;
         };
         let frame = match heard {
