@@ -988,6 +988,10 @@ fn audio_loop<F: Fetch>(
         // track, a paused one, or a full queue. A restored track sits paused
         // with an empty queue, which the old condition mistook for decoding.
         let idle = current.is_none() || !playing || paced.full();
+        // A track whose last samples are queued is still being heard: the engine has to wait
+        // for the queue to reach the end of it before it can say the track ended, so it cannot
+        // sleep on a job alone.
+        let ending = joining.is_some();
         let job = match idle {
             false => match jobs.try_recv() {
                 Ok(job) => Some(job),
@@ -998,12 +1002,20 @@ fn audio_loop<F: Fetch>(
             // clock and refills as room comes. With nothing playing there is nothing to feed and
             // nothing to report, so it waits on a command alone and a paused engine wakes for no
             // reason at all.
-            true => match playing && paced.full() {
-                true => match jobs.recv_timeout(Paced::poll()) {
-                    Ok(job) => Some(job),
-                    Err(RecvTimeoutError::Timeout) => None,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                },
+            true => match ending || (playing && paced.full()) {
+                true => {
+                    // The end of a track is heard at once, so it is looked for finely. A queue
+                    // that is full only waits for room, which comes in coarser steps.
+                    let wait = match ending {
+                        true => Paced::join_poll(),
+                        false => Paced::poll(),
+                    };
+                    match jobs.recv_timeout(wait) {
+                        Ok(job) => Some(job),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
                 false => match jobs.recv() {
                     Ok(job) => Some(job),
                     Err(_) => return,

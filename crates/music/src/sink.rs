@@ -451,6 +451,12 @@ impl Paced {
         FILL_POLL
     }
 
+    /// How often an engine waits for the end of a track to be heard. The end of a track is
+    /// heard at once, so this is as fine-grained as the drain polling.
+    pub const fn join_poll() -> Duration {
+        DRAIN_POLL
+    }
+
     /// Tells the engine the output is gone.
     pub fn disconnected(&self) -> Gone {
         self.changed.send(()).ok();
