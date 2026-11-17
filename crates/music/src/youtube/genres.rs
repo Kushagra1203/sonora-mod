@@ -21,6 +21,9 @@ const LEADING: [&str; 2] = [FROM_LIBRARY, "Recaps"];
 const STAND_IN: usize = 10;
 /// A shelf of music videos: Sonora plays audio only, so it is left out.
 const VIDEOS: &str = "Music videos for you";
+/// A shelf of music videos on a genre's own page, which YouTube fills with whatever it holds
+/// for the genre. Sonora plays audio only, so it is left out as well.
+const GENRE_VIDEOS: &str = "Music videos";
 const QUICK_PICKS_LIMIT: usize = 15;
 /// How many lots of shelves the home feed is followed for; the web client stops around here.
 const PAGES: usize = 8;
@@ -98,7 +101,7 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
         swap_shelf_tracks(&resolver, &mut whole).await;
         sink.send(Ok(arranged(&whole))).await.ok();
         if !sent {
-            log::warn!("youtube: the home feed carried nothing to open with");
+            log::warn!("youtube: the home feed ended without listen again or quick picks");
         }
     });
 
@@ -222,11 +225,18 @@ pub(crate) async fn genre(
             .unwrap_or_default(),
         sections: parse::find_renderers(&answer, "musicCarouselShelfRenderer")
             .into_iter()
+            // The videos of a genre are the uploads YouTube holds for it, which for a genre as
+            // broad as R&B is a shelf of anything. They are left out, as the home page leaves out
+            // its own.
+            .filter(|shelf| shelf_title(shelf).as_deref() != Some(GENRE_VIDEOS))
             .filter_map(section)
             .collect(),
     };
     for section in &mut detail.sections {
-        section.items = wire::audio_only_items(resolver, std::mem::take(&mut section.items)).await;
+        // The song behind a video is searched for after the page is up: a search is slow, and
+        // the page should not wait for every row it holds.
+        section.items = wire::audio_only_known(resolver, std::mem::take(&mut section.items));
+        wire::audio_only_later(resolver, &section.items);
     }
     Ok(detail)
 }

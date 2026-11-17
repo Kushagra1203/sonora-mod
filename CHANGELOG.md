@@ -80,6 +80,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A genre's page no longer carries a shelf of music videos, so it opens with the songs and the
+  playlists for the genre instead of a row of videos.
 - The colour behind an album, playlist or artist page follows the page as you move between
   pages again, instead of holding the colour of the last one and going opaque on Home.
 - A scroll against the top or the bottom of a page no longer throws the page the other way. A

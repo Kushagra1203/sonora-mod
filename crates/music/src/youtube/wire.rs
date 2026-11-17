@@ -174,6 +174,48 @@ pub(crate) async fn audio_only_items(
     items
 }
 
+/// The same swap across a shelf's cards, using only the answers already known, so a listing is
+/// not held back by the search each of its rows needs.
+pub(crate) fn audio_only_known(resolver: &Resolver, items: Vec<GenreItem>) -> Vec<GenreItem> {
+    let mut seats = Vec::new();
+    let mut sources = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        if let GenreItem::Track(track) = item {
+            seats.push(index);
+            sources.push(source_of(track));
+        }
+    }
+    if sources.is_empty() {
+        return items;
+    }
+    let known = resolver.known(sources);
+    let mut items = items;
+    for (index, song) in seats.into_iter().zip(known) {
+        let Some(GenreItem::Track(track)) = items.get(index) else {
+            continue;
+        };
+        if song.is_video() {
+            continue;
+        }
+        items[index] = GenreItem::Track(resolved(track.clone(), song));
+    }
+    items
+}
+
+/// Asks for the songs behind a shelf's videos after the shelf is handed over, one row at a
+/// time, so the page is not held back by the search each of its rows needs. The answers are
+/// remembered, so the next time the shelf is read the songs are already known.
+pub(crate) fn audio_only_later(resolver: &Arc<Resolver>, items: &[GenreItem]) {
+    let sources: Vec<ytmusic::Track> = items
+        .iter()
+        .filter_map(|item| match item {
+            GenreItem::Track(track) => Some(source_of(track)),
+            _ => None,
+        })
+        .collect();
+    resolver.resolve_later(sources);
+}
+
 /// The queue's view of a track as the resolver reads it: enough of the title, credits,
 /// album and runtime for the search to find the same recording.
 fn source_of(track: &Track) -> ytmusic::Track {
