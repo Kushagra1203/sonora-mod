@@ -20,6 +20,9 @@ const LEAD: f32 = 0.15;
 /// How long one turn of a `Spin` takes, quicker than the spinner so a stopping icon reaches
 /// its rest without a long run-on.
 const SPIN: Duration = Duration::from_millis(600);
+/// How often the turn redraws, in frames a second. It carries no detail a slower frame would
+/// lose, and a loader turns in many places at once, so it stays well under the display's rate.
+const TURN_FPS: f32 = 30.;
 
 /// A turning arrow for work that has started and not answered yet. It holds still when the
 /// system asks for less motion.
@@ -57,9 +60,11 @@ impl RenderOnce for Spinner {
         icon.style().refine(&overrides);
         match motion::animates(cx) {
             true => icon
-                .with_animation(id, Animation::new(TURN).repeat(), |icon, turned| {
-                    icon.with_transformation(Transformation::rotate(percentage(turned)))
-                })
+                .with_animation(
+                    id,
+                    Animation::new(TURN).repeat().with_max_fps(TURN_FPS),
+                    |icon, turned| icon.with_transformation(Transformation::rotate(percentage(turned))),
+                )
                 .into_any_element(),
             false => icon.into_any_element(),
         }

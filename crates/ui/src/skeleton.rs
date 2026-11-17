@@ -9,6 +9,9 @@ use gpui::{
 use crate::theme::ActiveTheme as _;
 
 const PULSE: Duration = Duration::from_millis(1400);
+/// How often the pulse redraws, in frames a second. It is a slow fade over a flat block, and a
+/// page shows a dozen of them at once, so it stays well under the display's rate.
+const PULSE_FPS: f32 = 30.;
 
 #[derive(IntoElement)]
 pub struct Skeleton {
@@ -64,7 +67,10 @@ impl RenderOnce for Skeleton {
 
         skeleton.with_animation(
             "skeleton",
-            Animation::new(PULSE).repeat().with_easing(ease_in_out),
+            Animation::new(PULSE)
+                .repeat()
+                .with_easing(ease_in_out)
+                .with_max_fps(PULSE_FPS),
             |this, delta| {
                 let fade = 1. - (delta * std::f32::consts::TAU).cos().abs() * 0.5;
                 this.opacity(0.4 + fade * 0.3)
