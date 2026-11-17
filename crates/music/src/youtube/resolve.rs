@@ -91,6 +91,36 @@ impl Resolver {
         }
     }
 
+    /// The list with every video that is already known replaced by the song behind it, in order.
+    /// A video whose song is not known yet keeps the video it names, so a listing that has to be
+    /// asked about is not held back by the search each of its rows needs.
+    pub fn known(&self, tracks: Vec<Track>) -> Vec<Track> {
+        tracks
+            .into_iter()
+            .map(|track| match self.cached(&track) {
+                Some(Some(song)) => applied(track, song),
+                _ => track,
+            })
+            .collect()
+    }
+
+    /// Asks for the songs behind a listing's videos after the listing itself is handed over, one
+    /// row at a time, so the page is not held back by the search each row needs. The answers are
+    /// remembered, so a row that plays later finds its song without asking again, and a row that
+    /// is asked about while the list is still being worked through is answered from what the
+    /// list has already found.
+    pub fn resolve_later(self: &Arc<Self>, tracks: Vec<Track>) {
+        let this = self.clone();
+        tokio::spawn(async move {
+            for track in tracks {
+                if !track.is_video() || track.video_id.is_none() {
+                    continue;
+                }
+                this.one(track).await;
+            }
+        });
+    }
+
     /// The list with every video replaced by the song behind it, in order. Rows already holding
     /// songs are left alone.
     pub async fn swap(self: &Arc<Self>, tracks: Vec<Track>) -> Vec<Track> {

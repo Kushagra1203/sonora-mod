@@ -477,7 +477,14 @@ impl MusicApi for YouTubeClient {
         let mut detail = wire::patience(|| self.api.playlist_page(playlist_id)).await?;
         match self.playlist_audio(playlist_id, detail.tracks.len()).await {
             Some(tracks) => detail.tracks = tracks,
-            None => detail.tracks = self.resolver.swap(detail.tracks).await,
+            None => {
+                // The listing's rows are videos — a mix or a radio — and the song behind each
+                // one is a search away. Asking for every row before the page goes up holds it
+                // back for a minute, so the rows go up as the listing gives them and the search
+                // follows behind them.
+                detail.tracks = self.resolver.known(std::mem::take(&mut detail.tracks));
+                self.resolver.resolve_later(detail.tracks.clone());
+            }
         }
         Ok(wire::playlist_detail(detail))
     }
@@ -487,19 +494,22 @@ impl MusicApi for YouTubeClient {
         continuation: &str,
     ) -> Result<(Vec<Track>, Option<String>)> {
         let mut page = wire::patience(|| self.api.playlist_continuation(continuation)).await?;
-        page.tracks = self.resolver.swap(page.tracks).await;
+        page.tracks = self.resolver.known(std::mem::take(&mut page.tracks));
+        self.resolver.resolve_later(page.tracks.clone());
         Ok(wire::playlist_page(page))
     }
 
     async fn playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>> {
         let mut detail = wire::patience(|| self.api.playlist(playlist_id)).await?;
-        detail.tracks = self.resolver.swap(detail.tracks).await;
+        detail.tracks = self.resolver.known(std::mem::take(&mut detail.tracks));
+        self.resolver.resolve_later(detail.tracks.clone());
         Ok(wire::playlist_detail(detail).tracks)
     }
 
     async fn playlist_covers(&self, playlist_id: &str, wanted: usize) -> Result<Vec<String>> {
-        let mut tracks = self.api.playlist_page(playlist_id).await?.tracks;
-        tracks = self.resolver.swap(tracks).await;
+        // The swap of a video for the song behind it changes the row's id and runtime, never
+        // its artwork, so the covers are read without it.
+        let tracks = self.api.playlist_page(playlist_id).await?.tracks;
         let tracks: Vec<Track> = tracks
             .into_iter()
             .enumerate()
