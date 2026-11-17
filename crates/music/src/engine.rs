@@ -994,10 +994,20 @@ fn audio_loop<F: Fetch>(
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => return,
             },
-            true => match jobs.recv_timeout(Paced::poll()) {
-                Ok(job) => Some(job),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => return,
+            // A playing queue that is full still fills as it drains, so the decoder waits on a
+            // clock and refills as room comes. With nothing playing there is nothing to feed and
+            // nothing to report, so it waits on a command alone and a paused engine wakes for no
+            // reason at all.
+            true => match playing && paced.full() {
+                true => match jobs.recv_timeout(Paced::poll()) {
+                    Ok(job) => Some(job),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                false => match jobs.recv() {
+                    Ok(job) => Some(job),
+                    Err(_) => return,
+                },
             },
         };
 
