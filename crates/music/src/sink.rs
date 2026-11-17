@@ -27,6 +27,10 @@ const TAIL_FRAMES: usize = 1024;
 const SPARES: usize = QUEUED_CHUNKS + 2;
 /// How long a blocked write sleeps between looks at the queue.
 const DRAIN_POLL: Duration = Duration::from_millis(10);
+/// How often a playing engine looks at a full queue for room. The queue holds seconds of
+/// audio, so this only sets how coarsely the decoder paces itself, and it can be far coarser
+/// than the drain polling without ever being heard.
+const FILL_POLL: Duration = Duration::from_millis(50);
 /// How often a watch looks for an output device to come back once none could be opened.
 const WATCH_POLL: Duration = Duration::from_secs(1);
 
@@ -440,10 +444,11 @@ impl Paced {
         Ok(())
     }
 
-    /// How long a full queue takes to play out. This is how far a decoder runs ahead of what
-    /// is heard, so it is also the longest a paused writer waits before it sees a command.
+    /// How long a playing engine waits between looks at a full queue for room. The queue holds
+    /// seconds of audio, so this is far coarser than the drain polling and still never runs it
+    /// dry.
     pub const fn poll() -> Duration {
-        DRAIN_POLL
+        FILL_POLL
     }
 
     /// Tells the engine the output is gone.
