@@ -13,15 +13,22 @@ const SETTLE: Duration = Duration::from_millis(40);
 /// The longest gap between two frames that still counts as one step: past it the levels adopt
 /// the target outright, so coming back from a stalled window snaps rather than swoops.
 const STALL: Duration = Duration::from_millis(250);
+/// How many steps may pass with the view drawing nothing before the drive gives up. The view
+/// draws when the levels move, so a quiet stretch is the only thing that tells the drive the
+/// view has gone.
+const QUIET: u32 = 30;
 
 #[derive(Default)]
 struct State {
     shown: Levels,
+    /// The analyzer's last reading, kept so a frame reads into it rather than allocating.
+    target: Levels,
     spectrum: Spectrum,
     listening: Option<Listening>,
     armed: bool,
-    /// Set by every `show`, so a step can tell the view stopped rendering.
-    seen: bool,
+    /// How many steps have passed since the view last drew. The drive gives up when the view
+    /// has gone quiet for a while, which is how it knows it is no longer on screen.
+    quiet: u32,
     visible: bool,
     beat: Option<Instant>,
 }
@@ -39,7 +46,7 @@ impl VisualizerDrive {
     pub fn show(&self, watch: EntityId, spectrum: Spectrum, window: &mut Window) {
         let mut state = self.state.borrow_mut();
         state.visible = true;
-        state.seen = true;
+        state.quiet = 0;
         state.listening = Some(spectrum.listen());
         state.spectrum = spectrum;
         if state.armed {
@@ -58,9 +65,10 @@ impl VisualizerDrive {
     }
 
     fn step(&self, watch: EntityId, window: &mut Window, cx: &mut App) {
-        {
+        let moved = {
             let mut state = self.state.borrow_mut();
-            if !state.visible || !std::mem::take(&mut state.seen) {
+            state.quiet = state.quiet.saturating_add(1);
+            if !state.visible || state.quiet > QUIET {
                 state.armed = false;
                 state.listening = None;
                 return;
@@ -73,24 +81,38 @@ impl VisualizerDrive {
                 }
                 _ => 1.,
             };
-            ease(&mut state.shown.left, spectrum.left(), rate);
-            ease(&mut state.shown.right, spectrum.right(), rate);
-        }
+            let State {
+                shown, target, ..
+            } = &mut *state;
+            spectrum.left(&mut target.left);
+            spectrum.right(&mut target.right);
+            ease(&mut shown.left, &target.left, rate) | ease(&mut shown.right, &target.right, rate)
+        };
 
-        cx.notify(watch);
+        // A frame whose levels did not move is a frame that need not be drawn: the bars are
+        // where they were, so the page above them has nothing to show either.
+        if moved {
+            cx.notify(watch);
+        }
         let drive = self.clone();
         window.on_next_frame(move |window, cx| drive.step(watch, window, cx));
     }
 }
 
 /// Walks `shown` a share of the way towards `target`, adopting it outright when the band
-/// count changes.
-fn ease(shown: &mut Vec<f32>, target: Vec<f32>, rate: f32) {
+/// count changes. It says whether anything moved.
+fn ease(shown: &mut Vec<f32>, target: &[f32], rate: f32) -> bool {
     if shown.len() != target.len() {
-        *shown = target;
-        return;
+        *shown = target.to_vec();
+        return true;
     }
-    for (shown, target) in shown.iter_mut().zip(&target) {
-        *shown += (target - *shown) * rate;
+    let mut moved = false;
+    for (shown, target) in shown.iter_mut().zip(target) {
+        let next = *shown + (target - *shown) * rate;
+        if next != *shown {
+            moved = true;
+        }
+        *shown = next;
     }
+    moved
 }
