@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use gpui::{App, Context, Entity, Task};
 use state::{AppSettings, Playback, QueuePosition, Reloaded, Sonora};
 use ui::{ActiveTheme as _, CoverPalette, Look, Theme, ThemeKind, ThemeOverrides};
@@ -229,6 +231,16 @@ impl Adaptive {
     }
 }
 
+thread_local! {
+    /// The last stage built on this thread. A page's panels ask for the same one again for every
+    /// row they draw, and building it walks every colour the theme has, so the one answer is
+    /// kept until the cover, the settings or the system's theme kind move it.
+    static STAGE_ON: RefCell<Option<(CoverPalette, Look, ThemeOverrides, Theme)>> =
+        const { RefCell::new(None) };
+    static STAGE: RefCell<Option<(CoverPalette, Look, ThemeOverrides, Theme)>> =
+        const { RefCell::new(None) };
+}
+
 /// The theme fullscreen wears over the ambient background for a cover's `palette`, for a preview
 /// that has to look like fullscreen while the app wears the chosen theme.
 pub(crate) fn stage(palette: CoverPalette, cx: &App) -> Theme {
@@ -239,7 +251,20 @@ pub(crate) fn stage(palette: CoverPalette, cx: &App) -> Theme {
         tint_secondary: palette.secondary,
         ..settings.look()
     };
-    Theme::for_look(look, &stripped(settings.theme_overrides()))
+    let overrides = stripped(settings.theme_overrides());
+
+    STAGE.with_borrow_mut(|slot| {
+        if let Some((held, held_look, held_overrides, theme)) = slot
+            && *held == palette
+            && *held_look == look
+            && *held_overrides == overrides
+        {
+            return *theme;
+        }
+        let theme = Theme::for_look(look, &overrides);
+        *slot = Some((palette, look, overrides, theme));
+        theme
+    })
 }
 
 /// The theme a field over the home page wears: the app's own kind with the cover's palette
@@ -253,7 +278,20 @@ pub(crate) fn stage_on(palette: CoverPalette, cx: &App) -> Theme {
         tint_secondary: palette.secondary,
         ..settings.look()
     };
-    Theme::for_look(look, &stripped(settings.theme_overrides()))
+    let overrides = stripped(settings.theme_overrides());
+
+    STAGE_ON.with_borrow_mut(|slot| {
+        if let Some((held, held_look, held_overrides, theme)) = slot
+            && *held == palette
+            && *held_look == look
+            && *held_overrides == overrides
+        {
+            return *theme;
+        }
+        let theme = Theme::for_look(look, &overrides);
+        *slot = Some((palette, look, overrides, theme));
+        theme
+    })
 }
 
 /// The overrides with every colour taken out, leaving the radius and font size.

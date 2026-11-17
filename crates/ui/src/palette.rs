@@ -46,7 +46,7 @@ pub fn tint(url: impl Into<SharedString>, cx: &mut App) -> Task<Option<Hsla>> {
 /// What one artwork extraction names: the hue that leads and, when the art
 /// carries a real second family, the runner-up. Sampled once per cover and
 /// shared by the theme tint and the ambient background, so the two never disagree.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct CoverPalette {
     pub primary: Option<Hsla>,
     pub secondary: Option<Hsla>,
