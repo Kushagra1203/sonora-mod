@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
@@ -1151,6 +1152,9 @@ pub struct Library {
     raised: HashMap<Family, Raised>,
     /// The row removals whose toast is up, by playlist id.
     raised_rows: HashMap<String, RowsRaised>,
+    /// The ids of each shelf's favorite tracks, so a row can ask whether it is a favorite
+    /// without walking the whole list. It is dropped whenever the shelf is touched.
+    saved_ids: [OnceCell<HashSet<String>>; 2],
 }
 
 impl Library {
@@ -1263,6 +1267,7 @@ impl Library {
             next_sweep: 0,
             raised: HashMap::new(),
             raised_rows: HashMap::new(),
+            saved_ids: [OnceCell::new(), OnceCell::new()],
         };
         library.held_mut(Shelf::Streaming).state = LibraryState::Loading;
         library.held_mut(Shelf::Local).shape = Shape::Catalog(Catalog::Fixed);
@@ -1524,6 +1529,9 @@ impl Library {
     }
 
     fn held_mut(&mut self, shelf: Shelf) -> &mut Held {
+        // The shelf's favorites may be about to change, so the index of their ids is dropped
+        // with it.
+        self.saved_ids[shelf.slot()].take();
         &mut self.shelves[shelf.slot()]
     }
 
@@ -1631,13 +1639,22 @@ impl Library {
         }
     }
 
+    /// Whether a track is one of the shelf's favorites. The list is indexed by id, so a row
+    /// on a long list of favorites answers without walking it.
     pub fn saved(&self, track_id: &str) -> bool {
-        self.favorites(track_id).is_some_and(|favorites| {
-            favorites
-                .tracks
-                .iter()
-                .any(|track| track.id.as_deref() == Some(track_id))
-        })
+        let shelf = Shelf::of(track_id);
+        let ids = self.saved_ids[shelf.slot()].get_or_init(|| {
+            let mut ids = HashSet::new();
+            if let Some(favorites) = self.held(shelf).favorites() {
+                for track in favorites.tracks {
+                    if let Some(id) = track.id.as_deref() {
+                        ids.insert(id.to_owned());
+                    }
+                }
+            }
+            ids
+        });
+        ids.contains(track_id)
     }
 
     fn favorites(&self, id: &str) -> Option<Favorites<'_>> {
