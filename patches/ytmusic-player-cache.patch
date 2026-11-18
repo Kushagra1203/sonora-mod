@@ -1,0 +1,94 @@
+diff --git a/src/deobf.rs b/src/deobf.rs
+index 004c5fc..61af431 100644
+--- a/src/deobf.rs
++++ b/src/deobf.rs
+@@ -192,7 +192,7 @@ fn prepare(script: &Script, cache: Option<&Path>) -> Result<rquickjs::Context> {
+ }
+ 
+ fn keep(cache: Option<&Path>, script: &Script, solver: &str) {
+-    let Some(path) = cache else {
++    let Some(cache) = cache else {
+         return;
+     };
+     let kept = Kept {
+@@ -201,9 +201,69 @@ fn keep(cache: Option<&Path>, script: &Script, solver: &str) {
+         bundle: bundle().to_string(),
+         code: solver.to_owned(),
+     };
+-    if let Err(error) = store(path, &kept) {
++    let path = cache_for(cache, &script.id);
++    if let Err(error) = store(&path, &kept) {
+         log::warn!("deobf: cannot cache player {}: {error:#}", script.id);
+     }
++    prune(cache, &script.id);
++}
++
++/// Where the solver of one player build is kept.
++///
++/// YouTube names a different player build in its widget script depending on who asks and
++/// when, so a run that asks without a visitor meets a build the last run never saw. Each
++/// build gets a file of its own, so a build that has been prepared once is never prepared
++/// again.
++fn cache_for(cache: &Path, id: &str) -> PathBuf {
++    let mut path = cache.to_path_buf();
++    let stem = cache
++        .file_stem()
++        .map(|stem| stem.to_string_lossy().into_owned())
++        .unwrap_or_default();
++    path.set_file_name(format!("{stem}-{id}.json"));
++    path
++}
++
++/// How long a prepared solver is kept before it is thrown away. YouTube hands out a new
++/// player build now and then, and each one costs a few megabytes of disk.
++const KEEP_DAYS: u64 = 30;
++
++/// Throws away the solvers of player builds that are long gone.
++fn prune(cache: &Path, keep: &str) {
++    let Some(parent) = cache.parent() else {
++        return;
++    };
++    let Ok(entries) = std::fs::read_dir(parent) else {
++        return;
++    };
++    let stem = cache
++        .file_stem()
++        .map(|stem| stem.to_string_lossy().into_owned())
++        .unwrap_or_default();
++    let prefix = format!("{stem}-");
++    let held = format!("{prefix}{keep}.json");
++    let now = std::time::SystemTime::now();
++    // The file the older builds kept holds one solver under the name of the cache itself.
++    // It is never read now, so it goes.
++    let _ = std::fs::remove_file(cache);
++    for entry in entries.flatten() {
++        let path = entry.path();
++        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
++            continue;
++        };
++        if !name.starts_with(&prefix) || !name.ends_with(".json") || name == held {
++            continue;
++        }
++        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
++            continue;
++        };
++        let Ok(age) = now.duration_since(modified) else {
++            continue;
++        };
++        if age.as_secs() > KEEP_DAYS * 24 * 60 * 60 {
++            let _ = std::fs::remove_file(&path);
++        }
++    }
+ }
+ 
+ fn store(path: &Path, kept: &Kept) -> Result<()> {
+@@ -320,7 +380,8 @@ const RUN: &str = r#"
+ 
+ pub async fn fetch(http: &reqwest::Client, cache: Option<&Path>) -> Result<Script> {
+     let id = player_id(http).await?;
+-    if let Some(kept) = kept(cache, &id) {
++    let cached = cache.map(|cache| cache_for(cache, &id));
++    if let Some(kept) = kept(cached.as_deref(), &id) {
+         log::debug!(
+             "deobf: player {id} read from the cache, {} bytes",
+             kept.code.len()
