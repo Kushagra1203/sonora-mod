@@ -1,0 +1,135 @@
+--- a/crates/gpui_wgpu/src/wgpu_context.rs
++++ b/crates/gpui_wgpu/src/wgpu_context.rs
+@@ -474,6 +474,22 @@
+     pub fn instance(display: Option<Box<dyn wgpu::wgt::WgpuHasDisplayHandle>>) -> wgpu::Instance {
+         wgpu::Instance::new(wgpu::InstanceDescriptor {
+             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
++            flags: wgpu::InstanceFlags::default(),
++            backend_options: wgpu::BackendOptions::default(),
++            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
++            display,
++        })
++    }
++
++    /// An instance that offers Vulkan alone. Asking for OpenGL as well makes the process
++    /// load Mesa's software rasteriser and its LLVM, which is a third of the memory the
++    /// app holds and is never the one that draws, so it is left out where Vulkan serves.
++    #[cfg(not(target_family = "wasm"))]
++    pub fn instance_vulkan(
++        display: Option<Box<dyn wgpu::wgt::WgpuHasDisplayHandle>>,
++    ) -> wgpu::Instance {
++        wgpu::Instance::new(wgpu::InstanceDescriptor {
++            backends: wgpu::Backends::VULKAN,
+             flags: wgpu::InstanceFlags::default(),
+             backend_options: wgpu::BackendOptions::default(),
+             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+--- a/crates/gpui_wgpu/src/wgpu_renderer.rs
++++ b/crates/gpui_wgpu/src/wgpu_renderer.rs
+@@ -493,44 +493,39 @@
+             .window_handle()
+             .map_err(|e| anyhow::anyhow!("Failed to get window handle: {e}"))?;
+ 
+-        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+-            // Fall back to the display handle already provided via InstanceDescriptor::display.
+-            raw_display_handle: None,
+-            raw_window_handle: window_handle.as_raw(),
+-        };
++        let raw_window_handle = window_handle.as_raw();
+ 
+         // Use the existing context's instance if available, otherwise create a new one.
+         // The surface must be created with the same instance that will be used for
+         // adapter selection, otherwise wgpu will panic.
+-        let instance = gpu_context
+-            .borrow()
+-            .as_ref()
+-            .map(|ctx| ctx.instance.clone())
+-            .unwrap_or_else(|| WgpuContext::instance(Some(Box::new(window.clone()))));
+-
+-        // Safety: The caller guarantees that the window handle is valid for the
+-        // lifetime of this renderer. In practice, the RawWindow struct is created
+-        // from the native window handles and the surface is dropped before the window.
+-        let surface = unsafe {
+-            instance
+-                .create_surface_unsafe(target)
+-                .map_err(|e| anyhow::anyhow!("Failed to create surface: {e}"))?
+-        };
+-
+-        let mut ctx_ref = gpu_context.borrow_mut();
+-        let context = match ctx_ref.as_mut() {
+-            Some(context) => {
++        let existing = gpu_context.borrow().as_ref().map(|ctx| ctx.instance.clone());
++        let (context, surface) = match existing {
++            // A context is already there, and its instance makes the surface.
++            Some(instance) => {
++                let surface = create_surface(&instance, raw_window_handle)?;
++                let ctx_ref = gpu_context.borrow();
++                let context = ctx_ref.as_ref().expect("a context is there").clone();
+                 context.check_compatible_with_surface(&surface)?;
+-                context
++                (context, surface)
+             }
+-            None => ctx_ref.insert(WgpuContext::new(instance, &surface, compositor_gpu)?),
+-        };
+-
+-        let atlas = Arc::new(WgpuAtlas::from_context(context));
++            // There is none: Vulkan alone is asked for first, since it is the backend that
++            // draws here, and asking for OpenGL as well loads Mesa's software rasteriser
++            // and its LLVM into the process for an adapter that is never chosen. OpenGL
++            // is asked for when Vulkan cannot make a surface for this window.
++            None => {
++                let (context, surface) =
++                    create_context(window, raw_window_handle, compositor_gpu)?;
++                let mut ctx_ref = gpu_context.borrow_mut();
++                let context = (*ctx_ref.insert(context)).clone();
++                (context, surface)
++            }
++        };
++
++        let atlas = Arc::new(WgpuAtlas::from_context(&context));
+ 
+         Self::new_internal(
+             Some(Rc::clone(&gpu_context)),
+-            context,
++            &context,
+             surface,
+             config,
+             compositor_gpu,
+@@ -3644,6 +3639,38 @@
+     }
+ }
+ 
++/// Creates the graphics context and the surface for a window, with Vulkan first and
++/// OpenGL as the fallback for a machine where Vulkan cannot make a surface.
++#[cfg(not(target_family = "wasm"))]
++fn create_context<W>(
++    window: &W,
++    raw_window_handle: raw_window_handle::RawWindowHandle,
++    compositor_gpu: Option<CompositorGpuHint>,
++) -> Result<(WgpuContext, wgpu::Surface<'static>)>
++where
++    W: HasWindowHandle + HasDisplayHandle + std::fmt::Debug + Send + Sync + Clone + 'static,
++{
++    let mut failure = None;
++    for vulkan_only in [true, false] {
++        let instance = match vulkan_only {
++            true => WgpuContext::instance_vulkan(Some(Box::new(window.clone()))),
++            false => WgpuContext::instance(Some(Box::new(window.clone()))),
++        };
++        let surface = match create_surface(&instance, raw_window_handle) {
++            Ok(surface) => surface,
++            Err(error) => {
++                failure = Some(error);
++                continue;
++            }
++        };
++        match WgpuContext::new(instance, &surface, compositor_gpu) {
++            Ok(context) => return Ok((context, surface)),
++            Err(error) => failure = Some(error),
++        }
++    }
++
++    Err(failure.unwrap_or_else(|| anyhow::anyhow!("no graphics backend could make a surface")))
++}
+ 
+ struct RenderingParameters {
+     path_sample_count: u32,

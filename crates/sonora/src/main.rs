@@ -4,6 +4,7 @@ mod actions;
 mod assets;
 mod console;
 mod dock;
+mod gpu;
 #[cfg(target_os = "macos")]
 mod gestures;
 mod http;
@@ -42,6 +43,7 @@ const OPEN_COALESCE: Duration = Duration::from_millis(250);
 
 fn main() -> ExitCode {
     memory::tune();
+    gpu::keep_hardware_vulkan();
     if let Some(code) = webview::probed() {
         exit(code);
     }
