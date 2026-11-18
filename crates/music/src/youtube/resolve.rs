@@ -36,8 +36,10 @@ const TOLERANCE: Duration = Duration::from_secs(2);
 const PATIENCE: u32 = 4;
 /// How long it stays quiet after that, long enough for a challenge to lapse.
 const QUIET: Duration = Duration::from_secs(10 * 60);
-/// The least time between two rewrites of the cache file, so a page is written once.
-const WRITE_EVERY: Duration = Duration::from_secs(5);
+/// The least time between two rewrites of the cache file, so a page is written once. The file
+/// holds every answer the resolver has found, so it is written whole; a burst of searches
+/// would otherwise rewrite it again and again.
+const WRITE_EVERY: Duration = Duration::from_secs(15);
 
 /// What a search can say: a song, no song for certain, or nothing at all because the search
 /// itself failed. Only the first two are worth remembering.
