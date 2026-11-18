@@ -8,7 +8,7 @@ const INTERVAL: Duration = Duration::from_secs(10);
 /// How much free heap glibc holds before the pages are handed back to the system. A burst of
 /// large allocations grows the arena, which glibc keeps afterwards: the room is gone from the
 /// app's point of view but not from the machine's.
-const TRIM_BYTES: usize = 16 * 1024 * 1024;
+const TRIM_BYTES: usize = 4 * 1024 * 1024;
 
 /// Keeps glibc to one malloc arena and sends every block of 256 KiB or more straight to mmap.
 /// Every arena holds on to the holes its own threads leave, so one shared arena reuses them where
