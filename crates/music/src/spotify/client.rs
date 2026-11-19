@@ -204,7 +204,7 @@ impl MusicApi for LibrespotClient {
         });
         match made {
             Ok(made) => appended(&mut feed, made.sections),
-            Err(error) if feed.listen_again.is_empty() && feed.sections.is_empty() => {
+            Err(error) if feed.recents.is_empty() && feed.sections.is_empty() => {
                 return Err(error);
             }
             Err(error) => log::warn!("home: cannot load Made For You: {error:#}"),

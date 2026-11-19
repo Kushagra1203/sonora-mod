@@ -262,14 +262,14 @@ fn feed(data: Home) -> Result<HomeFeed> {
     let mut feed = HomeFeed::default();
     for shelf in container.sections.items {
         match shelf.data.kind.as_str() {
-            RECENTS if feed.listen_again.is_empty() => {
-                feed.listen_again = shelf.items.items.into_iter().filter_map(item).collect();
+            RECENTS if feed.recents.is_empty() => {
+                feed.recents = shelf.items.items.into_iter().filter_map(item).collect();
             }
             SHELF => feed.sections.extend(section(shelf)),
             _ => {}
         }
     }
-    if feed.listen_again.is_empty() && feed.sections.is_empty() {
+    if feed.recents.is_empty() && feed.sections.is_empty() {
         bail!("home Pathfinder response has no readable sections");
     }
     Ok(feed)

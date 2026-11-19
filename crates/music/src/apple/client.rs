@@ -1900,9 +1900,9 @@ impl MusicApi for AppleClient {
             log::warn!("apple: cannot load recently played songs: {error:#}");
             Vec::new()
         });
-        let listen_again = recent_mix(containers, songs);
+        let recents = recent_mix(containers, songs);
         Ok(HomeFeed {
-            listen_again,
+            recents,
             sections,
             ..HomeFeed::default()
         })

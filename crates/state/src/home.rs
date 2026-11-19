@@ -261,9 +261,9 @@ impl Home {
             *section = shown.clone();
             held = true;
         }
-        let grown = continues(&self.recent, &feed.listen_again);
-        let listen_again = match grown {
-            true => feed.listen_again.clone(),
+        let grown = continues(&self.recent, &feed.recents);
+        let recents = match grown {
+            true => feed.recents.clone(),
             false => self.recent.as_ref().clone(),
         };
         let quick_picks = feed
@@ -275,7 +275,7 @@ impl Home {
         self.pending = held.then_some(feed.clone());
         self.take(
             HomeFeed {
-                listen_again,
+                recents,
                 quick_picks,
                 sections,
             },
@@ -285,7 +285,7 @@ impl Home {
 
     /// Puts a lot on the page as it is.
     fn take(&mut self, feed: HomeFeed, cx: &mut Context<Self>) {
-        let mut recent = feed.listen_again;
+        let mut recent = feed.recents;
         recent.truncate(RECENT_LIMIT);
         self.recent = Rc::new(recent);
         if let Some(quick_picks) = feed.quick_picks {

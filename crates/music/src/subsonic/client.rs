@@ -973,7 +973,7 @@ impl MusicApi for SubsonicClient {
         }
 
         Ok(HomeFeed {
-            listen_again: random
+            recents: random
                 .iter()
                 .take(10)
                 .cloned()

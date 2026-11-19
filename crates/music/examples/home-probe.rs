@@ -25,13 +25,13 @@ async fn main() -> Result<()> {
         let feed = answer?;
         lot += 1;
         let titles: Vec<&str> = feed.sections.iter().map(|s| s.title.as_str()).collect();
-        let opened = !feed.listen_again.is_empty()
+        let opened = !feed.recents.is_empty()
             && feed.quick_picks.is_some()
             && LEADING.iter().all(|title| titles.contains(title));
         println!(
-            "lot {lot} at {:>6.2?}  listen_again {} quick_picks {} sections {:?} opened {opened}",
+            "lot {lot} at {:>6.2?}  recents {} quick_picks {} sections {:?} opened {opened}",
             start.elapsed(),
-            feed.listen_again.len(),
+            feed.recents.len(),
             feed.quick_picks
                 .as_ref()
                 .map(|picks| picks.len())

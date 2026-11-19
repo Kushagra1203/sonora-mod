@@ -234,7 +234,7 @@ pub struct GenreSection {
 pub struct HomeFeed {
     /// What the user has been playing lately, in every shape the provider lists it: songs and
     /// videos, but also the albums, playlists and artists they came from.
-    pub listen_again: Vec<GenreItem>,
+    pub recents: Vec<GenreItem>,
     pub quick_picks: Option<Vec<Track>>,
     pub sections: Vec<GenreSection>,
 }

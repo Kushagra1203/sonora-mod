@@ -744,7 +744,7 @@ impl MusicApi for LocalClient {
             });
         }
 
-        let listen_again = quick_tracks
+        let recents = quick_tracks
             .iter()
             .take(10)
             .cloned()
@@ -752,7 +752,7 @@ impl MusicApi for LocalClient {
             .collect();
 
         Ok(HomeFeed {
-            listen_again,
+            recents,
             quick_picks: Some(quick_tracks),
             sections,
         })

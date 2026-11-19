@@ -80,6 +80,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The rows at the top of Home are what you played most recently, and the picks beside them are
+  YouTube's own instead of a shuffle of your library.
 - A genre's page no longer carries a shelf of music videos, so it opens with the songs and the
   playlists for the genre instead of a row of videos.
 - The colour behind an album, playlist or artist page follows the page as you move between

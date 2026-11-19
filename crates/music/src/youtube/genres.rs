@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -11,11 +12,16 @@ use crate::youtube::wire;
 use crate::{Feed, Genre, GenreDetail, GenreItem, GenreSection, HomeFeed, SavedArtist, Track};
 
 const HOME: &str = "FEmusic_home";
-const LISTEN_AGAIN: &str = "Listen again";
+/// The account's own listening history, which Google hands over only to a request that names
+/// the account it is made for.
+const HISTORY: &str = "FEmusic_history";
+/// The pages that stand in for YouTube's own picks when the home page carries none.
+const NEW_RELEASES: &str = "FEmusic_new_releases";
+const EXPLORE: &str = "FEmusic_explore";
 const QUICK_PICKS: &str = "Quick picks";
 const FROM_LIBRARY: &str = "From your library";
-/// The shelves that open the page after Listen again, in this order; every other shelf keeps
-/// YouTube's order behind.
+/// The shelves that open the page, in this order; every other shelf keeps YouTube's order
+/// behind.
 const LEADING: [&str; 2] = [FROM_LIBRARY, "Recaps"];
 /// How many of the library's playlists stand in for `FROM_LIBRARY` until YouTube's own comes.
 const STAND_IN: usize = 10;
@@ -25,6 +31,9 @@ const VIDEOS: &str = "Music videos for you";
 /// for the genre. Sonora plays audio only, so it is left out as well.
 const GENRE_VIDEOS: &str = "Music videos";
 const QUICK_PICKS_LIMIT: usize = 15;
+/// How many of the account's listening history the page opens with: one row for each song,
+/// however often it was played.
+const RECENTS_LIMIT: usize = 20;
 /// How many lots of shelves the home feed is followed for; the web client stops around here.
 const PAGES: usize = 8;
 const CATEGORIES: &str = "FEmusic_moods_and_genres";
@@ -35,14 +44,19 @@ const SEPARATOR: &str = " • ";
 
 /// The home feed. YouTube hands it out a few shelves at a time behind a continuation, and
 /// the web client asks for the next lot as the page scrolls, so this follows the chain until
-/// it ends or `PAGES` is reached. Listen again and Quick picks are lifted out wherever they
-/// turn up, every other shelf keeps its place. A lot that fails ends the feed with what came
-/// before it.
+/// it ends or `PAGES` is reached. Quick picks are lifted out wherever they turn up, every
+/// other shelf keeps its place. A lot that fails ends the feed with what came before it.
 ///
-/// The page opens with Listen again and Quick picks, and those arrive over the first lots. The
-/// first lot waits for both, so the top of the page never draws without the rows the listener
-/// came for; every lot after it carries everything gathered so far, so the page fills below
-/// the fold as the shelves come.
+/// The page opens with the recents and the picks, and the recents arrive beside the first
+/// page: the account's own listening history, newest first. YouTube's "Listen again" shelf
+/// ranks by how often a song was played rather than how recently, so it stays below, where
+/// its ranking is a feature, and the history leads the page instead.
+///
+/// The first lot waits for the picks, so the top of the page never draws without the row the
+/// listener came for; every lot after it carries everything gathered so far, so the page fills
+/// below the fold as the shelves come. When YouTube sends no picks of its own, the pages that
+/// stand in for them are asked for beside the feed's next lot, so the page waits for neither
+/// of them longer than the other.
 ///
 /// The songs behind the shelves' videos are resolved after the page is up: a search that is
 /// slow, or that YouTube refuses for a moment, then costs the rows their audio version rather
@@ -54,9 +68,10 @@ const SEPARATOR: &str = " • ";
 pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) -> Feed {
     let (sink, feed) = tokio::sync::mpsc::channel(PAGES + 1);
     tokio::spawn(async move {
-        let (first, playlists) = tokio::join!(
+        let (first, playlists, recents) = tokio::join!(
             wire::patience(|| api.execute("browse", Client::Music, json!({ "browseId": HOME }))),
             api.library_playlists(),
+            recents(&api),
         );
         let mut answer = match first {
             Ok(answer) => answer,
@@ -66,6 +81,7 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
             }
         };
         let mut whole = HomeFeed::default();
+        whole.recents = recents;
         match playlists {
             Ok(playlists) => whole.sections.extend(stand_in(playlists, &account)),
             Err(error) => log::warn!("youtube: cannot list the library playlists: {error:#}"),
@@ -73,24 +89,47 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
         let mut sent = false;
         for page in 1..=PAGES {
             gather(&answer, &mut whole);
+            // The picks YouTube has of its own come with the home page. When it sends none,
+            // the pages that stand in for them are asked for beside the feed's next lot, so
+            // the page waits for neither of them longer than the other.
+            let token = continuation(&answer).map(str::to_owned);
+            let wanted = page == 1 && !has_picks(&whole);
+            let (next, standing_in) = tokio::join!(
+                async {
+                    match token {
+                        Some(token) => Some(
+                            wire::patience(|| {
+                                api.execute(
+                                    "browse",
+                                    Client::Music,
+                                    json!({ "continuation": token }),
+                                )
+                            })
+                            .await,
+                        ),
+                        None => None,
+                    }
+                },
+                async {
+                    match wanted {
+                        true => standing_in(&api).await,
+                        false => None,
+                    }
+                },
+            );
+            if let Some(picks) = standing_in {
+                whole.quick_picks = Some(picks);
+            }
             if opened(&whole) || page == PAGES {
                 if sink.send(Ok(arranged(&whole))).await.is_err() {
                     return;
                 }
                 sent = true;
             }
-            let Some(token) = continuation(&answer).map(str::to_owned) else {
+            let Some(next) = next else {
                 break;
             };
-            answer = match wire::patience(|| {
-                api.execute(
-                    "browse",
-                    Client::Music,
-                    json!({ "continuation": token.clone() }),
-                )
-            })
-            .await
-            {
+            answer = match next {
                 Ok(next) => next,
                 Err(error) => {
                     log::warn!("youtube: cannot load home page {}: {error:#}", page + 1);
@@ -101,18 +140,93 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
         swap_shelf_tracks(&resolver, &mut whole).await;
         sink.send(Ok(arranged(&whole))).await.ok();
         if !sent {
-            log::warn!("youtube: the home feed ended without listen again or quick picks");
+            log::warn!("youtube: the home feed ended without quick picks");
         }
     });
 
     feed
 }
 
+/// The account's own listening history, newest first: the songs the listener played, one row
+/// for each song however often it was played. A guest session has no history to read, and a
+/// signed-in one whose history cannot be read has none to show either.
+async fn recents(api: &Arc<YtMusic>) -> Vec<GenreItem> {
+    if !api.is_authenticated() {
+        return Vec::new();
+    }
+    let answer = match wire::patience(|| api.browse_account(HISTORY)).await {
+        Ok(answer) => answer,
+        Err(error) => {
+            log::warn!("youtube: cannot read the listening history: {error:#}");
+            return Vec::new();
+        }
+    };
+
+    let mut seen = HashSet::new();
+    let mut rows = Vec::new();
+    for shelf in parse::find_renderers(&answer, "musicShelfRenderer") {
+        for node in shelf.items(&["contents"]) {
+            let Some(source) = parse::list_item_track(node) else {
+                continue;
+            };
+            let Some(id) = source.video_id.clone() else {
+                continue;
+            };
+            if !seen.insert(id) {
+                continue;
+            }
+            rows.push(GenreItem::Track(wire::track(source, rows.len() as u32)));
+            if rows.len() >= RECENTS_LIMIT {
+                return rows;
+            }
+        }
+    }
+    rows
+}
+
+/// The picks that stand in for YouTube's own when the home page carries none: the songs of
+/// its new releases and explore pages. The first page that holds songs answers, the other is
+/// not asked for.
+async fn standing_in(api: &Arc<YtMusic>) -> Option<Vec<Track>> {
+    for browse in [NEW_RELEASES, EXPLORE] {
+        let answer = match wire::patience(|| {
+            api.execute("browse", Client::Music, json!({ "browseId": browse }))
+        })
+        .await
+        {
+            Ok(answer) => answer,
+            Err(error) => {
+                log::warn!("youtube: cannot read {browse}: {error:#}");
+                continue;
+            }
+        };
+        let songs = songs(&answer);
+        if !songs.is_empty() {
+            return Some(songs);
+        }
+    }
+    None
+}
+
+/// The songs a browse page holds, in the order YouTube lists them: the rows that play,
+/// whether they are listed as songs or as the videos behind them.
+fn songs(answer: &Value) -> Vec<Track> {
+    parse::find_renderers(answer, "musicCarouselShelfRenderer")
+        .into_iter()
+        .chain(parse::find_renderers(answer, "musicShelfRenderer"))
+        .flat_map(|shelf| items(shelf))
+        .filter_map(|item| match item {
+            GenreItem::Track(track) => Some(track),
+            _ => None,
+        })
+        .take(QUICK_PICKS_LIMIT)
+        .collect()
+}
+
 /// Swaps the videos on the feed's shelves for their audio-only songs, so a quick pick or a
-/// listen-again row never sends a music video to the queue.
+/// recent row never sends a music video to the queue.
 async fn swap_shelf_tracks(resolver: &Arc<Resolver>, feed: &mut HomeFeed) {
-    feed.listen_again =
-        wire::audio_only_items(resolver, std::mem::take(&mut feed.listen_again)).await;
+    feed.recents = wire::audio_only_items(resolver, std::mem::take(&mut feed.recents)).await;
     if let Some(picks) = feed.quick_picks.take() {
         feed.quick_picks = Some(wire::audio_only(resolver, picks).await);
     }
@@ -121,17 +235,24 @@ async fn swap_shelf_tracks(resolver: &Arc<Resolver>, feed: &mut HomeFeed) {
     }
 }
 
-/// Whether the two the page opens with are in. "Recaps" and "From your library" are not part of
-/// it: YouTube only sends the first sometimes, and the stand-in covers the second, so waiting on
-/// them would hold the page back for shelves that may never come.
+/// Whether the page can open: the picks it leads with are there. The recents come beside the
+/// first page, so they are there too by the time this is asked, and an account with no history
+/// to show is not waited for.
 fn opened(feed: &HomeFeed) -> bool {
-    !feed.listen_again.is_empty() && feed.quick_picks.is_some()
+    has_picks(feed)
+}
+
+/// Whether the feed carries picks of its own. A shelf that holds nothing is no picks, so the
+/// ones that stand in for them are asked for.
+fn has_picks(feed: &HomeFeed) -> bool {
+    feed.quick_picks
+        .as_ref()
+        .is_some_and(|picks| !picks.is_empty())
 }
 
 fn gather(answer: &Value, feed: &mut HomeFeed) {
     for shelf in parse::find_renderers(answer, "musicCarouselShelfRenderer") {
         match shelf_title(shelf).as_deref() {
-            Some(LISTEN_AGAIN) => feed.listen_again = items(shelf),
             Some(QUICK_PICKS) => {
                 feed.quick_picks = Some(tracks(shelf).into_iter().take(QUICK_PICKS_LIMIT).collect())
             }
@@ -187,7 +308,7 @@ fn arranged(feed: &HomeFeed) -> HomeFeed {
     arranged.append(&mut sections);
 
     HomeFeed {
-        listen_again: feed.listen_again.clone(),
+        recents: feed.recents.clone(),
         quick_picks: feed.quick_picks.clone(),
         sections: arranged,
     }
