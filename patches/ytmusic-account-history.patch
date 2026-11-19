@@ -1,0 +1,84 @@
+diff --git a/src/browse.rs b/src/browse.rs
+index c6e116b..ba5a104 100644
+--- a/src/browse.rs
++++ b/src/browse.rs
+@@ -1,4 +1,4 @@
+-use anyhow::{Context as _, Result};
++use anyhow::{Context as _, Result, bail};
+ use serde_json::{Value, json};
+ 
+ use crate::client::YtMusic;
+@@ -14,6 +14,24 @@ use crate::util::parse_year;
+ pub(crate) const MAX_PAGES: usize = 50;
+ 
+ impl YtMusic {
++    /// A browse for a page of the account's own, which Google hands over only when the request
++    /// names the account it is made for. The listening history is such a page: without the
++    /// name it answers with the signed-out history, which holds nothing.
++    pub async fn browse_account(&self, browse_id: &str) -> Result<Value> {
++        let Some(account) = self.account_id().await else {
++            bail!("the session has no account to name");
++        };
++        self.execute(
++            "browse",
++            Client::Music,
++            json!({
++                "browseId": browse_id,
++                "context": { "user": { "onBehalfOfUser": account } },
++            }),
++        )
++        .await
++    }
++
+     pub async fn album(&self, browse_id: &str) -> Result<AlbumDetail> {
+         let response = self
+             .execute("browse", Client::Music, json!({ "browseId": browse_id }))
+diff --git a/src/client.rs b/src/client.rs
+index 62ba89c..241b021 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -194,7 +194,17 @@ impl YtMusic {
+         };
+         let visitor = held.as_str();
+         let mut body = payload;
+-        let context = client.context(visitor, &self.hl, &self.gl);
++        let mut context = client.context(visitor, &self.hl, &self.gl);
++        // A request may name the account it is made for, which is what the account's own pages
++        // ask for: Google hands over the listening history only to a request that names the
++        // account it is reading. The name is kept as it was given.
++        let account = body
++            .pointer("/context/user/onBehalfOfUser")
++            .and_then(|account| account.as_str())
++            .map(str::to_owned);
++        if let Some(account) = account {
++            context["user"]["onBehalfOfUser"] = json!(account);
++        }
+         body.as_object_mut()
+             .context("payload must be an object")?
+             .insert("context".to_string(), context);
+@@ -399,6 +409,25 @@ impl YtMusic {
+         self.authed.is_some()
+     }
+ 
++    /// The account the session acts for, as `context.user.onBehalfOfUser` names it. Google hands
++    /// over the account's own pages only when a request names the account it is made for, so
++    /// this is what the listening history needs. `None` for a guest session, which has no
++    /// account and no history to read.
++    pub async fn account_id(&self) -> Option<String> {
++        if !self.is_authenticated() {
++            return None;
++        }
++        let found = self.data_sync_id().await?;
++        // YouTube publishes the id as `account||identity`, where the second half is the
++        // identity the session acts for; a plain account leaves it empty.
++        let identity = match found.split_once("||") {
++            Some((_, after)) if !after.is_empty() => after,
++            Some((before, _)) => before,
++            None => found.as_str(),
++        };
++        (!identity.is_empty()).then(|| identity.to_owned())
++    }
++
+     pub fn authuser(&self) -> usize {
+         self.authuser
+     }
