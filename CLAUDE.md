@@ -16,6 +16,12 @@ A native music streaming client, built with Rust and [GPUI](https://github.com/z
   Unsafe: `*.rlib`, `*.rmeta`, the newest incremental directory per crate, and anything tracked.
 - **Clean as you go when a build balloons the checkout.** Re-measure with `du -sh` rather than
   trusting apparent sizes, and report the before/after numbers.
+- **Never capture the user's screen without explicit permission.** Do not run screen-capture or
+  screen-recording tools (including `grim`, `scrot`, Spectacle, or equivalents), and do not attach
+  or inspect captured screen content unless the user explicitly asks for that specific capture.
+  If the user is using the laptop, do not perform visual checks automatically; ask the user to make
+  or confirm the check instead. Ask for permission before any visual verification even when it
+  would otherwise be useful.
 
 ## Crate layout
 
