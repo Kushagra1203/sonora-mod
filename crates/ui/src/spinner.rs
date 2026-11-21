@@ -63,7 +63,9 @@ impl RenderOnce for Spinner {
                 .with_animation(
                     id,
                     Animation::new(TURN).repeat().with_max_fps(TURN_FPS),
-                    |icon, turned| icon.with_transformation(Transformation::rotate(percentage(turned))),
+                    |icon, turned| {
+                        icon.with_transformation(Transformation::rotate(percentage(turned)))
+                    },
                 )
                 .into_any_element(),
             false => icon.into_any_element(),

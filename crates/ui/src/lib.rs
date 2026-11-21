@@ -1,3 +1,4 @@
+mod arrival;
 mod arrow_ring;
 mod artwork;
 mod button;
@@ -13,6 +14,7 @@ mod form;
 mod glass;
 mod glide;
 mod grain;
+mod hairline;
 mod info_card;
 mod inline_links;
 mod input;
@@ -59,6 +61,7 @@ mod veil;
 mod view;
 mod visualizer;
 
+pub use arrival::Arriving;
 pub use arrow_ring::ArrowRing;
 pub use artwork::{
     Artwork, Avatar, PREFETCH_REACH, Prefetch, artwork_usage, cover_palette, prefetch,
@@ -84,6 +87,7 @@ pub use glass::{
 };
 pub use glide::{Glide, ScrollPosition, WHEEL_GAIN};
 pub use grain::{frost as frost_grain, grain};
+pub use hairline::Hairline;
 pub use info_card::{Fact, InfoCard};
 pub use inline_links::{InlineLink, InlineLinks};
 pub use input::{

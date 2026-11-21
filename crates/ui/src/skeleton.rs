@@ -3,15 +3,20 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     Animation, AnimationExt as _, App, Div, Interactivity, Pixels, SharedString, StyleRefinement,
-    Window, div, ease_in_out,
+    Window, div, ease_in_out, hsla, linear_color_stop, linear_gradient, relative,
 };
 
+use crate::motion::animates;
 use crate::theme::ActiveTheme as _;
 
 const PULSE: Duration = Duration::from_millis(1400);
 /// How often the pulse redraws, in frames a second. It is a slow fade over a flat block, and a
 /// page shows a dozen of them at once, so it stays well under the display's rate.
 const PULSE_FPS: f32 = 30.;
+/// One glide of the shimmer's light band across the block.
+const SHIMMER: Duration = Duration::from_millis(1600);
+/// The band's width as a fraction of the block.
+const SHIMMER_BAND: f32 = 0.6;
 
 #[derive(IntoElement)]
 pub struct Skeleton {
@@ -58,11 +63,39 @@ impl RenderOnce for Skeleton {
         let theme = cx.theme();
         let overrides = std::mem::take(base.style());
 
-        let mut skeleton = base.bg(theme.muted).when_else(
-            circle,
-            |this| this.rounded_full(),
-            |this| this.rounded(theme.radius),
-        );
+        let mut skeleton = base
+            .bg(theme.muted)
+            .relative()
+            .overflow_hidden()
+            .when_else(
+                circle,
+                |this| this.rounded_full(),
+                |this| this.rounded(theme.radius),
+            )
+            .when(animates(cx), |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .w(relative(SHIMMER_BAND))
+                        .rounded_full()
+                        .bg(linear_gradient(
+                            90.,
+                            linear_color_stop(hsla(0., 0., 1., 0.), 0.),
+                            linear_color_stop(hsla(0., 0., 1., 0.09), 1.),
+                        ))
+                        .with_animation(
+                            "skeleton-shimmer",
+                            Animation::new(SHIMMER).repeat().with_max_fps(PULSE_FPS),
+                            |band, delta| {
+                                band.left(relative(
+                                    SHIMMER_BAND * -1. + delta * (1. + SHIMMER_BAND),
+                                ))
+                            },
+                        ),
+                )
+            });
         skeleton.style().refine(&overrides);
 
         skeleton.with_animation(
