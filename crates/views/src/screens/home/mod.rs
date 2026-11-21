@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::chrome::Chrome;
 use crate::shared::menus::{Item, ItemMenu};
@@ -12,7 +13,7 @@ use gpui::{
 use i18n::t;
 use music::GenreItem;
 use state::{Home, Network, Playback, Sonora};
-use ui::{ActiveTheme as _, Lazy, Mode, Popup, Scrollbar, Scroller};
+use ui::{ActiveTheme as _, Arriving as _, Lazy, Mode, Popup, Scrollbar, Scroller};
 
 use crate::shared::cells;
 use crate::shared::picks::Picks;
@@ -32,6 +33,10 @@ pub(crate) struct HomeView {
     /// The submenu state of a track's context menu.
     menus: ItemMenu,
     context_menu: Option<(Item, Point<Pixels>)>,
+    /// Skeleton shelves stood on the previous render, to spot the moment data replaces them.
+    pending_shown: bool,
+    /// When that replacement happened, while the arrival window is open.
+    arrived_at: Option<Instant>,
 }
 
 impl EventEmitter<PageEvent> for HomeView {}
@@ -80,6 +85,8 @@ impl HomeView {
             scrollbar: cx.new(|_| Scrollbar::new(ScrollHandle::new()).watching(me)),
             menus,
             context_menu: None,
+            pending_shown: false,
+            arrived_at: None,
         }
     }
 
@@ -186,12 +193,39 @@ impl Render for HomeView {
                 let sections = self.home.read(cx).sections();
                 let feeding = self.home.read(cx).is_feeding();
                 let width = self.width;
-                let shelves =
+                // Skeleton shelves stood on the previous render and real ones now replace
+                // them: open the arrival window so the shelves stagger into place once.
+                if sections.is_empty() && feeding {
+                    self.pending_shown = true;
+                } else if self.pending_shown && self.arrived_at.is_none() {
+                    self.arrived_at = Some(Instant::now());
+                }
+                if self
+                    .arrived_at
+                    .is_some_and(|arrived| arrived.elapsed() > ui::Arrival::span())
+                {
+                    self.arrived_at = None;
+                }
+                let arrival = self.arrived_at;
+                let mut shelves =
                     self.shelves
                         .update(cx, |shelves, cx| match sections.is_empty() && feeding {
                             true => shelves.pending(width, cx),
                             false => vec![shelves.render(sections, Mode::Grid, width, window, cx)],
                         });
+                if let Some(_) = arrival {
+                    shelves = shelves
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, shelf)| match index < ui::Arrival::SLOTS {
+                            true => div()
+                                .child(shelf)
+                                .arriving(("home-shelf", index), index)
+                                .into_any_element(),
+                            false => shelf,
+                        })
+                        .collect();
+                }
 
                 Scroller::new("home-page", &self.scrollbar)
                     .bottom_inset(crate::chrome::Chrome::bottom(cx))

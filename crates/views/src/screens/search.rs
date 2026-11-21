@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::accesskit::Role;
 use gpui::prelude::*;
@@ -20,9 +21,9 @@ use state::{
 };
 use ui::ActiveTheme as _;
 use ui::{
-    Activate, Button, Card, Deck, Deselect, Dismiss, Dropdown, Pinnable, Popup, Room, Scrollbar,
-    Scroller, SelectLeft, SelectNext, SelectPrevious, SelectRight, Separator, Submit, Text, Theme,
-    VAST, clock, eyebrow, scrolled, snapped, tabular, vacant,
+    Activate, Arriving as _, Button, Card, Deck, Deselect, Dismiss, Dropdown, Pinnable, Popup,
+    Room, Scrollbar, Scroller, SelectLeft, SelectNext, SelectPrevious, SelectRight, Separator,
+    Submit, Text, Theme, VAST, clock, eyebrow, scrolled, snapped, tabular, vacant,
 };
 
 use crate::shared::cards;
@@ -136,6 +137,11 @@ pub(crate) struct SearchView {
     cursor: Option<(usize, usize)>,
     rows: [usize; 3],
     lead: Rc<Cell<Pixels>>,
+    /// The results stood empty under a live query on the previous render, to spot the
+    /// moment hits replace the vacancy.
+    pending_shown: bool,
+    /// When that replacement happened, while the arrival window is open.
+    arrived_at: Option<Instant>,
 }
 
 impl SearchView {
@@ -238,6 +244,8 @@ impl SearchView {
             focus: cx.focus_handle(),
             cursor: None,
             rows: [0; 3],
+            pending_shown: false,
+            arrived_at: None,
             lead: Rc::new(Cell::new(Pixels::ZERO)),
         }
     }
@@ -1238,6 +1246,7 @@ impl SearchView {
         let me = cx.entity().downgrade();
         let measured = self.lead.clone();
         let tracked = scroll.clone();
+        let arrival = self.arrived_at;
         let deck = Deck::new(format!("{id}-deck"))
             .rows((0..seats.len()).map(|_| row))
             .gap(theme.font_size * ROW_GAP)
@@ -1259,7 +1268,7 @@ impl SearchView {
                     return div().into_any_element();
                 };
 
-                this.row(
+                let hit = this.row(
                     hit,
                     place,
                     index,
@@ -1268,7 +1277,17 @@ impl SearchView {
                     this.cursor == Some((column, index)),
                     &view.downgrade(),
                     cx,
-                )
+                );
+
+                // Only the first screenful staggers in, and only inside the arrival window,
+                // so scrolling never replays the entrance.
+                match arrival {
+                    Some(_) if index < ui::Arrival::SLOTS => div()
+                        .child(hit)
+                        .arriving(("search-arrive", index), index)
+                        .into_any_element(),
+                    _ => hit,
+                }
             });
 
         div()
@@ -1494,6 +1513,25 @@ impl Render for SearchView {
             false => Pixels::ZERO,
         };
         let asked = !self.search.read(cx).query().trim().is_empty();
+        // A live query over an empty list stands in with a vacancy; when hits replace it the
+        // rows stagger in once, and a fresh query opens the window again.
+        let hits_empty = self.search.read(cx).hits().is_empty();
+        match asked && hits_empty {
+            true => self.pending_shown = true,
+            false if asked && self.pending_shown && self.arrived_at.is_none() => {
+                self.arrived_at = Some(Instant::now());
+            }
+            false => {}
+        }
+        if !asked {
+            self.pending_shown = false;
+            self.arrived_at = None;
+        } else if self
+            .arrived_at
+            .is_some_and(|arrived| arrived.elapsed() > ui::Arrival::span())
+        {
+            self.arrived_at = None;
+        }
         let context_menu = self.context_menu.clone().map(|(target, position)| {
             let menu = match target {
                 HitMenu::Song(track) => self.track_menu.for_track(&track, cx),

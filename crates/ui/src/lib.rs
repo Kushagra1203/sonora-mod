@@ -61,7 +61,7 @@ mod veil;
 mod view;
 mod visualizer;
 
-pub use arrival::Arriving;
+pub use arrival::{Arrival, Arriving};
 pub use arrow_ring::ArrowRing;
 pub use artwork::{
     Artwork, Avatar, PREFETCH_REACH, Prefetch, artwork_usage, cover_palette, prefetch,

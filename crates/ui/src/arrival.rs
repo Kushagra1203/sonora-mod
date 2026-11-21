@@ -27,6 +27,18 @@ pub trait Arriving: Sized {
     fn arriving(self, id: impl Into<ElementId>, index: usize) -> AnimationElement<Self>;
 }
 
+/// The arrival constants a caller needs to open and close its window.
+pub enum Arrival {}
+
+impl Arrival {
+    /// How many items keep their own stagger slot.
+    pub const SLOTS: usize = SLOTS;
+    /// How long the whole stagger runs, before the wrapper must be dropped.
+    pub fn span() -> Duration {
+        SPAN
+    }
+}
+
 impl<E: Styled + IntoElement + 'static> Arriving for E {
     fn arriving(self, id: impl Into<ElementId>, index: usize) -> AnimationElement<Self> {
         let delay = index.min(SLOTS) as f32 * STAGGER.as_secs_f32();

@@ -3,6 +3,7 @@ mod artists;
 mod playlists;
 
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::chrome::tools::{self, Sliders};
 use crate::chrome::{Chrome, Searchable, Toolbar, Tooled};
@@ -24,9 +25,9 @@ use state::{
     Playback, Scan, Shelf, Sonora,
 };
 use ui::{
-    ActiveTheme as _, Button, Card, Deck, FilterChange, LEADING, Mode, Pinnable, Popovers, Popup,
-    Scrollbar, Scroller, Sort, SortAxis, TableDelegate, TableEvent, TableSource, TableState, Text,
-    Vacancy, Viewport, heading, quantize, runtime, scrolled, snapped, table,
+    ActiveTheme as _, Arriving as _, Button, Card, Deck, FilterChange, LEADING, Mode, Pinnable,
+    Popovers, Popup, Scrollbar, Scroller, Sort, SortAxis, TableDelegate, TableEvent, TableSource,
+    TableState, Text, Vacancy, Viewport, heading, quantize, runtime, scrolled, snapped, table,
 };
 
 use crate::shared::album_grid::{AlbumGrid, CardGrid};
@@ -208,6 +209,10 @@ pub struct LibraryView {
     popovers: Popovers,
     sliders: [Sliders; 4],
     me: WeakEntity<Self>,
+    /// Skeleton cards stood on the previous render, to spot the moment the deck replaces them.
+    pending_shown: bool,
+    /// When that replacement happened, while the arrival window is open.
+    arrived_at: Option<Instant>,
 }
 
 impl LibraryView {
@@ -435,6 +440,8 @@ impl LibraryView {
             popovers: Popovers::default(),
             sliders: Section::ALL.map(|_| Sliders::default()),
             me: me.downgrade(),
+            pending_shown: false,
+            arrived_at: None,
         };
         view.restore(cx);
         view
@@ -948,6 +955,7 @@ impl LibraryView {
         let rows = self.card_rows.clone();
         let section = self.section;
         let view = self.me.clone();
+        let arrival = self.arrived_at;
 
         Scroller::new("library-cards", &self.card_scrollbar)
             .bottom_inset(crate::chrome::Chrome::bottom(cx))
@@ -1012,6 +1020,17 @@ impl LibraryView {
                                 div().px(inset).child(row).into_any_element()
                             }
                         }
+                        .map(|element| {
+                            // Only the first rows stagger in, and only inside the arrival
+                            // window, so scrolling never replays the entrance.
+                            match arrival {
+                                Some(_) if index < ui::Arrival::SLOTS => div()
+                                    .child(element)
+                                    .arriving(("library-arrive", index), index)
+                                    .into_any_element(),
+                                _ => element,
+                            }
+                        })
                     }),
             )
             .into_any_element()
@@ -1200,10 +1219,27 @@ impl Render for LibraryView {
                 .child(self.table(self.section).element())
                 .when_some(note, |this, note| this.child(note))
                 .into_any_element(),
-            (_, Mode::Grid) if note.is_none() && self.waiting(cx) => self.pending_cards(window, cx),
+            (_, Mode::Grid) if note.is_none() && self.waiting(cx) => {
+                self.pending_shown = true;
+                self.pending_cards(window, cx)
+            }
             (_, Mode::Grid) => match note {
                 Some(note) => note.size_full().into_any_element(),
-                None => self.cards(window, cx),
+                None => {
+                    // Skeleton cards stood on the previous render and the deck now replaces
+                    // them: open the arrival window so the first rows stagger into place.
+                    if self.pending_shown && self.arrived_at.is_none() {
+                        self.arrived_at = Some(Instant::now());
+                    }
+                    self.pending_shown = false;
+                    if self
+                        .arrived_at
+                        .is_some_and(|arrived| arrived.elapsed() > ui::Arrival::span())
+                    {
+                        self.arrived_at = None;
+                    }
+                    self.cards(window, cx)
+                }
             },
         };
 

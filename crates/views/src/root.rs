@@ -1418,8 +1418,26 @@ impl Render for Root {
                 |this| this.child(div().flex().flex_1().min_h_0().child(self.login.clone())),
                 |this| this.child(shell),
             );
+        // A page that is fetching again after its data landed wears a hairline across the top
+        // of the window until the refresh lands, the way a browser wears its progress bar.
+        let busy = match self.view {
+            RootView::Workspace => self
+                .loading(&router::trail(cx).read(cx).current(), cx)
+                .is_some_and(|busy| busy(cx)),
+            RootView::Fullscreen => false,
+        };
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         let root = root.child(WindowFrame::new());
+        let root = root.when(busy, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .child(ui::Hairline::new()),
+            )
+        });
         root
     }
 }
