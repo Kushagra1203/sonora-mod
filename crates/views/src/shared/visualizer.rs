@@ -81,9 +81,7 @@ impl VisualizerDrive {
                 }
                 _ => 1.,
             };
-            let State {
-                shown, target, ..
-            } = &mut *state;
+            let State { shown, target, .. } = &mut *state;
             spectrum.left(&mut target.left);
             spectrum.right(&mut target.right);
             ease(&mut shown.left, &target.left, rate) | ease(&mut shown.right, &target.right, rate)

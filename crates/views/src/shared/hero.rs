@@ -10,8 +10,8 @@ use i18n::t;
 use music::{Album, Track};
 use state::{Origin, Playback};
 use ui::{
-    ActiveTheme as _, Artwork, Button, ExplicitBadge, LEADING, Pin, Pinnable as _, Skeleton,
-    TableState, Tails as _, Text, spoken, upper,
+    ActiveTheme as _, Artwork, Button, ExplicitBadge, Fading as _, LEADING, Pin, Pinnable as _,
+    Skeleton, TableState, Tails as _, Text, spoken, upper,
 };
 
 use crate::shared::tracks::{self, TrackSource};
@@ -512,7 +512,8 @@ impl RenderOnce for PageHero {
                                 .pt_1()
                                 .child(Skeleton::new().w(ACTION_SKELETON).h(theme.metrics.control)),
                         ),
-                );
+                )
+                .into_any_element();
         }
 
         div()
@@ -600,6 +601,10 @@ impl RenderOnce for PageHero {
                             .child(actions)
                     })),
             )
+            // The hero rises as the page's data lands and its skeleton steps aside. Replayed
+            // when the page swaps its subject, like the page entrance above it.
+            .fading("hero-arrive")
+            .into_any_element()
     }
 }
 

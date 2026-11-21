@@ -13,12 +13,12 @@ const RISE: Pixels = px(10.);
 const STAGGER: Duration = Duration::from_millis(30);
 /// How many neighbours get their own slot before the cap, so a long list never
 /// makes its tail wait half a second.
-const SLOTS: usize = 12;
+pub(crate) const SLOTS: usize = 12;
 /// How long one item's fade and rise takes.
 const FADE: Duration = Duration::from_millis(180);
 /// The whole arrival clock: every item maps its own slot onto this one span so
 /// they all share a single start instant.
-const SPAN: Duration = Duration::from_millis(30 * 12 + 180);
+pub(crate) const SPAN: Duration = Duration::from_millis(30 * 12 + 180);
 
 /// A staggered entrance for content that just arrived. Wrap the first screenful
 /// of a batch — items past `SLOTS` render at rest immediately, and the wrapper

@@ -4,6 +4,7 @@ use std::cell::Cell as StdCell;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::ops::Range;
+use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::{
@@ -15,6 +16,7 @@ use gpui::{
 
 use i18n::t;
 
+use crate::arrival::Arriving as _;
 use crate::artwork::{PREFETCH_REACH, Prefetch};
 use crate::filters::FilterChange;
 use crate::glass::{bar_surface, blurring, popover_surface};
@@ -651,6 +653,10 @@ pub struct TableState<S: TableSource> {
     /// A table whose rows are taller, rounded and free of dividers, for a page that reads as one
     /// surface rather than a grid.
     roomy: bool,
+    /// Skeleton rows shown on the previous render, to spot the moment data replaces them.
+    pending_before: usize,
+    /// When that replacement happened, while the arrival window is open.
+    arrived_at: Option<Instant>,
 }
 
 impl<S: TableSource> EventEmitter<TableEvent> for TableState<S> {}
@@ -675,6 +681,8 @@ impl<S: TableSource> TableState<S> {
             column_menu: None,
             headless: false,
             roomy: false,
+            pending_before: 0,
+            arrived_at: None,
         }
     }
 
@@ -1233,7 +1241,7 @@ impl<S: TableSource> TableState<S> {
                     })
                     .collect();
 
-                div()
+                let row_element = div()
                     .id(("row", row))
                     .role(gpui::accesskit::Role::Row)
                     .when_some(self.delegate.source.name(row, cx), |this, name| {
@@ -1328,8 +1336,16 @@ impl<S: TableSource> TableState<S> {
                             }
                         }),
                     )
-                    .children(cells)
-                    .into_any_element()
+                    .children(cells);
+
+                // Only the first screenful staggers in, and only inside the arrival window,
+                // so scrolling never replays the entrance.
+                match self.arrived_at {
+                    Some(_) if display < crate::arrival::SLOTS => row_element
+                        .arriving(("arrival", row), display)
+                        .into_any_element(),
+                    _ => row_element.into_any_element(),
+                }
             })
             .collect();
         rows.push(
@@ -1449,6 +1465,18 @@ impl<S: TableSource> Render for TableState<S> {
             false => snapped(metrics.header, window),
         };
         let placeholders = self.placeholders(row, cx);
+        // The moment skeletons give way to rows, open a short window in which the first
+        // screenful of rows staggers into place instead of popping in as a block.
+        if placeholders == 0 && self.pending_before > 0 {
+            self.arrived_at = Some(Instant::now());
+        }
+        self.pending_before = placeholders;
+        if self
+            .arrived_at
+            .is_some_and(|arrived| arrived.elapsed() > crate::arrival::SPAN)
+        {
+            self.arrived_at = None;
+        }
         let height = self.height(head, row, self.delegate.row_count().max(placeholders));
         let pinned = snapped(self.viewport.top.clamp(Pixels::ZERO, height - head), window);
         let top = unpinned(self.corners, pinned);
