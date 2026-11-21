@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **Unofficial personal build.** This repository is an independent, modified copy of Sonora kept by an individual user for personal use. It is not affiliated with, endorsed by, or maintained by the Sonora project or its team. Please use the [official project](https://github.com/sonorahq/sonora) for support and releases.
+
 <div align="center">
 
 <img src="./.github/readme-icon.svg" alt="" width="60" height="60">
