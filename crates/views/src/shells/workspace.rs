@@ -115,6 +115,9 @@ pub(crate) struct Workspace {
     /// not, since a cached view that redraws builds every view in it again, and it caches its
     /// own parts instead.
     cached: bool,
+    /// The page the last navigation replaced, held under the new one and faded out while the
+    /// transition runs, so a navigation is a dissolve between two pages rather than a swap.
+    outgoing: Option<(AnyView, Option<AnyView>)>,
     transition: Option<Entrance>,
     focus: FocusHandle,
     /// The slides the two sidebars move on, one each.
@@ -157,6 +160,7 @@ impl Workspace {
             header: None,
             cached: true,
             transition: None,
+            outgoing: None,
             focus: cx.focus_handle(),
             left_slide: Slide::new(left_open),
             right_slide: Slide::new(right_open),
@@ -200,6 +204,14 @@ impl Workspace {
         cached: bool,
         cx: &mut Context<Self>,
     ) {
+        // The page being replaced dissolves out beneath the new one, unless it is the same
+        // view again (a refresh) or motion is reduced, where the old cover-and-reveal still
+        // stands in.
+        self.outgoing = match !cx.reduce_motion() && self.content.entity_id() != content.entity_id()
+        {
+            true => Some((self.content.clone(), self.header.clone())),
+            false => None,
+        };
         self.content = content;
         self.header = header;
         self.cached = cached;
@@ -209,6 +221,7 @@ impl Workspace {
     pub fn reveal_content(&mut self, cx: &mut Context<Self>) -> Duration {
         if cx.reduce_motion() {
             self.transition = None;
+            self.outgoing = None;
             return Duration::ZERO;
         }
 
@@ -220,6 +233,7 @@ impl Workspace {
 
     pub fn finish_transition(&mut self, cx: &mut Context<Self>) {
         if self.transition.take().is_some() {
+            self.outgoing = None;
             cx.notify();
         }
     }
@@ -380,6 +394,28 @@ impl Render for Workspace {
                 .cached(StyleRefinement::default().size_full())
                 .into_any_element(),
         };
+        // The page the last navigation replaced, dissolving out under the new one with the
+        // same curve. It renders uncached for the few frames it fades, like the incoming
+        // page does while it carries its own fade.
+        let crossfading = self.outgoing.is_some() && hidden > 0.;
+        let leaving = self
+            .outgoing
+            .as_ref()
+            .filter(|_| hidden > 0.)
+            .map(|(view, header)| {
+                div()
+                    .absolute()
+                    .left(-overlay_width)
+                    .right_0()
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .flex_col()
+                    .opacity(hidden)
+                    .child(view.clone().into_any_element())
+                    .children(header.clone())
+                    .into_any_element()
+            });
 
         div()
             .id("workspace")
@@ -448,6 +484,7 @@ impl Render for Workspace {
                                     .flex_1()
                                     .min_h_0()
                                     .when(hidden > 0., |this| this.overflow_hidden())
+                                    .when_some(leaving, |this, leaving| this.child(leaving))
                                     .child(
                                         div()
                                             .absolute()
@@ -459,8 +496,11 @@ impl Render for Workspace {
                                             .flex_col()
                                             .map(|this| {
                                                 // The page rises the last few pixels into
-                                                // place as the veil lifts.
-                                                let this = match dissolving {
+                                                // place as the veil lifts. Over a dissolve it
+                                                // also carries its own fade, so the two pages
+                                                // hand over instead of the old one being
+                                                // covered.
+                                                let this = match dissolving || crossfading {
                                                     true => entering(this, hidden),
                                                     false => veiled(this, hidden),
                                                 };
@@ -471,7 +511,7 @@ impl Render for Workspace {
                                             })
                                             .child(content),
                                     )
-                                    .when(scrim > 0., |this| {
+                                    .when(scrim > 0. && !crossfading, |this| {
                                         this.child(
                                             div()
                                                 .absolute()
