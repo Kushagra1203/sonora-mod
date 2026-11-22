@@ -13,6 +13,13 @@ const MIN_SATURATION: f32 = 0.14;
 /// follow near-black art, so the floor sits well below picture grey.
 const MIN_LIGHTNESS: f32 = 0.10;
 const MAX_LIGHTNESS: f32 = 0.94;
+/// The saturation and lightness band a pixel must fall in before it may name an
+/// accent on its own, rather than as part of a larger muted field. A sleeve with
+/// a bright accent on a dark ground is the common case, and counting the ground
+/// with the accent averages the two into a colour that belongs to neither.
+const VIVID_SATURATION: f32 = 0.34;
+const VIVID_MIN_LIGHTNESS: f32 = 0.14;
+const VIVID_MAX_LIGHTNESS: f32 = 0.84;
 const MIN_SHARE: f32 = 0.01;
 /// A peak also needs this much absolute weight, so a lone splash on an
 /// otherwise empty image never names a tint no matter the shares.
@@ -89,6 +96,12 @@ struct Tuning {
     min_saturation: f32,
     min_lightness: f32,
     max_lightness: f32,
+    /// The band a pixel must fall in before it may name an accent on its own.
+    /// The loose floors above still apply underneath: a vivid pixel has to be
+    /// a colour at all before it is a vivid one.
+    vivid_saturation: f32,
+    vivid_min_lightness: f32,
+    vivid_max_lightness: f32,
     /// How much saturation and lightness count beside a colour's share.
     bias: f32,
 }
@@ -109,6 +122,9 @@ impl Tuning {
             min_saturation: MIN_SATURATION,
             min_lightness: MIN_LIGHTNESS,
             max_lightness: MAX_LIGHTNESS,
+            vivid_saturation: VIVID_SATURATION,
+            vivid_min_lightness: VIVID_MIN_LIGHTNESS,
+            vivid_max_lightness: VIVID_MAX_LIGHTNESS,
             bias: BIAS,
         }
         .overridden()
@@ -125,11 +141,25 @@ impl Tuning {
             tuning.min_saturation = number("SN_TINT_SAT").unwrap_or(tuning.min_saturation);
             tuning.min_lightness = number("SN_TINT_LMIN").unwrap_or(tuning.min_lightness);
             tuning.max_lightness = number("SN_TINT_LMAX").unwrap_or(tuning.max_lightness);
+            tuning.vivid_saturation =
+                number("SN_TINT_VIVID_SAT").unwrap_or(tuning.vivid_saturation);
+            tuning.vivid_min_lightness =
+                number("SN_TINT_VIVID_LMIN").unwrap_or(tuning.vivid_min_lightness);
+            tuning.vivid_max_lightness =
+                number("SN_TINT_VIVID_LMAX").unwrap_or(tuning.vivid_max_lightness);
             tuning.bias = number("SN_TINT_BIAS").unwrap_or(tuning.bias);
-            return tuning;
+            tuning
         }
         #[cfg(not(debug_assertions))]
         self
+    }
+
+    /// Whether a colour is vivid enough to name an accent on its own, rather
+    /// than as part of a larger muted field.
+    fn is_vivid(&self, colour: Hsla) -> bool {
+        colour.s >= self.vivid_saturation
+            && colour.l >= self.vivid_min_lightness
+            && colour.l <= self.vivid_max_lightness
     }
 }
 
@@ -214,6 +244,14 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         true => vec![Bin::default(); CUBE * CUBE * CUBE],
         false => Vec::new(),
     };
+    // The vivid pool holds only the colours bright enough to name an accent on
+    // their own. It leads when it has anything to say, and the loose pool
+    // answers for a cover that has nothing vivid in it.
+    let mut vivid = [Bin::default(); BINS];
+    let mut vivid_blocks = match tuning.cube {
+        true => vec![Bin::default(); CUBE * CUBE * CUBE],
+        false => Vec::new(),
+    };
     let mut sampled = 0.;
     let mut lightness = 0.;
     let mut corner = 0.;
@@ -256,11 +294,21 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         // On a dark cover the little light colour is the accent, not the
         // black around it: weight lifts with lightness so highlights win.
         let factor = colour.s * (tuning.bias + (1. - tuning.bias) * colour.l);
+        let bright = tuning.is_vivid(colour);
         match tuning.cube {
-            true => blocks[cube_bin(red, green, blue)].add(colour, factor),
+            true => {
+                let index = cube_bin(red, green, blue);
+                blocks[index].add(colour, factor);
+                if bright {
+                    vivid_blocks[index].add(colour, factor);
+                }
+            }
             false => {
                 let bin = ((colour.h * BINS as f32) as usize).min(BINS - 1);
                 bins[bin].add(colour, factor);
+                if bright {
+                    vivid[bin].add(colour, factor);
+                }
             }
         }
     }
@@ -274,23 +322,21 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         false => mean,
     };
 
-    let pool: &[Bin] = match tuning.cube {
-        true => &blocks,
-        false => &bins,
+    // A vivid accent beats the muted field it sits in: the vivid pool leads
+    // when it clears the bar, and a cover with nothing vivid in it falls back
+    // to the loose pool, so it still gets a hue.
+    let picked = match tuning.cube {
+        true => pick(&vivid_blocks, &blocks, sampled, tuning),
+        false => pick(&vivid, &bins, sampled, tuning),
     };
-    let slots = pool.len();
-
-    let peak =
-        (0..slots).max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)));
-    let primary =
-        peak.filter(|&peak| score(pool, peak, tuning) >= (sampled * MIN_SHARE).max(MIN_WEIGHT));
-    let Some(peak) = primary else {
+    let Some((pool, peak)) = picked else {
         return CoverPalette {
             lightness: mean,
             corner,
             ..Default::default()
         };
     };
+    let slots = pool.len();
 
     // A hue bin is a wedge, so its neighbours are the same colour family and
     // fold in with it. A cube block is already one colour and stands alone.
@@ -339,6 +385,28 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
 /// The RGB-cube bin a pixel lands in, four bits a channel.
 fn cube_bin(red: u8, green: u8, blue: u8) -> usize {
     ((red as usize >> 4) << 8) | ((green as usize >> 4) << 4) | (blue as usize >> 4)
+}
+
+/// The bin that leads a pool and clears the bar to name a tint, if any.
+fn lead(pool: &[Bin], sampled: f32, tuning: &Tuning) -> Option<usize> {
+    let peak = (0..pool.len())
+        .max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)))?;
+    (score(pool, peak, tuning) >= (sampled * MIN_SHARE).max(MIN_WEIGHT)).then_some(peak)
+}
+
+/// The pool that names the tint and the bin within it that leads. The vivid
+/// pool leads when it clears the bar; a cover with nothing vivid in it falls
+/// back to the loose pool, so a muted sleeve still gets a hue of its own.
+fn pick<'a>(
+    vivid: &'a [Bin],
+    loose: &'a [Bin],
+    sampled: f32,
+    tuning: &Tuning,
+) -> Option<(&'a [Bin], usize)> {
+    if let Some(peak) = lead(vivid, sampled, tuning) {
+        return Some((vivid, peak));
+    }
+    lead(loose, sampled, tuning).map(|peak| (loose, peak))
 }
 
 /// How strongly a bin argues for the lead. A hue bin borrows half of each

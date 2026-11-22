@@ -897,11 +897,13 @@ fn wash(base: Hsla, tint: Hsla, strength: f32) -> Hsla {
 }
 
 /// The lightness the accent sits at, base then hover, for a dark theme first and a light one
-/// second. A debug build may shift the base with `SN_ACCENT_L` so an accent weight can be
-/// judged against real artwork without a rebuild; hover keeps its distance from the base.
+/// second. The dark base matches the lightness an artwork accent is mixed at, so a cover's
+/// own colour and the button that carries it read as one. A debug build may shift the base
+/// with `SN_ACCENT_L` so an accent weight can be judged against real artwork without a
+/// rebuild; hover keeps its distance from the base.
 fn accent_weight(dark: bool) -> (f32, f32) {
     let base = match dark {
-        true => 0.72,
+        true => 0.61,
         false => 0.42,
     };
     let base = accent_override().unwrap_or(base);
