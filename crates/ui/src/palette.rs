@@ -48,6 +48,12 @@ const SEAM_LIGHTNESS: f64 = 0.34;
 const SEAM_MEDIAN: f64 = 0.68;
 /// The grey a cover with no pixels in its edge leaves behind.
 const SEAM_FALLBACK: Rgb = [42, 42, 42];
+/// The distance below which a colour's channels are too close to tell a hue apart. A pixel
+/// one level off white has no colour in it, but the saturation below reads as fully
+/// saturated near either end of the range and the hue names whichever channel happens to
+/// be the largest, so a thumbnail's white edge named a saturated teal. A colour this close
+/// to grey is read as the grey it is.
+const ACHROMATIC: f64 = 2. / 255.;
 /// The saturation a colour must reach before it may name an accent on its own.
 const SUPPORT_SATURATION: f64 = 0.34;
 /// The lightness band a colour must fall in before it may name an accent on its own.
@@ -486,7 +492,10 @@ fn hsl(colour: Rgb) -> (f64, f64, f64) {
     let minimum = red.min(green.min(blue));
     let lightness = (maximum + minimum) / 2.;
     let delta = maximum - minimum;
-    if delta == 0. {
+    // A colour this close to grey carries no hue of its own: the saturation below would read
+    // as fully saturated near white and near black, and the hue would name whichever channel
+    // happens to be the largest.
+    if delta <= ACHROMATIC {
         return (0., 0., lightness);
     }
     let saturation = delta / (1. - (2. * lightness - 1.).abs());
