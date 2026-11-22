@@ -652,12 +652,10 @@ impl Root {
     fn options(&self, cx: &Context<Self>) -> TitleBarOptions {
         let content = self.toolbar.clone().map(Into::into);
 
-        let options = match self.view {
+        match self.view {
             RootView::Workspace => self.shells.workspace.read(cx).title_bar(content, cx),
             RootView::Fullscreen => self.shells.fullscreen.read(cx).title_bar(content, cx),
-        };
-
-        options
+        }
     }
 
     /// Whether the current page runs to the window's top edge with no title bar: the home
@@ -1428,7 +1426,7 @@ impl Render for Root {
         };
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         let root = root.child(WindowFrame::new());
-        let root = root.when(busy, |this| {
+        root.when(busy, |this| {
             this.child(
                 div()
                     .absolute()
@@ -1437,7 +1435,6 @@ impl Render for Root {
                     .right_0()
                     .child(ui::Hairline::new()),
             )
-        });
-        root
+        })
     }
 }

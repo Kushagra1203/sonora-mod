@@ -144,7 +144,9 @@ mod tests {
     #[test]
     fn a_row_never_outgrows_the_space_it_was_given() {
         for width in (160..2400).step_by(3) {
-            let available = px(width as f32);
+            // A card is never narrower than `CARD_MIN`, so the layout lays out
+            // against that floor rather than against a width it cannot use.
+            let available = px(width as f32).max(CARD_MIN);
             let layout = CardLayout::new(available);
             let count = layout.columns as f32;
             let used = layout.card * count + layout.gap * (count - 1.);

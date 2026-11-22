@@ -112,7 +112,12 @@ impl Idle {
 
     /// Wakes the analyzer out of a wait, for work a long one would delay.
     fn wake(&self) {
-        if let Some(thread) = self.0.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        if let Some(thread) = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
             thread.unpark();
         }
     }

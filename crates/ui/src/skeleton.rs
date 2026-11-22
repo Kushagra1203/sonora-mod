@@ -89,9 +89,7 @@ impl RenderOnce for Skeleton {
                             "skeleton-shimmer",
                             Animation::new(SHIMMER).repeat().with_max_fps(PULSE_FPS),
                             |band, delta| {
-                                band.left(relative(
-                                    SHIMMER_BAND * -1. + delta * (1. + SHIMMER_BAND),
-                                ))
+                                band.left(relative(-SHIMMER_BAND + delta * (1. + SHIMMER_BAND)))
                             },
                         ),
                 )

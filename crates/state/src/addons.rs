@@ -21,6 +21,12 @@ pub struct Addons {
     task: Option<Task<()>>,
 }
 
+impl Default for Addons {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Addons {
     pub fn new() -> Self {
         Self {

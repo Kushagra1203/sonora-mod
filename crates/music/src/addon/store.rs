@@ -88,7 +88,7 @@ pub fn save(entries: &[Entry]) -> Result<()> {
 }
 
 #[allow(dead_code)]
-pub fn enabled<'a>(entries: &'a [Entry]) -> impl Iterator<Item = (usize, &'a Entry)> {
+pub fn enabled(entries: &[Entry]) -> impl Iterator<Item = (usize, &Entry)> {
     entries
         .iter()
         .enumerate()

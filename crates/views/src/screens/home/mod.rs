@@ -224,7 +224,7 @@ impl Render for HomeView {
                             true => shelves.pending(width, cx),
                             false => vec![shelves.render(sections, Mode::Grid, width, window, cx)],
                         });
-                if let Some(_) = arrival {
+                if arrival.is_some() {
                     shelves = shelves
                         .into_iter()
                         .enumerate()

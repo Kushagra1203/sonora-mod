@@ -5,7 +5,6 @@ use gpui::{App, Entity, Pixels, ScrollHandle, Window, px};
 use state::{AppSettings, FilterValue, Playback};
 use ui::{Filter, FilterChange, Listing, TableState, Viewport, quantize, scrolled};
 
-use crate::shared::cells;
 use crate::shared::tracks::{self, TrackSource};
 
 pub(crate) fn store(
@@ -135,21 +134,6 @@ pub(crate) fn play_or_toggle(
         true => playback.update(cx, |playback, cx| playback.toggle_play(cx)),
         false => play(table, playback, display, cx),
     }
-}
-
-pub(crate) fn resize(
-    table: &dyn Listing,
-    width: &mut Pixels,
-    inset: Pixels,
-    window: &Window,
-    cx: &mut App,
-) {
-    let next = cells::content_width(window, reserved(inset), cx);
-    if (next - *width).abs() < px(0.5) {
-        return;
-    }
-    *width = next;
-    table.set_width(next, cx);
 }
 
 pub(crate) fn viewport(scroll: &ScrollHandle, inset: Pixels, window: &Window) -> Viewport {

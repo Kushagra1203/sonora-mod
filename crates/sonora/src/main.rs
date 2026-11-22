@@ -4,9 +4,9 @@ mod actions;
 mod assets;
 mod console;
 mod dock;
-mod gpu;
 #[cfg(target_os = "macos")]
 mod gestures;
+mod gpu;
 mod http;
 mod logging;
 mod memory;

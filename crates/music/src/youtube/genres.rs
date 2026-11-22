@@ -80,8 +80,10 @@ pub(crate) fn home(api: Arc<YtMusic>, resolver: Arc<Resolver>, account: String) 
                 return;
             }
         };
-        let mut whole = HomeFeed::default();
-        whole.recents = recents;
+        let mut whole = HomeFeed {
+            recents,
+            ..Default::default()
+        };
         match playlists {
             Ok(playlists) => whole.sections.extend(stand_in(playlists, &account)),
             Err(error) => log::warn!("youtube: cannot list the library playlists: {error:#}"),
@@ -214,7 +216,7 @@ fn songs(answer: &Value) -> Vec<Track> {
     parse::find_renderers(answer, "musicCarouselShelfRenderer")
         .into_iter()
         .chain(parse::find_renderers(answer, "musicShelfRenderer"))
-        .flat_map(|shelf| items(shelf))
+        .flat_map(items)
         .filter_map(|item| match item {
             GenreItem::Track(track) => Some(track),
             _ => None,

@@ -561,7 +561,7 @@ async fn apple(
         let Some(id) = result.get("artistId").and_then(Value::as_i64) else {
             continue;
         };
-        match shares_titles(http, id, &keys).await {
+        match shares_titles(http, id, keys).await {
             Ok(true) => {}
             Ok(false) => continue,
             Err(()) => return Attempt::Failed,

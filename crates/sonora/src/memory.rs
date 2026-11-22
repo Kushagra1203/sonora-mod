@@ -61,9 +61,7 @@ pub fn watch(cx: &mut App) {
             }
             // The trim walks the arena's free lists, so it runs off the main thread and only
             // when the heap is holding room it has no use for.
-            cx.background_executor()
-                .spawn(async { trim() })
-                .await;
+            cx.background_executor().spawn(async { trim() }).await;
         }
     })
     .detach();

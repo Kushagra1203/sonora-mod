@@ -83,7 +83,7 @@ impl RenderOnce for Hairline {
                             "hairline-sweep",
                             Animation::new(SWEEP).repeat().with_max_fps(30.),
                             |segment, delta| {
-                                segment.left(relative(SEGMENT * -1. + delta * (1. + SEGMENT)))
+                                segment.left(relative(-SEGMENT + delta * (1. + SEGMENT)))
                             },
                         ),
                 )

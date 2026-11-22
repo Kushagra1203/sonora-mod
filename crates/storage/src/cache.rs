@@ -114,7 +114,10 @@ impl Cache {
     }
 
     /// Stores several values in one transaction, so a page's answers are written together.
-    pub fn write_many(&self, entries: impl IntoIterator<Item = (String, String, i64)>) -> Result<()> {
+    pub fn write_many(
+        &self,
+        entries: impl IntoIterator<Item = (String, String, i64)>,
+    ) -> Result<()> {
         let mut connection = self.open()?;
         let transaction = connection
             .transaction()
