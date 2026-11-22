@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{AnyView, App, Context, Entity, FocusHandle, Pixels, Render, StyleRefinement};
-use gpui::{Window, deferred, div};
+use gpui::{Window, deferred, div, point, px};
 use input::WORKSPACE_CONTEXT;
 use state::{AppSettings, Playback, Queue, SideTab, Sonora};
 use ui::{
@@ -25,6 +25,8 @@ use crate::shells::Shell;
 /// The paint layer toasts take. Dialogs paint at 0 and menus at 1, so a toast shows over an
 /// open dialog and a menu opened after it still shows over the toast.
 const TOAST_LAYER: usize = 1;
+/// How far a page sits below its resting spot while its entrance veil lifts.
+const PAGE_RISE: Pixels = px(10.);
 /// How long a sidebar takes to slide between closed and open, like a door along its rail.
 const SLIDE: Duration = Duration::from_millis(240);
 
@@ -455,9 +457,17 @@ impl Render for Workspace {
                                             .bottom_0()
                                             .flex()
                                             .flex_col()
-                                            .map(|this| match dissolving {
-                                                true => entering(this, hidden),
-                                                false => veiled(this, hidden),
+                                            .map(|this| {
+                                                // The page rises the last few pixels into
+                                                // place as the veil lifts.
+                                                let this = match dissolving {
+                                                    true => entering(this, hidden),
+                                                    false => veiled(this, hidden),
+                                                };
+                                                this.layer_translate(point(
+                                                    px(0.),
+                                                    PAGE_RISE * hidden,
+                                                ))
                                             })
                                             .child(content),
                                     )

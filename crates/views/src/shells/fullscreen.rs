@@ -15,7 +15,7 @@ use input::{ToggleFullscreen, ToggleWindowFullscreen, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
 use state::{AppSettings, Cover, FullscreenControlsAutohide, Playback, Queue, SideTab, Sonora};
 use ui::{
-    ActiveTheme as _, Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Motion,
+    ActiveTheme as _, Artwork, Button, CoverFade, ExplicitBadge, InlineLink, InlineLinks, Motion,
     Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Springs, TabBar, Tails as _,
     Text, Visualizer, clock, glass, snapped,
 };
@@ -101,6 +101,8 @@ pub struct FullscreenView {
     large: Option<SharedString>,
     full: Option<SharedString>,
     revision: usize,
+    /// The strip cover's dissolve, so a change of track never pops the small artwork.
+    strip_cover: CoverFade,
     track_menu: ItemMenu,
     context_menu: Option<(music::Track, Point<Pixels>)>,
     last_moved: Instant,
@@ -157,6 +159,7 @@ impl FullscreenView {
             large: None,
             full: None,
             revision: 0,
+            strip_cover: CoverFade::new(),
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             context_menu: None,
             last_moved: Instant::now(),
@@ -615,7 +618,12 @@ impl FullscreenView {
             })
     }
 
-    fn strip(&self, hide: f32, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn strip(
+        &mut self,
+        hide: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let theme = *cx.theme();
         let frosted = ambient::shown(cx);
         let cover = ui::snapped(theme.metrics.row, window);
@@ -645,7 +653,12 @@ impl FullscreenView {
                             .cursor_pointer()
                             .on_click(move |_, _, cx| open_album(&album, cx))
                     })
-                    .child(Artwork::new(track.and_then(|t| t.cover.clone())).size(cover)),
+                    .child(self.strip_cover.element(
+                        track.and_then(|t| t.cover.clone()),
+                        cover,
+                        window,
+                        cx,
+                    )),
             )
             .child(
                 div()
