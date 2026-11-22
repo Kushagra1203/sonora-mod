@@ -63,6 +63,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The home page paints the playing song's artwork behind it, enlarged and blurred until only its
   light is left, with the song's colours drifting across the picture as a tint. The page is the
   cover now, not a colour squeezed out of it.
+- The home page's artwork fills the window from the middle of the cover and keeps its colour to
+  the foot of the page, so the page reads with the picture the way the song page does.
 - The top of the sidebar carries the Sonora mark and wordmark in place of the account row, and
   the mark is the way home. It stands taller than the bar it replaced, with no rule under it.
 - Both sidebars pick their ink from the brightness the panel actually shows over the page behind
@@ -96,6 +98,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A cover with a white border no longer wears the colour of that border: the accent follows the
+  artwork's own colour instead of the thumbnail's seam.
 - The rows at the top of Home are what you played most recently, and the picks beside them are
   YouTube's own instead of a shuffle of your library.
 - A genre's page no longer carries a shelf of music videos, so it opens with the songs and the

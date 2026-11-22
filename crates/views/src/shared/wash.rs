@@ -27,6 +27,10 @@ pub(crate) const SHADE: f32 = 0.30;
 /// Where the cover's light starts yielding to the page, and where it has fully become it.
 const FADE_FROM: f32 = 0.42;
 const FADE_TO: f32 = 0.78;
+/// The share of the page colour a field has become by the foot of the window, for a field
+/// that keeps half of it. The player page's backdrop settles to the same half, so the
+/// artwork's own colour survives under the controls there and under the shelves here.
+pub(crate) const SETTLE_HALF: f32 = 0.5;
 /// How much page colour the leading-edge ink wash lays over the field, where the hero's
 /// title sits.
 const INK: f32 = 0.26;
@@ -54,6 +58,14 @@ pub(crate) struct PageWash {
     /// already reaches the fold wants the field left alone, so the sidebars frost the artwork's
     /// own colours rather than a darkening gradient.
     settle: bool,
+    /// How much of the page colour the field has become by the foot of the window. A field
+    /// that has become all of it ends in a flat page; one that has become half of it keeps
+    /// the artwork's own colour under the rows, as the player page does.
+    settle_to: f32,
+    /// Whether the artwork sits in the middle of the field rather than at its top. A field
+    /// that shows the top band of a cover keeps the page's hero in its own light; a field
+    /// that fills the window with the middle of one shows the art as the player page does.
+    centered: bool,
     /// How much of the page colour lies over the whole field.
     shade: f32,
     /// How much page colour the leading-edge ink wash lays over the field. None lays no wash
@@ -76,6 +88,8 @@ impl PageWash {
             source: cover.map(Source::Cover),
             top: Pixels::ZERO,
             settle: true,
+            settle_to: 1.,
+            centered: false,
             shade: SHADE,
             ink: INK,
         }
@@ -88,6 +102,8 @@ impl PageWash {
             source: art.map(Source::Art),
             top: Pixels::ZERO,
             settle: true,
+            settle_to: 1.,
+            centered: false,
             shade: SHADE,
             ink: INK,
         }
@@ -109,6 +125,19 @@ impl PageWash {
     /// reaches the fold, so the sidebars frost the artwork alone.
     pub(crate) fn settle(mut self, settle: bool) -> Self {
         self.settle = settle;
+        self
+    }
+
+    /// How much of the page colour the field has become by the foot of the window.
+    pub(crate) fn settle_to(mut self, share: f32) -> Self {
+        self.settle_to = share;
+        self
+    }
+
+    /// Whether the artwork sits in the middle of the field rather than at its top, so the
+    /// window fills with the middle of the cover the way the player page's backdrop does.
+    pub(crate) fn centered(mut self, centered: bool) -> Self {
+        self.centered = centered;
         self
     }
 
@@ -140,21 +169,30 @@ impl RenderOnce for PageWash {
         let viewport = window.viewport_size();
         let height = viewport.height;
         let width = viewport.width;
-        // The cover keeps its own square, so the field shows its top band rather than a zoomed
-        // crop of its middle. It is drawn a little past every edge so the blur never pulls in
-        // the transparent border, and tall enough to reach below the fold at any aspect.
+        // The cover keeps its own square, so the field shows the top band of it rather than a
+        // zoomed crop of its middle, unless the field is centred on the artwork. It is drawn a
+        // little past every edge so the blur never pulls in the transparent border, and tall
+        // enough to reach below the fold at any aspect.
         let art = (width + BLEED * 2.).max(height + BLEED * 2.);
+        // Where the artwork stands in the field: at the top of it, so what shows is the top
+        // of the artwork and the blur's soft start stays out of frame, or centred in it, so
+        // the window fills with the middle of the cover.
+        let offset = match self.centered {
+            true => (height - art) / 2. - self.top,
+            false => -BLEED - self.top,
+        };
         // A see-through window keeps its own opacity: the field thins with the page instead of
         // sitting on the wallpaper as an opaque sheet.
         let clarity = match theme.transparent {
             true => theme.background.a,
             false => 1.,
         };
-        // On an opaque window the field ends in the page colour. On a see-through one it ends
-        // in nothing, so the wallpaper still reads through the bottom of the page.
+        // On an opaque window the field ends in the page colour, or in as much of it as the
+        // page keeps. On a see-through one it ends in nothing, so the wallpaper still reads
+        // through the bottom of the page.
         let end = match theme.transparent {
             true => theme.background.opacity(0.),
-            false => theme.background,
+            false => theme.background.opacity(self.settle_to),
         };
 
         div()
@@ -170,9 +208,7 @@ impl RenderOnce for PageWash {
                     .absolute()
                     .left(relative(0.5))
                     .ml(-(art / 2.))
-                    // The cover's top edge starts just past the window, so what shows is the
-                    // top of the artwork and the blur's soft start stays out of frame.
-                    .top(-BLEED - self.top)
+                    .top(offset)
                     .w(art)
                     .h(art)
                     .opacity(clarity)

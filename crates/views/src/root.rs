@@ -29,7 +29,7 @@ use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::page_controls::PageEvent;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
-use crate::shared::wash::{ARTIST_SHADE, BLUR, PageWash, SHADE};
+use crate::shared::wash::{ARTIST_SHADE, BLUR, PageWash, SETTLE_HALF, SHADE};
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -1410,9 +1410,17 @@ impl Render for Root {
             .when(ambient, |this| this.child(self.ambient.clone()))
             // The home page's field sits behind everything too: the playing song's colours,
             // washed over the page and drifting. The artwork it washes over is laid down first,
-            // so the colour drifts across the picture rather than standing in for it.
+            // so the colour drifts across the picture rather than standing in for it. The
+            // artwork is centred in the window and settles to half the page colour, so the
+            // page reads with the picture the way the song page does.
             .when(field, |this| {
-                this.child(PageWash::of(self.home_art(window, cx)).ink(0.).shade(SHADE))
+                this.child(
+                    PageWash::of(self.home_art(window, cx))
+                        .ink(0.)
+                        .shade(SHADE)
+                        .centered(true)
+                        .settle_to(SETTLE_HALF),
+                )
             })
             .when(field, |this| this.child(self.field.clone()))
             // The page wash sits behind the title bar on album/playlist pages so the artwork
