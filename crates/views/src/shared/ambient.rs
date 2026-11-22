@@ -51,10 +51,10 @@ const DOWNSCALE: f32 = 4.;
 /// black sheet this strong was most of what a see-through window's alpha went on.
 const SHADE: f32 = 0.55;
 /// How much of the wash the home page's field lets through. The fullscreen stage keeps half
-/// of its colour and stands on a darkened stage of its own; the home page keeps a third of
-/// it over the page's own colour, so the page still reads as the page and the wash is a haze
-/// behind it rather than a light on it.
-pub(crate) const HOME_LIGHT: f32 = 0.34;
+/// of its colour and stands on a darkened stage of its own; the home page drifts over the
+/// artwork itself, so its wash is only a tint across the picture and keeps a fifth of its
+/// colour.
+const HOME_LIGHT: f32 = 0.2;
 
 /// One blob: base centre (fractions of the layer), diameter (fraction of the
 /// layer's smaller side), drift period in seconds, phase, drift amplitude
@@ -105,8 +105,8 @@ pub(crate) enum Stage {
     /// The fullscreen stage: the page's colour darkened under the field, so the blobs read
     /// against it, and the blobs carry half their own colour.
     Fullscreen,
-    /// The home page: the page's own colour under the field, and the blobs carry a third
-    /// of theirs, so the page keeps its colour and the wash is a haze over it.
+    /// The home page: the artwork itself under the field, so the blobs carry a fifth of
+    /// their colour as a tint across the picture.
     Home,
 }
 
@@ -266,7 +266,12 @@ impl Ambient {
     /// carried from a light highlight down to a dark shadow, plus its runner-up
     /// where the art names one. Art with no colour leaves no tints behind, and
     /// then the stage is quiet neutrals.
-    pub(crate) fn colors(theme: &Theme) -> [Hsla; BLOBS] {
+    ///
+    /// The fullscreen stage carries the colour in a band of its own, for the darkened
+    /// stage beneath it to read against. The home page's field drifts over the artwork
+    /// itself, so its blobs take the brightness the artwork carries and the picture is
+    /// never flattened into a band of its own.
+    pub(crate) fn colors(stage: Stage, art: Option<CoverPalette>, theme: &Theme) -> [Hsla; BLOBS] {
         let neutral = |light: f32| Hsla {
             h: 0.06,
             s: 0.12,
@@ -313,37 +318,71 @@ impl Ambient {
                 pale(second, 0.92),
             ];
         }
+        // The lightness the blobs carry, and how far the highlight and the two shadows fall
+        // from it.
+        let (centre, highlight, shadow, deep) = match stage {
+            Stage::Fullscreen => {
+                let centre = (0.40 + (accent.l - 0.45) * 0.5).clamp(0.28, 0.52);
+                (
+                    centre,
+                    (centre + 0.14).clamp(0.3, 0.62),
+                    (centre - 0.13).clamp(0.18, 0.45),
+                    (centre - 0.16).clamp(0.16, 0.4),
+                )
+            }
+            Stage::Home => {
+                // The artwork carries the brightness of the field: a bright cover keeps its
+                // blobs bright and a dark one keeps them dark, so neither the picture nor
+                // the colour is forced through black.
+                let centre = art
+                    .map(|art| art.lightness)
+                    .unwrap_or(theme.background.l)
+                    .clamp(0.16, 0.60);
+                (
+                    centre,
+                    (centre + 0.14).min(0.72),
+                    (centre - 0.13).max(0.10),
+                    (centre - 0.16).max(0.08),
+                )
+            }
+        };
         let base = Hsla {
             h: accent.h,
             s: (accent.s * 0.9 + 0.04).clamp(0.45, 0.75),
-            l: (0.40 + (accent.l - 0.45) * 0.5).clamp(0.28, 0.52),
+            l: centre,
             a: 1.,
         };
         let second = match theme.tint_secondary {
             Some(second) => Hsla {
                 h: second.h,
                 s: (second.s * 0.9).clamp(0.4, 0.72),
-                l: (0.38 + (second.l - 0.45) * 0.5).clamp(0.28, 0.5),
+                l: match stage {
+                    Stage::Fullscreen => (0.38 + (second.l - 0.45) * 0.5).clamp(0.28, 0.5),
+                    Stage::Home => centre,
+                },
                 a: 1.,
             },
-            None => neutral(floor + 0.03),
+            None => neutral(match stage {
+                Stage::Fullscreen => floor + 0.03,
+                Stage::Home => centre + 0.03,
+            }),
         };
         [
             base,
             Hsla {
-                l: (base.l + 0.14).clamp(0.3, 0.62),
+                l: highlight,
                 s: (base.s - 0.08).clamp(0.4, 0.75),
                 ..base
             },
             second,
             Hsla {
-                l: (base.l - 0.13).clamp(0.18, 0.45),
+                l: shadow,
                 s: (base.s + 0.04).clamp(0.45, 0.8),
                 ..base
             },
             Hsla {
                 h: (base.h + 0.97).rem_euclid(1.),
-                l: (base.l - 0.16).clamp(0.16, 0.4),
+                l: deep,
                 s: (base.s - 0.02).clamp(0.4, 0.78),
                 ..base
             },
@@ -371,7 +410,14 @@ impl Render for Ambient {
             }
             false => 0.,
         };
-        let colors = self.wash(Self::colors(&theme), animates);
+        let colors = self.wash(
+            Self::colors(
+                self.stage,
+                self.followed.as_ref().map(|followed| followed.palette),
+                &theme,
+            ),
+            animates,
+        );
         // The field stands in for the page rather than sitting on it, so it carries the
         // window's own opacity and `Root` paints no background beneath it. One opacity thins
         // every layer at once; a quad still adds to what it covers, which is why the blobs
@@ -535,8 +581,8 @@ impl Ambient {
     }
 
     /// The colour under the field: the fullscreen stage is the page's colour darkened, so the
-    /// blobs read against it; the home page keeps the page's own colour and lets the wash
-    /// settle over it.
+    /// blobs read against it; the home page paints no base of its own, because the artwork
+    /// beneath the field is what the page is made of and a base would hide it.
     fn base(&self, theme: &Theme) -> Hsla {
         let page = Hsla {
             a: 1.,
@@ -544,7 +590,7 @@ impl Ambient {
         };
         match self.stage {
             Stage::Fullscreen => shaded(page),
-            Stage::Home => page,
+            Stage::Home => Hsla { a: 0., ..page },
         }
     }
 
@@ -566,18 +612,6 @@ impl Ambient {
             Stage::Home => HOME_LIGHT,
         }
     }
-}
-
-/// The lightness the home page's field carries over the page, for a panel beside it to read
-/// against: the page's own lightness with the wash's own mixed in at the share the wash
-/// lets through.
-pub(crate) fn field_lightness(theme: &Theme) -> f32 {
-    let wash = Ambient::colors(theme)
-        .iter()
-        .map(|color| color.l)
-        .fold(f32::MIN, f32::max);
-
-    wash * HOME_LIGHT + theme.background.l * (1. - HOME_LIGHT)
 }
 
 /// Whether the ambient background is on. Fullscreen reads it for the frosted
@@ -676,7 +710,7 @@ mod tests {
 
     #[test]
     fn accent_theme_yields_its_family() {
-        let colors = Ambient::colors(&tinted(0.78));
+        let colors = Ambient::colors(Stage::Fullscreen, None, &tinted(0.78));
 
         for (index, color) in colors.iter().enumerate() {
             // The runner-up sits in slot two; everything else is family.
@@ -694,7 +728,7 @@ mod tests {
 
     #[test]
     fn untinted_theme_yields_neutrals() {
-        let colors = Ambient::colors(&Theme::dark());
+        let colors = Ambient::colors(Stage::Fullscreen, None, &Theme::dark());
 
         assert!(colors.iter().all(|color| color.s < 0.2));
     }

@@ -6,13 +6,16 @@ use ytmusic::nav::Nav as _;
 use ytmusic::parse;
 
 use crate::models::{
-    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreItem, Playlist, PlaylistDetail,
-    RelatedArtist, ReleaseType, Shelves, Track, UserProfile,
+    Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, CoverSize, GenreItem, Playlist,
+    PlaylistDetail, RelatedArtist, ReleaseType, Shelves, Track, UserProfile,
 };
 use crate::youtube::resolve::Resolver;
 
 /// The longer edge of a large cover, wide enough for the fullscreen player on a 2x display.
 const COVER_LARGE: u32 = 1440;
+/// The longer edge of a full cover, for a cover that fills the screen. Google serves the same
+/// picture well past the 1440 a large cover asks for.
+const COVER_FULL: u32 = 2160;
 /// The width an artist banner is asked for. It spans a whole window, so it wants more than a
 /// cover does; Google serves the same picture well past the 1440 it lists.
 const BANNER: u32 = 2560;
@@ -574,7 +577,20 @@ fn widest(thumbnails: &[ytmusic::Thumbnail]) -> Option<&ytmusic::Thumbnail> {
 /// YouTube Music hands out 544 pixels at most, though the server scales the same picture to any
 /// size.
 pub fn cover_large(thumbnails: &[ytmusic::Thumbnail]) -> Option<String> {
-    widest(thumbnails).map(|thumb| resized(&thumb.url, COVER_LARGE))
+    widest(thumbnails)
+        .map(|thumb| resized(&thumb.url, COVER_LARGE).unwrap_or_else(|| thumb.url.clone()))
+}
+
+/// The same cover at another size. Google's image server carries the size in the url's own
+/// options, so the picture behind a cover is asked for again at a different edge rather than
+/// fetched from somewhere else. A url the server does not carry a size for cannot be sized,
+/// and comes back as none.
+pub fn cover_at(url: &str, size: CoverSize) -> Option<String> {
+    let edge = match size {
+        CoverSize::Large => COVER_LARGE,
+        CoverSize::Full => COVER_FULL,
+    };
+    resized(url, edge)
 }
 
 /// The artist header picture when it is the wide one an immersive header carries. A visual header
@@ -630,13 +646,11 @@ fn cropped(url: &str, width: u32, height: u32) -> String {
 
 /// Rewrites the sizing options of a googleusercontent url so its longer edge is `edge`, keeping
 /// the aspect and every other option. Handles both the `=w<width>-h<height>` form and the `=s<n>`
-/// one, which the server reads as the longer edge of a square. Any other url comes back as it is.
-fn resized(url: &str, edge: u32) -> String {
-    let Some((base, options)) = url.rsplit_once('=') else {
-        return url.to_owned();
-    };
+/// one, which the server reads as the longer edge of a square. Any other url comes back as none.
+fn resized(url: &str, edge: u32) -> Option<String> {
+    let (base, options) = url.rsplit_once('=')?;
     if !base.contains(".googleusercontent.com/") {
-        return url.to_owned();
+        return None;
     }
     let size = |prefix: char| {
         options
@@ -651,14 +665,14 @@ fn resized(url: &str, edge: u32) -> String {
     let (width, height) = match (size('w'), size('h')) {
         (Some(width), Some(height)) => (width, height),
         // A plain `=s<n>` url measures a single square edge instead.
-        _ => match size('s').filter(|edge| *edge > 0) {
-            Some(square) => (square, square),
-            None => return url.to_owned(),
-        },
+        _ => {
+            let square = size('s').filter(|edge| *edge > 0)?;
+            (square, square)
+        }
     };
     let longer = width.max(height);
     if longer == 0 {
-        return url.to_owned();
+        return None;
     }
     let scale = |side: u32| u64::from(side) * u64::from(edge) / u64::from(longer);
     let options = options
@@ -676,5 +690,5 @@ fn resized(url: &str, edge: u32) -> String {
         })
         .collect::<Vec<_>>()
         .join("-");
-    format!("{base}={options}")
+    Some(format!("{base}={options}"))
 }

@@ -1,4 +1,4 @@
-use gpui::{AnyView, Context, Entity, MouseButton, NavigationDirection, Render, Task};
+use gpui::{AnyElement, AnyView, Context, Entity, MouseButton, NavigationDirection, Render, Task};
 use gpui::{App, Font, FontFallbacks, SharedString, StyleRefinement, font, prelude::*};
 use gpui::{Pixels, Window, div};
 use input::{
@@ -15,8 +15,8 @@ use state::{
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use ui::WindowFrame;
 use ui::{
-    ActiveTheme as _, Dismiss, Entrance, INPUT_CONTEXT, Look, Stillness, Theme, ThemeKind,
-    clear_listing,
+    ActiveTheme as _, CoverFade, Dismiss, Entrance, INPUT_CONTEXT, Look, Stillness, Theme,
+    ThemeKind, clear_listing,
 };
 
 use crate::chrome::{
@@ -29,7 +29,7 @@ use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::page_controls::PageEvent;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
-use crate::shared::wash::{ARTIST_SHADE, PageWash};
+use crate::shared::wash::{ARTIST_SHADE, BLUR, PageWash, SHADE};
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -103,6 +103,9 @@ pub struct Root {
     ambient: Entity<Ambient>,
     /// The home page's field: the playing song's colours washed over the page.
     field: Entity<Ambient>,
+    /// The home page's artwork: the playing song's cover, dissolving from the last one when
+    /// the song changes.
+    home_art: CoverFade,
     /// The question before a Jam link is joined, drawn over whichever shell is up so a link
     /// opened in fullscreen is answered there.
     jam_invite: Entity<JamInvite>,
@@ -381,6 +384,7 @@ impl Root {
             adaptive,
             ambient,
             field,
+            home_art: CoverFade::new(),
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
             background: None,
@@ -691,12 +695,33 @@ impl Root {
         }
     }
 
-    /// The cover of the song the player shows, which the home page's field is drawn from.
+    /// The cover of the song the player shows, which the home page's field is drawn from. The
+    /// large rendition is preferred: the field draws the artwork across the whole window, and
+    /// the thumbnail is too small to fill it without turning to mush.
     fn playing_cover(&self, cx: &App) -> Option<String> {
-        self.playback
+        let track = self.playback.read(cx).shown_track(cx)?;
+        let large = Sonora::global(cx)
+            .cover
             .read(cx)
-            .shown_track(cx)
-            .and_then(|track| track.cover)
+            .large()
+            .map(SharedString::from);
+        match large {
+            Some(large) => Some(large.to_string()),
+            None => track.cover,
+        }
+    }
+
+    /// The home page's artwork: the playing song's cover, enlarged across the window and
+    /// blurred until only its light survives. It dissolves from the last cover when the song
+    /// changes, so the page melts into the new one rather than cutting to it.
+    fn home_art(&mut self, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        let cover = self.playing_cover(cx)?;
+        let art = PageWash::field_size(window);
+        Some(
+            self.home_art
+                .blurred(Some(cover), art, BLUR, window, cx)
+                .into_any_element(),
+        )
     }
 
     /// The cover the page wash is drawn from: the picture the page on show is built on. Read
@@ -1264,8 +1289,8 @@ impl Render for Root {
         // the page colour under it would only stack a second alpha beneath that and leave a
         // see-through fullscreen reading nearly solid.
         let ambient = matches!(self.view, RootView::Fullscreen) && ambient::shown(cx);
-        // The home page's field covers the window whole the same way: the wash behind it
-        // carries the window's own opacity and stands in for the page colour.
+        // The home page's field covers the window whole the same way: the artwork and the wash
+        // over it stand in for the page colour.
         let field = self.home_page(cx);
         // The home page, an album or a playlist drops the title bar and draws its own controls
         // over its artwork.
@@ -1323,7 +1348,7 @@ impl Render for Root {
             .when_some(radius, |this, radius| {
                 this.rounded(radius).overflow_hidden()
             })
-            .when(!ambient && !field, |this| this.bg(theme.background))
+            .when(!ambient, |this| this.bg(theme.background))
             .text_color(theme.foreground)
             .capture_any_mouse_down(|_, window, cx| {
                 if ui::cancel_middle_scroll(cx) {
@@ -1384,7 +1409,11 @@ impl Render for Root {
             // The ambient background sits behind everything, title bar included.
             .when(ambient, |this| this.child(self.ambient.clone()))
             // The home page's field sits behind everything too: the playing song's colours,
-            // washed over the page and drifting.
+            // washed over the page and drifting. The artwork it washes over is laid down first,
+            // so the colour drifts across the picture rather than standing in for it.
+            .when(field, |this| {
+                this.child(PageWash::of(self.home_art(window, cx)).ink(0.).shade(SHADE))
+            })
             .when(field, |this| this.child(self.field.clone()))
             // The page wash sits behind the title bar on album/playlist pages so the artwork
             // colour reaches the top of the window.

@@ -9,7 +9,8 @@
 
 use gpui::prelude::*;
 use gpui::{
-    App, Pixels, RenderOnce, Window, div, linear_color_stop, linear_gradient, px, relative,
+    AnyElement, App, Pixels, RenderOnce, Window, div, linear_color_stop, linear_gradient, px,
+    relative,
 };
 use ui::{ActiveTheme as _, Artwork};
 
@@ -18,7 +19,7 @@ use ui::{ActiveTheme as _, Artwork};
 const BLEED: Pixels = px(100.);
 /// How hard the cover is blurred. Wide enough that no shape survives, narrow enough that the
 /// renderer still has a few texels of colour to work with.
-const BLUR: Pixels = px(84.);
+pub(crate) const BLUR: Pixels = px(84.);
 /// How much of the page colour lies over the whole field, so bright art still leaves the hero's
 /// text readable. Shared with the chrome that sits over the field and needs to know how bright
 /// the result is.
@@ -44,7 +45,8 @@ pub(crate) const ARTIST_SHADE: f32 = 0.12;
 /// page keeps the plain theme background.
 #[derive(IntoElement)]
 pub(crate) struct PageWash {
-    cover: Option<String>,
+    /// Where the field's artwork comes from.
+    source: Option<Source>,
     /// How far below the window's top the wash starts. Zero on a page that drops the title bar,
     /// the bar's height on one that keeps it.
     top: Pixels,
@@ -54,16 +56,47 @@ pub(crate) struct PageWash {
     settle: bool,
     /// How much of the page colour lies over the whole field.
     shade: f32,
+    /// How much page colour the leading-edge ink wash lays over the field. None lays no wash
+    /// over it.
+    ink: f32,
+}
+
+/// Where a wash's artwork comes from.
+enum Source {
+    /// A cover the page owns, drawn at the field's own size.
+    Cover(String),
+    /// Artwork the caller has already built at the field's own size, for a field that dissolves
+    /// between covers.
+    Art(AnyElement),
 }
 
 impl PageWash {
     pub(crate) fn new(cover: Option<String>) -> Self {
         Self {
-            cover,
+            source: cover.map(Source::Cover),
             top: Pixels::ZERO,
             settle: true,
             shade: SHADE,
+            ink: INK,
         }
+    }
+
+    /// The wash for artwork the caller has already built, for a field that dissolves between
+    /// covers rather than swapping at once. The artwork is drawn at [`PageWash::field_size`].
+    pub(crate) fn of(art: Option<AnyElement>) -> Self {
+        Self {
+            source: art.map(Source::Art),
+            top: Pixels::ZERO,
+            settle: true,
+            shade: SHADE,
+            ink: INK,
+        }
+    }
+
+    /// The size the field's artwork is drawn at, for a caller that builds the artwork itself.
+    pub(crate) fn field_size(window: &Window) -> Pixels {
+        let viewport = window.viewport_size();
+        (viewport.width + BLEED * 2.).max(viewport.height + BLEED * 2.)
     }
 
     /// Starts the wash `top` below the window's top edge.
@@ -84,12 +117,19 @@ impl PageWash {
         self.shade = shade;
         self
     }
+
+    /// How much page colour the leading-edge ink wash lays over the field. None lays no wash
+    /// over it, for a page with no title of its own at the leading edge.
+    pub(crate) fn ink(mut self, ink: f32) -> Self {
+        self.ink = ink;
+        self
+    }
 }
 
 impl RenderOnce for PageWash {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = *cx.theme();
-        let Some(cover) = self.cover else {
+        let Some(source) = self.source else {
             return div()
                 .id("page-wash")
                 .absolute()
@@ -136,14 +176,16 @@ impl RenderOnce for PageWash {
                     .w(art)
                     .h(art)
                     .opacity(clarity)
-                    .child(
-                        Artwork::new(Some(cover))
+                    .child(match source {
+                        Source::Cover(cover) => Artwork::new(Some(cover))
                             .size(art)
                             .wide(art)
                             .overlay()
                             .soft(true)
-                            .blur(BLUR),
-                    ),
+                            .blur(BLUR)
+                            .into_any_element(),
+                        Source::Art(art) => art,
+                    }),
             )
             .child(
                 div()
@@ -154,11 +196,13 @@ impl RenderOnce for PageWash {
             // An ink wash from the leading edge, where the hero's title and its actions sit,
             // so the words keep their edges over bright art the way the vertical settle keeps
             // them over the lower rows.
-            .child(div().absolute().inset_0().bg(linear_gradient(
-                90.,
-                linear_color_stop(theme.background.opacity(INK * clarity), 0.),
-                linear_color_stop(theme.background.opacity(0.), 0.5),
-            )))
+            .when(self.ink > 0., |this| {
+                this.child(div().absolute().inset_0().bg(linear_gradient(
+                    90.,
+                    linear_color_stop(theme.background.opacity(self.ink * clarity), 0.),
+                    linear_color_stop(theme.background.opacity(0.), 0.5),
+                )))
+            })
             .when(self.settle, |this| {
                 this.child(div().absolute().inset_0().bg(linear_gradient(
                     180.,

@@ -18,6 +18,8 @@ pub struct Cover {
     session: Entity<Session>,
     playback: Entity<Playback>,
     album: Option<String>,
+    /// The track the covers belong to, for a track that has no album of its own.
+    track: Option<String>,
     large: Option<String>,
     full: Option<String>,
     cache: HashMap<String, Art>,
@@ -47,6 +49,7 @@ impl Cover {
             session,
             playback,
             album: None,
+            track: None,
             large: None,
             full: None,
             cache: HashMap::new(),
@@ -55,6 +58,8 @@ impl Cover {
         }
     }
 
+    /// The large cover of the album on show, which is the shown track's own cover at a larger
+    /// size when the provider can name one.
     pub fn large(&self) -> Option<&str> {
         self.large.as_deref()
     }
@@ -77,6 +82,7 @@ impl Cover {
     fn forget(&mut self, cx: &mut Context<Self>) {
         self.task = None;
         self.album = None;
+        self.track = None;
         self.large = None;
         self.full = None;
         self.cache.clear();
@@ -86,17 +92,29 @@ impl Cover {
     /// Follows the shown track's album. Both covers come straight from the track's thumbnail
     /// when the provider can tell, and the album is loaded only when it cannot.
     fn follow(&mut self, cx: &mut Context<Self>) {
-        let (album, thumbnail) = match self.playback.read(cx).shown_track(cx) {
-            Some(track) => (track.album_id, track.cover),
-            None => (None, None),
+        let (album, thumbnail, track) = match self.playback.read(cx).shown_track(cx) {
+            Some(track) => (track.album_id, track.cover, track.id),
+            None => (None, None, None),
         };
-        if album == self.album {
+        // The album names the covers, and a track with no album of its own is named by its own
+        // id, so its cover still follows the song from one track to the next.
+        let follows = match album.as_deref() {
+            Some(_) => album == self.album,
+            None => track == self.track,
+        };
+        if follows {
             return;
         }
         self.task = None;
         self.album = album.clone();
+        self.track = track.clone();
         let cached = album.as_ref().and_then(|id| self.cache.get(id)).cloned();
-        let client = album.as_deref().and_then(|id| self.client(id, cx));
+        // A track with no album of its own still has a cover, and the provider that served it
+        // can say what size that cover comes in at.
+        let client = match album.as_deref() {
+            Some(id) => self.client(id, cx),
+            None => track.as_deref().and_then(|id| self.client(id, cx)),
+        };
         let derive = |size| client.as_ref()?.cover_at(thumbnail.as_deref()?, size);
         self.large = cached
             .as_ref()

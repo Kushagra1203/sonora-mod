@@ -60,9 +60,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wide gradients from banding.
 - The home page drops its top bar: the sidebar, history and queue controls float over the page
   instead, and both sidebars frost the field behind them as they do on an album or artist page.
-- The home page carries the playing song's colours behind it, washed over the page and drifting
-  off centre. The page keeps its own brightness, so the wash is a haze behind it rather than a
-  light on it.
+- The home page paints the playing song's artwork behind it, enlarged and blurred until only its
+  light is left, with the song's colours drifting across the picture as a tint. The page is the
+  cover now, not a colour squeezed out of it.
 - The top of the sidebar carries the Sonora mark and wordmark in place of the account row, and
   the mark is the way home. It stands taller than the bar it replaced, with no rule under it.
 - Both sidebars pick their ink from the brightness the panel actually shows over the page behind

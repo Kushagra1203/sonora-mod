@@ -11,7 +11,7 @@
 use gpui::{App, Hsla};
 use router::Destination;
 
-use crate::shared::{adaptive, ambient, page_art, wash};
+use crate::shared::{page_art, wash};
 
 /// The panel lightness at which black overtakes white as the more readable ink. Below it white
 /// is the better of the two, above it black, and at the crossover they are equally poor — so
@@ -61,21 +61,13 @@ pub(crate) fn panel(fill: Hsla, theme: &ui::Theme, cx: &App) -> Panel {
     let lightness = match art {
         Some(palette) => {
             // What the panel shows: its own fill at `SIDEBAR_FROST_TINT` over the page's field.
-            let field = match current {
-                Destination::Home => {
-                    // The home page's field is a wash of the song's colours over the page, so
-                    // the field's own brightness is the page's with the wash's mixed in.
-                    let stage = adaptive::stage_on(palette, cx);
-                    ambient::field_lightness(&stage)
-                }
-                _ => {
-                    let shade = match current {
-                        Destination::Artist(_) => wash::ARTIST_SHADE,
-                        _ => wash::SHADE,
-                    };
-                    palette.corner * (1. - shade) + theme.background.l * shade
-                }
+            // The field is the artwork the page stands on, darkened by the wash's own shade,
+            // so the corner of the picture is what the panel has to read against.
+            let shade = match current {
+                Destination::Artist(_) => wash::ARTIST_SHADE,
+                _ => wash::SHADE,
             };
+            let field = palette.corner * (1. - shade) + theme.background.l * shade;
             fill.l * wash::SIDEBAR_FROST_TINT + field * (1. - wash::SIDEBAR_FROST_TINT)
         }
         None => theme.background.l,
