@@ -59,10 +59,10 @@ const VISUALIZER_MIN: f32 = 160.;
 /// falls outside the frame.
 const BACKDROP_BLEED: Pixels = px(100.);
 /// How hard the backdrop cover is blurred: wide enough that no shape survives.
-const BACKDROP_BLUR: Pixels = px(84.);
+const BACKDROP_BLUR: Pixels = px(96.);
 /// How much of the page colour lies over the backdrop, so bright art cannot fight the cover
 /// and the controls for attention.
-const BACKDROP_SHADE: f32 = 0.42;
+const BACKDROP_SHADE: f32 = 0.52;
 /// How tall the band under the controls is, as a share of the window. It carries the seek bar,
 /// the transport and the meta line over a visualizer that reaches the bottom edge, so it runs
 /// a good deal taller than the chrome itself and fades out well above it.
@@ -655,9 +655,8 @@ impl FullscreenView {
             .child(
                 div()
                     .absolute()
-                    .left(relative(0.5))
-                    .ml(-(art / 2.))
-                    .top(-BACKDROP_BLEED)
+                    .left(-((art - viewport.width) / 2.))
+                    .top(-((art - viewport.height) / 2.))
                     .w(art)
                     .h(art)
                     .opacity(clarity)
@@ -1335,7 +1334,7 @@ impl Render for FullscreenView {
             false => None,
         };
 
-        div()
+        let page = div()
             .id("fullscreen")
             .role(Role::Main)
             .aria_label(t!("player-fullscreen"))
@@ -1363,11 +1362,6 @@ impl Render for FullscreenView {
             // Capture phase: every click stirs the idle timer, even one a
             // control underneath swallows for itself.
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, cx| this.poke(cx)))
-            // The immersive field sits under everything the player paints, over the ambient
-            // that keeps drifting until the cover itself has decoded.
-            .when(ambient::shown(cx), |this| {
-                this.child(self.backdrop(window, cx))
-            })
             // A trackpad reports fingers that only touch it as a scroll that moves nothing.
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                 if event.delta.pixel_delta(window.line_height()) != Point::default() {
@@ -1476,7 +1470,22 @@ impl Render for FullscreenView {
                 this.child(self.dock(theme.metrics.player_bar * DOCK_FULL, hide, room, cx))
             })
             .when(idle < 1., |this| this.child(self.leave(idle, window, cx)))
-            .children(self.menu(cx))
+            .children(self.menu(cx));
+
+        // The immersive field sits under everything the player paints, on a container without
+        // the page's own padding, so it reaches the window's edges instead of stopping at them
+        // and reading as a slab.
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .when(ambient::shown(cx), |this| {
+                this.child(self.backdrop(window, cx))
+            })
+            .child(page)
     }
 }
 
