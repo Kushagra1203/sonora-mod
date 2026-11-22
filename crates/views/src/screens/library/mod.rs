@@ -211,6 +211,9 @@ pub struct LibraryView {
     me: WeakEntity<Self>,
     /// Skeleton cards stood on the previous render, to spot the moment the deck replaces them.
     pending_shown: bool,
+    /// The section whose deck was drawn last, so another section's cards ladder in rather
+    /// than replacing the last ones in a single frame.
+    drawn_section: Option<Section>,
     /// When that replacement happened, while the arrival window is open.
     arrived_at: Option<Instant>,
 }
@@ -441,6 +444,7 @@ impl LibraryView {
             sliders: Section::ALL.map(|_| Sliders::default()),
             me: me.downgrade(),
             pending_shown: false,
+            drawn_section: None,
             arrived_at: None,
         };
         view.restore(cx);
@@ -1227,11 +1231,15 @@ impl Render for LibraryView {
                 Some(note) => note.size_full().into_any_element(),
                 None => {
                     // Skeleton cards stood on the previous render and the deck now replaces
-                    // them: open the arrival window so the first rows stagger into place.
-                    if self.pending_shown && self.arrived_at.is_none() {
+                    // them, or another section's deck took this one's place: open the arrival
+                    // window so the first rows stagger into place.
+                    if (self.pending_shown || self.drawn_section != Some(self.section))
+                        && self.arrived_at.is_none()
+                    {
                         self.arrived_at = Some(Instant::now());
                     }
                     self.pending_shown = false;
+                    self.drawn_section = Some(self.section);
                     if self
                         .arrived_at
                         .is_some_and(|arrived| arrived.elapsed() > ui::Arrival::span())

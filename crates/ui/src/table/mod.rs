@@ -655,6 +655,9 @@ pub struct TableState<S: TableSource> {
     roomy: bool,
     /// Skeleton rows shown on the previous render, to spot the moment data replaces them.
     pending_before: usize,
+    /// Whether this table has already drawn rows, so the first screenful it ever shows
+    /// ladders into place whether it came from a skeleton or straight from the cache.
+    drawn_before: bool,
     /// When that replacement happened, while the arrival window is open.
     arrived_at: Option<Instant>,
 }
@@ -682,8 +685,18 @@ impl<S: TableSource> TableState<S> {
             headless: false,
             roomy: false,
             pending_before: 0,
+            drawn_before: false,
             arrived_at: None,
         }
+    }
+
+    /// Opens the arrival window, so the next screenful of rows staggers into place. A page
+    /// calls this when its rows change subject under it — another playlist behind the same
+    /// table — since one batch replacing another happens inside a single update and the table
+    /// itself never sees a frame without rows.
+    pub fn begin_arrival(&mut self, cx: &mut Context<Self>) {
+        self.arrived_at = Some(Instant::now());
+        cx.notify();
     }
 
     /// Drops the column head. The table still sorts, through the toolbar that owns its axes, and
@@ -1471,6 +1484,16 @@ impl<S: TableSource> Render for TableState<S> {
             self.arrived_at = Some(Instant::now());
         }
         self.pending_before = placeholders;
+        // The first rows a table ever draws arrive as a ladder too, so a list the cache fills
+        // before the first frame reads the same as one that came through a skeleton. A table
+        // emptied and filled again — another playlist behind the same rows — has to be told
+        // by its page, since both happen inside one update and no frame sees the gap.
+        if self.delegate.row_count() == 0 {
+            self.drawn_before = false;
+        } else if !self.drawn_before {
+            self.drawn_before = true;
+            self.arrived_at.get_or_insert_with(Instant::now);
+        }
         if self
             .arrived_at
             .is_some_and(|arrived| arrived.elapsed() > crate::arrival::SPAN)

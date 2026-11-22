@@ -35,6 +35,9 @@ pub(crate) struct HomeView {
     context_menu: Option<(Item, Point<Pixels>)>,
     /// Skeleton shelves stood on the previous render, to spot the moment data replaces them.
     pending_shown: bool,
+    /// Whether shelves have been drawn at all, so a feed the cache fills before the first
+    /// frame still ladders in.
+    drawn_before: bool,
     /// When that replacement happened, while the arrival window is open.
     arrived_at: Option<Instant>,
 }
@@ -86,6 +89,7 @@ impl HomeView {
             menus,
             context_menu: None,
             pending_shown: false,
+            drawn_before: false,
             arrived_at: None,
         }
     }
@@ -197,9 +201,13 @@ impl Render for HomeView {
                 // them: open the arrival window so the shelves stagger into place once.
                 if sections.is_empty() && feeding {
                     self.pending_shown = true;
-                } else if self.pending_shown && self.arrived_at.is_none() {
+                } else if !sections.is_empty()
+                    && (self.pending_shown || !self.drawn_before)
+                    && self.arrived_at.is_none()
+                {
                     self.arrived_at = Some(Instant::now());
                 }
+                self.drawn_before |= !sections.is_empty();
                 if self
                     .arrived_at
                     .is_some_and(|arrived| arrived.elapsed() > ui::Arrival::span())

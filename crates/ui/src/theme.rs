@@ -552,10 +552,11 @@ impl Theme {
             a: 1.,
         };
 
-        self.primary = accent(if dark { 0.72 } else { 0.42 });
+        let (base, hover) = accent_weight(dark);
+        self.primary = accent(base);
         self.primary_hover = Hsla {
             a: 0.7,
-            ..accent(if dark { 0.82 } else { 0.34 })
+            ..accent(hover)
         };
         self.primary_foreground = Hsla {
             s: tint.s.min(0.25),
@@ -580,10 +581,7 @@ impl Theme {
         Hsla {
             h: tint.h,
             s: tint.s.clamp(MIN_ACCENT_SATURATION, MAX_ACCENT_SATURATION),
-            l: match self.background.l < 0.5 {
-                true => 0.72,
-                false => 0.42,
-            },
+            l: accent_weight(self.background.l < 0.5).0,
             a: 1.,
         }
     }
@@ -637,10 +635,7 @@ impl Theme {
     pub fn primary_hover_of(&self, tint: Hsla) -> Hsla {
         Hsla {
             a: 0.7,
-            l: match self.background.l < 0.5 {
-                true => 0.82,
-                false => 0.34,
-            },
+            l: accent_weight(self.background.l < 0.5).1,
             ..self.primary_of(tint)
         }
     }
@@ -899,6 +894,31 @@ fn wash(base: Hsla, tint: Hsla, strength: f32) -> Hsla {
         l: base.l,
         a: base.a,
     }
+}
+
+/// The lightness the accent sits at, base then hover, for a dark theme first and a light one
+/// second. A debug build may shift the base with `SN_ACCENT_L` so an accent weight can be
+/// judged against real artwork without a rebuild; hover keeps its distance from the base.
+fn accent_weight(dark: bool) -> (f32, f32) {
+    let base = match dark {
+        true => 0.72,
+        false => 0.42,
+    };
+    let base = accent_override().unwrap_or(base);
+    match dark {
+        true => (base, base + 0.10),
+        false => (base, base - 0.08),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn accent_override() -> Option<f32> {
+    None
+}
+
+#[cfg(debug_assertions)]
+fn accent_override() -> Option<f32> {
+    std::env::var("SN_ACCENT_L").ok()?.trim().parse().ok()
 }
 
 fn parse_color(value: &str) -> Option<Hsla> {

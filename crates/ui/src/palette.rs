@@ -1,4 +1,5 @@
 use std::f32::consts::TAU;
+use std::sync::OnceLock;
 
 use gpui::{App, Hsla, RenderImage, Rgba, SharedString, Task};
 
@@ -22,6 +23,13 @@ const SECONDARY_SHARE: f32 = 0.02;
 const SECONDARY_WEIGHT: f32 = 10.;
 const SECONDARY_GAP: usize = 3;
 const SECONDARY_HUE: f32 = 0.05;
+/// How much a pixel's own saturation and lightness count beside the number of
+/// pixels sharing its colour. The rest of the weight is its share alone.
+const BIAS: f32 = 0.3;
+/// The side of the RGB cube the bins cut the artwork into when `cube` is on:
+/// sixteen steps a channel, so a dark field and the vivid accent inside it are
+/// separate candidates instead of one averaged hue.
+const CUBE: usize = 16;
 
 /// The palette of a frame that is already decoded, for artwork the cache has in
 /// hand. Sampling walks at most `SAMPLES` pixels, so this costs nothing beside
@@ -68,9 +76,100 @@ pub fn palette(url: impl Into<SharedString>, cx: &mut App) -> Task<CoverPalette>
     sample_palette(url.into(), cx)
 }
 
+/// The knobs of hue selection. Every field's default is the shipped behaviour;
+/// a debug build reads `SN_TINT_*` overrides so a tint can be judged against real
+/// artwork by relaunching rather than rebuilding. Release ignores the variables.
+struct Tuning {
+    /// Bin by colour in RGB space rather than by hue alone; without it a dark
+    /// field and the accent inside it average into one mediocre hue.
+    cube: bool,
+    /// Divide a bin's weight by the square root of its population, so a vivid
+    /// minority can outrank a large muted area.
+    compress: bool,
+    min_saturation: f32,
+    min_lightness: f32,
+    max_lightness: f32,
+    /// How much saturation and lightness count beside a colour's share.
+    bias: f32,
+}
+
+/// The knobs in force for this process: the defaults, and in a debug build
+/// whatever the environment overrides the first time a palette is sampled.
+fn tuning() -> &'static Tuning {
+    static TUNING: OnceLock<Tuning> = OnceLock::new();
+
+    TUNING.get_or_init(Tuning::defaults)
+}
+
+impl Tuning {
+    fn defaults() -> Self {
+        Self {
+            cube: false,
+            compress: false,
+            min_saturation: MIN_SATURATION,
+            min_lightness: MIN_LIGHTNESS,
+            max_lightness: MAX_LIGHTNESS,
+            bias: BIAS,
+        }
+        .overridden()
+    }
+
+    /// Reads the tuning variables a debug build may set. A variable that is
+    /// absent or unparseable leaves its default alone.
+    fn overridden(self) -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let mut tuning = self;
+            tuning.cube = flag("SN_TINT_CUBE").unwrap_or(tuning.cube);
+            tuning.compress = flag("SN_TINT_SQRT").unwrap_or(tuning.compress);
+            tuning.min_saturation = number("SN_TINT_SAT").unwrap_or(tuning.min_saturation);
+            tuning.min_lightness = number("SN_TINT_LMIN").unwrap_or(tuning.min_lightness);
+            tuning.max_lightness = number("SN_TINT_LMAX").unwrap_or(tuning.max_lightness);
+            tuning.bias = number("SN_TINT_BIAS").unwrap_or(tuning.bias);
+            return tuning;
+        }
+        #[cfg(not(debug_assertions))]
+        self
+    }
+}
+
+/// A tuning flag: `1`, `true` or `on` turns it on, `0`, `false` or `off` turns it
+/// off, and anything else is ignored.
+#[cfg(debug_assertions)]
+fn flag(name: &str) -> Option<bool> {
+    match std::env::var(name)
+        .ok()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "1" | "true" | "on" | "yes" => Some(true),
+        "0" | "false" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// A tuning number, ignored when it does not parse.
+#[cfg(debug_assertions)]
+fn number(name: &str) -> Option<f32> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+/// How much a bin weighs in the race for the lead: its summed colour weight, or
+/// that weight divided by the square root of its population when compression is
+/// on, which prices a large muted field below a small vivid one.
+fn mass(bin: &Bin, tuning: &Tuning) -> f32 {
+    match (tuning.compress, bin.population) {
+        (true, population) if population > 0. => bin.weight / population.sqrt(),
+        _ => bin.weight,
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct Bin {
     weight: f32,
+    /// The pixels that landed here, which is what compression prices.
+    population: f32,
     x: f32,
     y: f32,
     saturation: f32,
@@ -81,6 +180,7 @@ impl Bin {
     fn add(&mut self, color: Hsla, weight: f32) {
         let angle = color.h * TAU;
         self.weight += weight;
+        self.population += 1.;
         self.x += angle.cos() * weight;
         self.y += angle.sin() * weight;
         self.saturation += color.s * weight;
@@ -89,6 +189,7 @@ impl Bin {
 
     fn merge(&mut self, other: &Self) {
         self.weight += other.weight;
+        self.population += other.population;
         self.x += other.x;
         self.y += other.y;
         self.saturation += other.saturation;
@@ -106,8 +207,13 @@ impl Bin {
 }
 
 fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
+    let tuning = tuning();
     let stride = (pixels.len() / 4 / SAMPLES).max(1);
     let mut bins = [Bin::default(); BINS];
+    let mut blocks = match tuning.cube {
+        true => vec![Bin::default(); CUBE * CUBE * CUBE],
+        false => Vec::new(),
+    };
     let mut sampled = 0.;
     let mut lightness = 0.;
     let mut corner = 0.;
@@ -140,14 +246,23 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
             }
         }
 
-        if colour.s < MIN_SATURATION || colour.l < MIN_LIGHTNESS || colour.l > MAX_LIGHTNESS {
+        if colour.s < tuning.min_saturation
+            || colour.l < tuning.min_lightness
+            || colour.l > tuning.max_lightness
+        {
             continue;
         }
 
-        let bin = ((colour.h * BINS as f32) as usize).min(BINS - 1);
         // On a dark cover the little light colour is the accent, not the
         // black around it: weight lifts with lightness so highlights win.
-        bins[bin].add(colour, colour.s * (0.3 + 0.7 * colour.l));
+        let factor = colour.s * (tuning.bias + (1. - tuning.bias) * colour.l);
+        match tuning.cube {
+            true => blocks[cube_bin(red, green, blue)].add(colour, factor),
+            false => {
+                let bin = ((colour.h * BINS as f32) as usize).min(BINS - 1);
+                bins[bin].add(colour, factor);
+            }
+        }
     }
 
     let mean = match sampled > 0. {
@@ -159,8 +274,16 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         false => mean,
     };
 
-    let peak = (0..BINS).max_by(|&a, &b| score(&bins, a).total_cmp(&score(&bins, b)));
-    let primary = peak.filter(|&peak| score(&bins, peak) >= (sampled * MIN_SHARE).max(MIN_WEIGHT));
+    let pool: &[Bin] = match tuning.cube {
+        true => &blocks,
+        false => &bins,
+    };
+    let slots = pool.len();
+
+    let peak =
+        (0..slots).max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)));
+    let primary =
+        peak.filter(|&peak| score(pool, peak, tuning) >= (sampled * MIN_SHARE).max(MIN_WEIGHT));
     let Some(peak) = primary else {
         return CoverPalette {
             lightness: mean,
@@ -169,23 +292,31 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         };
     };
 
-    let mut cluster = bins[peak];
-    cluster.merge(&bins[(peak + BINS - 1) % BINS]);
-    cluster.merge(&bins[(peak + 1) % BINS]);
+    // A hue bin is a wedge, so its neighbours are the same colour family and
+    // fold in with it. A cube block is already one colour and stands alone.
+    let mut cluster = pool[peak];
+    if !tuning.cube {
+        cluster.merge(&pool[(peak + slots - 1) % slots]);
+        cluster.merge(&pool[(peak + 1) % slots]);
+    }
     let primary = cluster.colour();
 
-    let runner = (0..BINS)
+    let runner = (0..slots)
         .filter(|&index| {
-            let gap = index.abs_diff(peak).min(BINS - index.abs_diff(peak));
-            gap >= SECONDARY_GAP
-                && score(&bins, index) >= (sampled * SECONDARY_SHARE).max(SECONDARY_WEIGHT)
+            let apart = match tuning.cube {
+                true => index != peak,
+                false => index.abs_diff(peak).min(slots - index.abs_diff(peak)) >= SECONDARY_GAP,
+            };
+            apart && score(pool, index, tuning) >= (sampled * SECONDARY_SHARE).max(SECONDARY_WEIGHT)
         })
-        .max_by(|&a, &b| score(&bins, a).total_cmp(&score(&bins, b)));
+        .max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)));
     let secondary = runner
         .and_then(|index| {
-            let mut cluster = bins[index];
-            cluster.merge(&bins[(index + BINS - 1) % BINS]);
-            cluster.merge(&bins[(index + 1) % BINS]);
+            let mut cluster = pool[index];
+            if !tuning.cube {
+                cluster.merge(&pool[(index + slots - 1) % slots]);
+                cluster.merge(&pool[(index + 1) % slots]);
+            }
             cluster.colour()
         })
         .filter(|colour| {
@@ -205,9 +336,24 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
     }
 }
 
-fn score(bins: &[Bin; BINS], index: usize) -> f32 {
-    bins[index].weight
-        + (bins[(index + BINS - 1) % BINS].weight + bins[(index + 1) % BINS].weight) * 0.5
+/// The RGB-cube bin a pixel lands in, four bits a channel.
+fn cube_bin(red: u8, green: u8, blue: u8) -> usize {
+    ((red as usize >> 4) << 8) | ((green as usize >> 4) << 4) | (blue as usize >> 4)
+}
+
+/// How strongly a bin argues for the lead. A hue bin borrows half of each
+/// neighbour's, since art smears one colour across two of them.
+fn score(pool: &[Bin], index: usize, tuning: &Tuning) -> f32 {
+    let slots = pool.len();
+    let lead = mass(&pool[index], tuning);
+    match tuning.cube {
+        true => lead,
+        false => {
+            let behind = mass(&pool[(index + slots - 1) % slots], tuning);
+            let ahead = mass(&pool[(index + 1) % slots], tuning);
+            lead + (behind + ahead) * 0.5
+        }
+    }
 }
 
 #[cfg(test)]

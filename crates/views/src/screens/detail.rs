@@ -210,6 +210,9 @@ impl DetailView {
                 // The rows belong to another detail now, so its filters must not leak across.
                 this.table.filter(FilterChange::Reset, cx);
                 this.restore_filters(cx);
+                // Another album or playlist behind the same table: its rows stagger in once
+                // rather than replacing the last list in a single frame.
+                this.table.update(cx, |table, cx| table.begin_arrival(cx));
             }
             this.retune(cx);
             this.rebuild(cx);
