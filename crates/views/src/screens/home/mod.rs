@@ -206,6 +206,9 @@ impl Render for HomeView {
                     && self.arrived_at.is_none()
                 {
                     self.arrived_at = Some(Instant::now());
+                    // Cleared with the window: a stale flag would open a new one on the
+                    // next hover, replaying the entrance on every repaint.
+                    self.pending_shown = false;
                 }
                 self.drawn_before |= !sections.is_empty();
                 if self

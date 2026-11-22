@@ -1520,6 +1520,8 @@ impl Render for SearchView {
             true => self.pending_shown = true,
             false if asked && self.pending_shown && self.arrived_at.is_none() => {
                 self.arrived_at = Some(Instant::now());
+                // Cleared with the window, or the next repaint would open another.
+                self.pending_shown = false;
             }
             false => {}
         }
