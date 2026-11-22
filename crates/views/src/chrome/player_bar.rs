@@ -14,7 +14,7 @@ use i18n::t;
 use input::{ShowMembers, ToggleFullscreen, ToggleLyrics, ToggleQueue};
 use state::{AppSettings, Playback, PlayerBarLayout, Queue, SideTab, Sonora};
 use ui::{
-    Artwork, Button, CoverFade, ExplicitBadge, InlineLink, InlineLinks, Popup, Room, Scrollbar,
+    Button, CoverFade, ExplicitBadge, InlineLink, InlineLinks, Popup, Room, Scrollbar,
     Scrubber, ScrubberState, clock, tabular,
 };
 
