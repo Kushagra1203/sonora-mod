@@ -9,6 +9,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Pages fill in smoothly: the first rows of a track list, a shelf of home cards, search hits and
+  library grids rise into place one after another as their data lands, and the hero fades up as
+  its skeleton steps aside.
+- A two-pixel progress line rides the top of the window while a page refetches, waiting 150 ms so
+  quick refreshes never show it.
+
 - Listen together on any streaming service with Sonora Session: start one from the Sessions button in the player bar, share its six-digit code, and everyone who joins hears the same song in step.
 - `sonora session` starts, joins or leaves a Sonora Session from the command line.
 - A Members panel, opened from the Sessions menu, lists who is in your Sonora Session or Spotify Jam and lets the host remove someone. An accent dot on the Sessions button shows one is under way, and while another Spotify device plays the button wears that device's icon.
@@ -42,6 +48,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Navigating dissolves the old page into the new one and rises the new page into place, instead
+  of covering the old page with the theme colour.
+- The now-playing cover dissolves into the next track's artwork in the player bar and the
+  fullscreen player's strip.
+- The fullscreen player paints the playing cover behind everything: enlarged, blurred to its
+  light, shaded and dithered, melting into the next track's colours as the song changes.
+- The album and playlist field gains an ink wash from its leading edge and a grain that keeps the
+  wide gradients from banding.
 - The home page drops its top bar: the sidebar, history and queue controls float over the page
   instead, and both sidebars frost the field behind them as they do on an album or artist page.
 - The home page carries the playing song's colours behind it, washed over the page and drifting
