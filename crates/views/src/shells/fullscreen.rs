@@ -9,7 +9,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     Render, ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
 };
-use gpui::{Window, canvas, deferred, div, phi, px, relative};
+use gpui::{Window, canvas, deferred, div, linear_color_stop, linear_gradient, phi, px, relative};
 use i18n::t;
 use input::{ToggleFullscreen, ToggleWindowFullscreen, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
@@ -55,6 +55,14 @@ const VOLUME_ZONE: f32 = 14.;
 const CLOCK_SHORT: f32 = 3.4;
 const CLOCK_LONG: f32 = 5.4;
 const VISUALIZER_MIN: f32 = 160.;
+/// How far past the window's edges the backdrop cover is drawn, so the blur's soft border
+/// falls outside the frame.
+const BACKDROP_BLEED: Pixels = px(100.);
+/// How hard the backdrop cover is blurred: wide enough that no shape survives.
+const BACKDROP_BLUR: Pixels = px(84.);
+/// How much of the page colour lies over the backdrop, so bright art cannot fight the cover
+/// and the controls for attention.
+const BACKDROP_SHADE: f32 = 0.42;
 /// How tall the band under the controls is, as a share of the window. It carries the seek bar,
 /// the transport and the meta line over a visualizer that reaches the bottom edge, so it runs
 /// a good deal taller than the chrome itself and fades out well above it.
@@ -103,6 +111,8 @@ pub struct FullscreenView {
     revision: usize,
     /// The strip cover's dissolve, so a change of track never pops the small artwork.
     strip_cover: CoverFade,
+    /// The backdrop's dissolve, so the colour field behind the player melts between covers.
+    backdrop_fade: CoverFade,
     track_menu: ItemMenu,
     context_menu: Option<(music::Track, Point<Pixels>)>,
     last_moved: Instant,
@@ -160,6 +170,7 @@ impl FullscreenView {
             full: None,
             revision: 0,
             strip_cover: CoverFade::new(),
+            backdrop_fade: CoverFade::new(),
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             context_menu: None,
             last_moved: Instant::now(),
@@ -616,6 +627,57 @@ impl FullscreenView {
                     ),
                 )
             })
+    }
+
+    /// The colour field behind the player: the playing cover, enlarged far past the window and
+    /// blurred until only its light survives, shaded toward the page and dithered. It melts
+    /// into the next cover when the track changes, over the ambient field that shows through
+    /// until the first cover has decoded.
+    fn backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let cover = self
+            .playback
+            .read(cx)
+            .shown_track(cx)
+            .and_then(|track| track.cover.clone());
+        let viewport = window.viewport_size();
+        let art = (viewport.width + BACKDROP_BLEED * 2.).max(viewport.height + BACKDROP_BLEED * 2.);
+        // A see-through window keeps its own opacity, like the page wash does.
+        let clarity = match theme.transparent {
+            true => theme.background.a,
+            false => 1.,
+        };
+
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .left(relative(0.5))
+                    .ml(-(art / 2.))
+                    .top(-BACKDROP_BLEED)
+                    .w(art)
+                    .h(art)
+                    .opacity(clarity)
+                    .child(
+                        self.backdrop_fade
+                            .blurred(cover, art, BACKDROP_BLUR, window, cx),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(theme.background.opacity(BACKDROP_SHADE * clarity)),
+            )
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                180.,
+                linear_color_stop(theme.background.opacity(0.), 0.45),
+                linear_color_stop(theme.background.opacity(0.5 * clarity), 1.),
+            )))
+            .child(ui::grain(window))
     }
 
     fn strip(
@@ -1301,6 +1363,11 @@ impl Render for FullscreenView {
             // Capture phase: every click stirs the idle timer, even one a
             // control underneath swallows for itself.
             .capture_any_mouse_down(cx.listener(|this, _: &MouseDownEvent, _, cx| this.poke(cx)))
+            // The immersive field sits under everything the player paints, over the ambient
+            // that keeps drifting until the cover itself has decoded.
+            .when(ambient::shown(cx), |this| {
+                this.child(self.backdrop(window, cx))
+            })
             // A trackpad reports fingers that only touch it as a scroll that moves nothing.
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
                 if event.delta.pixel_delta(window.line_height()) != Point::default() {

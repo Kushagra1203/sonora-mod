@@ -26,6 +26,9 @@ pub(crate) const SHADE: f32 = 0.30;
 /// Where the cover's light starts yielding to the page, and where it has fully become it.
 const FADE_FROM: f32 = 0.42;
 const FADE_TO: f32 = 0.78;
+/// How much page colour the leading-edge ink wash lays over the field, where the hero's
+/// title sits.
+const INK: f32 = 0.26;
 
 /// How much of a sidebar's own colour it keeps when it frosts the page wash instead of sitting
 /// on it, and how hard it blurs the artwork behind. Kept light: most of the colour comes from
@@ -148,6 +151,14 @@ impl RenderOnce for PageWash {
                     .inset_0()
                     .bg(theme.background.opacity(self.shade * clarity)),
             )
+            // An ink wash from the leading edge, where the hero's title and its actions sit,
+            // so the words keep their edges over bright art the way the vertical settle keeps
+            // them over the lower rows.
+            .child(div().absolute().inset_0().bg(linear_gradient(
+                90.,
+                linear_color_stop(theme.background.opacity(INK * clarity), 0.),
+                linear_color_stop(theme.background.opacity(0.), 0.5),
+            )))
             .when(self.settle, |this| {
                 this.child(div().absolute().inset_0().bg(linear_gradient(
                     180.,
@@ -155,6 +166,7 @@ impl RenderOnce for PageWash {
                     linear_color_stop(end, FADE_TO),
                 )))
             })
+            .child(ui::grain(window))
             .into_any_element()
     }
 }

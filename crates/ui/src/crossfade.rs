@@ -34,6 +34,30 @@ impl CoverFade {
         window: &mut Window,
         cx: &App,
     ) -> Div {
+        self.layers(url, size, None, window, cx)
+    }
+
+    /// The layered artwork blurred into a colour field, for a backdrop that dissolves
+    /// between covers.
+    pub fn blurred(
+        &mut self,
+        url: Option<impl Into<SharedString>>,
+        size: Pixels,
+        blur: Pixels,
+        window: &mut Window,
+        cx: &App,
+    ) -> Div {
+        self.layers(url, size, Some(blur), window, cx)
+    }
+
+    fn layers(
+        &mut self,
+        url: Option<impl Into<SharedString>>,
+        size: Pixels,
+        blur: Option<Pixels>,
+        window: &mut Window,
+        cx: &App,
+    ) -> Div {
         let url = url.map(Into::into);
         if url != self.shown {
             if let Some(previous) = self.shown.take() {
@@ -53,15 +77,16 @@ impl CoverFade {
             window.request_animation_frame();
         }
 
+        let paint = |url: Option<SharedString>| match blur {
+            Some(blur) => Artwork::new(url).size(size).soft(true).overlay().blur(blur),
+            None => Artwork::new(url).size(size),
+        };
+
         let mut layers = div().size(size).relative();
-        layers = layers.child(Artwork::new(url).size(size));
+        layers = layers.child(paint(url));
         if let Some((previous, since)) = &self.previous {
             let t = (since.elapsed().as_secs_f32() / SPAN.as_secs_f32()).clamp(0., 1.);
-            layers = layers.child(
-                Artwork::new(Some(previous.clone()))
-                    .size(size)
-                    .opacity(1. - ease_in_out_cubic(t)),
-            );
+            layers = layers.child(paint(Some(previous.clone())).opacity(1. - ease_in_out_cubic(t)));
         }
         layers
     }
