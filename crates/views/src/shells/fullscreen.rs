@@ -641,7 +641,11 @@ impl FullscreenView {
             .shown_track(cx)
             .and_then(|track| track.cover.clone());
         let viewport = window.viewport_size();
-        let art = (viewport.width + BACKDROP_BLEED * 2.).max(viewport.height + BACKDROP_BLEED * 2.);
+        // The field reaches up over the title-bar strip above this view, so it has to cover the
+        // window plus that strip.
+        let bar = theme.metrics.title_bar;
+        let height = viewport.height + bar;
+        let art = (viewport.width + BACKDROP_BLEED * 2.).max(height + BACKDROP_BLEED * 2.);
         // A see-through window keeps its own opacity, like the page wash does.
         let clarity = match theme.transparent {
             true => theme.background.a,
@@ -650,13 +654,22 @@ impl FullscreenView {
 
         div()
             .absolute()
-            .inset_0()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            // The player is not fullbleed, so a title-bar strip sits above this view and the
+            // page never paints under it. Reaching up by the bar's height carries the field to
+            // the window's top edge; without it the strip keeps the flat window colour and
+            // reads as a slab across the top of the player.
+            .top(-bar)
             .overflow_hidden()
             .child(
                 div()
                     .absolute()
+                    // Centred on the extended area, then lifted by the strip, so the field's
+                    // edges stay off screen at the top as well as the sides and bottom.
                     .left(-((art - viewport.width) / 2.))
-                    .top(-((art - viewport.height) / 2.))
+                    .top(-bar - (art - height) / 2.)
                     .w(art)
                     .h(art)
                     .opacity(clarity)
