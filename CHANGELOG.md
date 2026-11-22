@@ -48,6 +48,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The accent a cover wears comes from the edge of the artwork rather than from its most vivid
+  pixel, so the same album art wears the same colour as it does in other players.
 - Navigating dissolves the old page into the new one and rises the new page into place, instead
   of covering the old page with the theme colour.
 - The now-playing cover dissolves into the next track's artwork in the player bar and the

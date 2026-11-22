@@ -37,6 +37,46 @@ const BIAS: f32 = 0.3;
 /// sixteen steps a channel, so a dark field and the vivid accent inside it are
 /// separate candidates instead of one averaged hue.
 const CUBE: usize = 16;
+/// The saturation the cover's edge must reach before it names the accent itself. An
+/// edge that is grey leaves the picture to say which colour the cover is.
+const SEAM_SATURATION: f64 = 0.34;
+/// The lightness an edge is read at. An edge brighter than the art it frames says
+/// nothing about the art, so it is read as if it were darker.
+const SEAM_LIGHTNESS: f64 = 0.34;
+/// How far a zone's own colour is mixed toward the median of its pixels. The mean is
+/// pulled by a bright corner; the median is what the strip itself looks like.
+const SEAM_MEDIAN: f64 = 0.68;
+/// The grey a cover with no pixels in its edge leaves behind.
+const SEAM_FALLBACK: Rgb = [42, 42, 42];
+/// The saturation a colour must reach before it may name an accent on its own.
+const SUPPORT_SATURATION: f64 = 0.34;
+/// The lightness band a colour must fall in before it may name an accent on its own.
+const SUPPORT_MIN_LIGHTNESS: f64 = 0.14;
+const SUPPORT_MAX_LIGHTNESS: f64 = 0.84;
+/// How close a colour must sit to the edge's own hue to be preferred over one far from
+/// it, and the weights it carries for sitting near it and for sitting away.
+const SUPPORT_NEAR: f64 = 48.;
+const SUPPORT_NEAR_WEIGHT: f64 = 1.18;
+const SUPPORT_FAR_WEIGHT: f64 = 0.82;
+/// The number of pixels the search for a supporting colour walks. A cover larger than
+/// this is read on a stride, so the work does not grow with the picture.
+const SUPPORT_PIXELS: f64 = 160_000.;
+/// The number of pixels a colour must hold before it may name an accent on its own, so
+/// a lone splash on an otherwise empty cover never names a tint. The floor sits well
+/// under what any deliberate accent covers and well over the stray colour a picture
+/// carries in its compression.
+const SUPPORT_MIN_WEIGHT: f64 = 25.;
+/// The saturation the accent wears. A cover's own colour may be paler than the accent it
+/// names, so the accent is never less saturated than this.
+const ACCENT_SATURATION: f64 = 0.82;
+/// The lightness the accent wears, and the one it takes from a pale edge.
+const ACCENT_LIGHTNESS: f64 = 0.61;
+const ACCENT_BRIGHT_LIGHTNESS: f64 = 0.48;
+/// The edge lightness above which the accent is darkened, so a pale edge does not wash
+/// it out.
+const ACCENT_BRIGHT: f64 = 0.72;
+/// The saturation below which a cover with no colour in it reads as having no hue.
+const MONOCHROME_SATURATION: f64 = 0.18;
 
 /// The palette of a frame that is already decoded, for artwork the cache has in
 /// hand. Sampling walks at most `SAMPLES` pixels, so this costs nothing beside
@@ -195,6 +235,17 @@ fn mass(bin: &Bin, tuning: &Tuning) -> f32 {
     }
 }
 
+/// A colour as the cover's own bytes carry it.
+type Rgb = [u8; 3];
+
+/// A bin of the RGB cube, holding the weight of the pixels that landed in it and the sum
+/// of their colour.
+#[derive(Clone, Copy, Default)]
+struct CubeBin {
+    weight: f64,
+    sums: [f64; 3],
+}
+
 #[derive(Clone, Copy, Default)]
 struct Bin {
     weight: f32,
@@ -322,57 +373,51 @@ fn sampled(pixels: &[u8], width: usize, height: usize) -> CoverPalette {
         false => mean,
     };
 
-    // A vivid accent beats the muted field it sits in: the vivid pool leads
-    // when it clears the bar, and a cover with nothing vivid in it falls back
-    // to the loose pool, so it still gets a hue.
-    let picked = match tuning.cube {
+    // The accent the cover names: the colour of its edge when that edge carries one,
+    // and the most vivid colour in the picture otherwise. A cover with no colour in it
+    // names none, and the theme falls back to its own.
+    let primary = accent(pixels, width, height);
+
+    // A second family of colour, for the background behind the page to carry. It comes
+    // from the vivid pool, which is where a cover's other colour lives, and it has to
+    // be a family of its own rather than a shade of the accent.
+    let secondary = match tuning.cube {
         true => pick(&vivid_blocks, &blocks, sampled, tuning),
         false => pick(&vivid, &bins, sampled, tuning),
-    };
-    let Some((pool, peak)) = picked else {
-        return CoverPalette {
-            lightness: mean,
-            corner,
-            ..Default::default()
-        };
-    };
-    let slots = pool.len();
-
-    // A hue bin is a wedge, so its neighbours are the same colour family and
-    // fold in with it. A cube block is already one colour and stands alone.
-    let mut cluster = pool[peak];
-    if !tuning.cube {
-        cluster.merge(&pool[(peak + slots - 1) % slots]);
-        cluster.merge(&pool[(peak + 1) % slots]);
     }
-    let primary = cluster.colour();
-
-    let runner = (0..slots)
-        .filter(|&index| {
-            let apart = match tuning.cube {
-                true => index != peak,
-                false => index.abs_diff(peak).min(slots - index.abs_diff(peak)) >= SECONDARY_GAP,
-            };
-            apart && score(pool, index, tuning) >= (sampled * SECONDARY_SHARE).max(SECONDARY_WEIGHT)
-        })
-        .max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)));
-    let secondary = runner
-        .and_then(|index| {
-            let mut cluster = pool[index];
-            if !tuning.cube {
-                cluster.merge(&pool[(index + slots - 1) % slots]);
-                cluster.merge(&pool[(index + 1) % slots]);
-            }
-            cluster.colour()
-        })
-        .filter(|colour| {
-            primary.is_some_and(|lead| {
-                (colour.h - lead.h)
-                    .abs()
-                    .min(1. - (colour.h - lead.h).abs())
-                    >= SECONDARY_HUE
+    .and_then(|(pool, peak)| {
+        let slots = pool.len();
+        let runner = (0..slots)
+            .filter(|&index| {
+                let apart = match tuning.cube {
+                    true => index != peak,
+                    false => {
+                        index.abs_diff(peak).min(slots - index.abs_diff(peak)) >= SECONDARY_GAP
+                    }
+                };
+                apart
+                    && score(pool, index, tuning)
+                        >= (sampled * SECONDARY_SHARE).max(SECONDARY_WEIGHT)
             })
-        });
+            .max_by(|&a, &b| score(pool, a, tuning).total_cmp(&score(pool, b, tuning)));
+        runner
+            .and_then(|index| {
+                let mut cluster = pool[index];
+                if !tuning.cube {
+                    cluster.merge(&pool[(index + slots - 1) % slots]);
+                    cluster.merge(&pool[(index + 1) % slots]);
+                }
+                cluster.colour()
+            })
+            .filter(|colour| {
+                primary.is_some_and(|lead| {
+                    (colour.h - lead.h)
+                        .abs()
+                        .min(1. - (colour.h - lead.h).abs())
+                        >= SECONDARY_HUE
+                })
+            })
+    });
 
     CoverPalette {
         primary,
@@ -422,6 +467,266 @@ fn score(pool: &[Bin], index: usize, tuning: &Tuning) -> f32 {
             lead + (behind + ahead) * 0.5
         }
     }
+}
+
+/// The byte a colour's channel rounds to.
+fn channel(value: f64) -> u8 {
+    value.round().clamp(0., 255.) as u8
+}
+
+/// The hue, saturation and lightness of a colour, as the accent reads them. The hue is in
+/// degrees, which is the measure the edge's own hue is compared in. The arithmetic is
+/// carried in double precision, so the hue a cover names does not shift with the rounding
+/// of a single colour.
+fn hsl(colour: Rgb) -> (f64, f64, f64) {
+    let red = colour[0] as f64 / 255.;
+    let green = colour[1] as f64 / 255.;
+    let blue = colour[2] as f64 / 255.;
+    let maximum = red.max(green.max(blue));
+    let minimum = red.min(green.min(blue));
+    let lightness = (maximum + minimum) / 2.;
+    let delta = maximum - minimum;
+    if delta == 0. {
+        return (0., 0., lightness);
+    }
+    let saturation = delta / (1. - (2. * lightness - 1.).abs());
+    let hue = match maximum == red {
+        true => ((green - blue) / delta + 6.) % 6.,
+        false => match maximum == green {
+            true => (blue - red) / delta + 2.,
+            false => (red - green) / delta + 4.,
+        },
+    };
+    (hue * 60. % 360., saturation, lightness)
+}
+
+/// The colour of a hue, saturation and lightness.
+fn rgb(hue: f64, saturation: f64, lightness: f64) -> Rgb {
+    let chroma = (1. - (2. * lightness - 1.).abs()) * saturation;
+    let segment = (hue + 360.) % 360. / 60.;
+    let secondary = chroma * (1. - (segment % 2. - 1.).abs());
+    let values = match segment {
+        s if s < 1. => [chroma, secondary, 0.],
+        s if s < 2. => [secondary, chroma, 0.],
+        s if s < 3. => [0., chroma, secondary],
+        s if s < 4. => [0., secondary, chroma],
+        s if s < 5. => [secondary, 0., chroma],
+        _ => [chroma, 0., secondary],
+    };
+    let offset = lightness - chroma / 2.;
+    [
+        channel((values[0] + offset) * 255.),
+        channel((values[1] + offset) * 255.),
+        channel((values[2] + offset) * 255.),
+    ]
+}
+
+/// One colour mixed toward another.
+fn mix(from: Rgb, to: Rgb, amount: f64) -> Rgb {
+    let amount = amount.clamp(0., 1.);
+    [
+        channel(from[0] as f64 + (to[0] as f64 - from[0] as f64) * amount),
+        channel(from[1] as f64 + (to[1] as f64 - from[1] as f64) * amount),
+        channel(from[2] as f64 + (to[2] as f64 - from[2] as f64) * amount),
+    ]
+}
+
+/// A colour darkened to the lightness an edge is read at. An edge brighter than the art
+/// it frames says nothing about the art.
+fn clamp_lightness(colour: Rgb) -> Rgb {
+    let (hue, saturation, lightness) = hsl(colour);
+    match lightness <= SEAM_LIGHTNESS {
+        true => colour,
+        false => rgb(hue, saturation, SEAM_LIGHTNESS),
+    }
+}
+
+/// The value half the weight of a histogram sits below.
+fn median(histogram: &[f64; 256], total: f64) -> u8 {
+    let midpoint = total / 2.;
+    let mut accumulated = 0.;
+    for (value, weight) in histogram.iter().enumerate() {
+        accumulated += weight;
+        if accumulated >= midpoint {
+            return value as u8;
+        }
+    }
+    0
+}
+
+/// The colour of one zone of a cover's edge: the mean and the median of its pixels, both
+/// darkened to the lightness an edge is read at, mixed toward the median.
+fn zone_seam(
+    pixels: &[u8],
+    width: usize,
+    left: usize,
+    top: usize,
+    zone_width: usize,
+    zone_height: usize,
+) -> Rgb {
+    let mut histograms = [[0.0f64; 256]; 3];
+    let mut sums = [0.0f64; 3];
+    let mut total = 0.0f64;
+    for y in top..top + zone_height {
+        let row = match pixels.get(y * width * 4..) {
+            Some(row) => row,
+            None => break,
+        };
+        for x in left..left + zone_width {
+            let offset = x * 4;
+            let Some(pixel) = row.get(offset..offset + 4) else {
+                break;
+            };
+            let (blue, green, red, alpha) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+            let alpha = alpha as f64 / 255.;
+            if alpha < 0.04 {
+                continue;
+            }
+            total += alpha;
+            for (index, value) in [red, green, blue].into_iter().enumerate() {
+                sums[index] += value as f64 * alpha;
+                histograms[index][value as usize] += alpha;
+            }
+        }
+    }
+    if total == 0. {
+        return SEAM_FALLBACK;
+    }
+    let average = clamp_lightness([
+        channel(sums[0] / total),
+        channel(sums[1] / total),
+        channel(sums[2] / total),
+    ]);
+    let middle = clamp_lightness([
+        median(&histograms[0], total),
+        median(&histograms[1], total),
+        median(&histograms[2], total),
+    ]);
+    clamp_lightness(mix(average, middle, SEAM_MEDIAN))
+}
+
+/// The colour of the edge a cover is bound by: the strips along its four edges and the
+/// corners they meet, read apart and mixed, with the strips weighted above the corners
+/// because a corner is the one place a cover's art is most likely to run out.
+fn seam(pixels: &[u8], width: usize, height: usize) -> Rgb {
+    let shortest = width.min(height);
+    if shortest == 0 {
+        return SEAM_FALLBACK;
+    }
+    // The strips are thin enough to catch the edge itself, and the corners wide enough
+    // to survive the anti-aliasing of a picture that runs to the border.
+    let strip = shortest.min(((shortest as f64 * 0.007).round() as usize).clamp(1, 7));
+    let corner = shortest.min(((shortest as f64 * 0.14).round() as usize).clamp(8, 112));
+    let zones = [
+        (0, 0, strip, height, 1.0),
+        (width - strip, 0, strip, height, 1.0),
+        (0, 0, width, strip, 1.0),
+        (0, height - strip, width, strip, 1.0),
+        (0, 0, corner, corner, 0.5),
+        (width - corner, 0, corner, corner, 0.5),
+        (width - corner, height - corner, corner, corner, 0.5),
+        (0, height - corner, corner, corner, 0.5),
+    ];
+    let mut sums = [0.0f64; 3];
+    let mut weight = 0.0f64;
+    for (left, top, zone_width, zone_height, share) in zones {
+        let colour = zone_seam(pixels, width, left, top, zone_width, zone_height);
+        for (index, value) in colour.into_iter().enumerate() {
+            sums[index] += value as f64 * share;
+        }
+        weight += share;
+    }
+    clamp_lightness([
+        channel(sums[0] / weight),
+        channel(sums[1] / weight),
+        channel(sums[2] / weight),
+    ])
+}
+
+/// The hue of the most vivid colour in a cover, weighted so that a bright minority can
+/// outrank a large muted field, and favoured when it sits near the edge's own hue.
+fn supporting_hue(pixels: &[u8], width: usize, height: usize, fallback: f64) -> Option<f64> {
+    let stride = (((width * height) as f64 / SUPPORT_PIXELS).sqrt().floor() as usize).max(1);
+    let mut bins = [CubeBin::default(); 4096];
+    for y in (0..height).step_by(stride) {
+        let row = match pixels.get(y * width * 4..(y + 1) * width * 4) {
+            Some(row) => row,
+            None => break,
+        };
+        for pixel in row.as_chunks::<4>().0.iter().step_by(stride) {
+            let (blue, green, red, alpha) = (pixel[0], pixel[1], pixel[2], pixel[3]);
+            let alpha = alpha as f64 / 255.;
+            if alpha < 0.12 {
+                continue;
+            }
+            let key =
+                ((red as usize >> 4) << 8) | ((green as usize >> 4) << 4) | (blue as usize >> 4);
+            let bin = &mut bins[key];
+            bin.weight += alpha;
+            bin.sums[0] += red as f64 * alpha;
+            bin.sums[1] += green as f64 * alpha;
+            bin.sums[2] += blue as f64 * alpha;
+        }
+    }
+    let mut best: Option<(f64, f64)> = None;
+    for bin in bins {
+        if bin.weight < SUPPORT_MIN_WEIGHT {
+            continue;
+        }
+        let colour = [
+            channel(bin.sums[0] / bin.weight),
+            channel(bin.sums[1] / bin.weight),
+            channel(bin.sums[2] / bin.weight),
+        ];
+        let (hue, saturation, lightness) = hsl(colour);
+        if saturation < SUPPORT_SATURATION
+            || lightness < SUPPORT_MIN_LIGHTNESS
+            || lightness > SUPPORT_MAX_LIGHTNESS
+        {
+            continue;
+        }
+        let apart = (hue - fallback).abs();
+        let distance = apart.min(360. - apart);
+        let score = bin.weight.sqrt()
+            * saturation
+            * (0.24 + lightness)
+            * if distance <= SUPPORT_NEAR {
+                SUPPORT_NEAR_WEIGHT
+            } else {
+                SUPPORT_FAR_WEIGHT
+            };
+        if best.is_none_or(|(top, _)| score > top) {
+            best = Some((score, hue));
+        }
+    }
+    best.map(|(_, hue)| hue)
+}
+
+/// The accent a cover names: the hue of its edge when that edge is colourful enough to
+/// carry one, and the hue of the most vivid colour in the picture otherwise. A cover with
+/// no colour in it names none, and the theme falls back to its own.
+fn accent(pixels: &[u8], width: usize, height: usize) -> Option<Hsla> {
+    let (edge_hue, edge_saturation, edge_lightness) = hsl(seam(pixels, width, height));
+    let supporting = supporting_hue(pixels, width, height, edge_hue);
+    // A cover with no colour in it names no hue. It wears the theme's own colour rather
+    // than a grey of its own, which reads the same and keeps a black sleeve and a white
+    // one from washing a control out.
+    if supporting.is_none() && edge_saturation < MONOCHROME_SATURATION {
+        return None;
+    }
+    let hue = match edge_saturation >= SEAM_SATURATION {
+        true => edge_hue,
+        false => supporting.unwrap_or(edge_hue),
+    };
+    Some(Hsla {
+        h: (hue / 360.) as f32,
+        s: edge_saturation.clamp(ACCENT_SATURATION, 1.) as f32,
+        l: match edge_lightness > ACCENT_BRIGHT {
+            true => ACCENT_BRIGHT_LIGHTNESS,
+            false => ACCENT_LIGHTNESS,
+        } as f32,
+        a: 1.,
+    })
 }
 
 #[cfg(test)]

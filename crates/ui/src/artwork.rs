@@ -41,8 +41,10 @@ const MAX_SAMPLE_EDGE: u32 = 4096;
 /// The step decode edges are rounded up to. A power of two would decode up to four times
 /// the pixels drawn.
 const EDGE_STEP: u32 = 64;
-/// The edge a cover is decoded at when only its palette is wanted.
-const PALETTE_EDGE: u32 = 128;
+/// The edge a cover's colours are read at. It is the size the providers serve a cover
+/// at, so the colours do not move with the size a view happens to draw the cover at,
+/// and a cover is read the same way whoever is looking at it.
+const PALETTE_EDGE: u32 = 544;
 /// Set on a decode edge when the image keeps its own aspect and is scaled to that width, for
 /// banners that a square crop would cut down. A wide decode never stands in for a square one.
 const WIDE: u32 = 1 << 31;
@@ -165,12 +167,8 @@ impl Asset for ArtworkAssetLoader {
                 return Ok(Decoded { image, palette });
             };
             on_decoder(move || {
-                let image = Arc::new(RenderImage::new(raster_frames(
-                    &bytes,
-                    format,
-                    source.edge,
-                )?));
-                let palette = of_image(&image);
+                let (frames, palette) = raster_frames(&bytes, format, source.edge)?;
+                let image = Arc::new(RenderImage::new(frames));
                 Ok(Decoded { image, palette })
             })
             .await
@@ -225,11 +223,13 @@ fn decoders() -> mpsc::Sender<Job> {
     sender
 }
 
+/// The frames of a cover, and the palette read from it at the resolution its colours
+/// are judged at.
 fn raster_frames(
     bytes: &[u8],
     format: ImageFormat,
     edge: u32,
-) -> Result<Vec<Frame>, ImageCacheError> {
+) -> Result<(Vec<Frame>, CoverPalette), ImageCacheError> {
     match format {
         ImageFormat::Gif => animated_frames(GifDecoder::new(Cursor::new(bytes))?, edge),
         ImageFormat::WebP => {
@@ -249,28 +249,32 @@ fn raster_frames(
     }
 }
 
-fn static_frame(mut decoder: impl ImageDecoder, edge: u32) -> Result<Vec<Frame>, ImageCacheError> {
+fn static_frame(
+    mut decoder: impl ImageDecoder,
+    edge: u32,
+) -> Result<(Vec<Frame>, CoverPalette), ImageCacheError> {
     let orientation = decoder.orientation()?;
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
-    Ok(vec![Frame::new(artwork_frame(image, edge))])
+    let palette = palette_of(&image);
+    Ok((vec![Frame::new(artwork_frame(image, edge))], palette))
 }
 
 fn animated_frames<'a>(
     decoder: impl AnimationDecoder<'a>,
     edge: u32,
-) -> Result<Vec<Frame>, ImageCacheError> {
+) -> Result<(Vec<Frame>, CoverPalette), ImageCacheError> {
     let mut frames = Vec::new();
+    let mut palette = None;
     for frame in decoder.into_frames() {
         match frame {
             Ok(frame) => {
                 let delay = frame.delay();
-                frames.push(Frame::from_parts(
-                    artwork_frame(DynamicImage::ImageRgba8(frame.into_buffer()), edge),
-                    0,
-                    0,
-                    delay,
-                ));
+                let image = DynamicImage::ImageRgba8(frame.into_buffer());
+                if palette.is_none() {
+                    palette = Some(palette_of(&image));
+                }
+                frames.push(Frame::from_parts(artwork_frame(image, edge), 0, 0, delay));
             }
             Err(error) => log::debug!("Skipping artwork animation frame: {error}"),
         }
@@ -280,7 +284,7 @@ fn animated_frames<'a>(
             "Animated artwork contained no decodable frames".into(),
         ));
     }
-    Ok(frames)
+    Ok((frames, palette.unwrap_or_default()))
 }
 
 /// Crops a decoded cover to its centre square, scales it down to `edge` and swaps it to
@@ -323,6 +327,38 @@ fn bgra(image: &mut RgbaImage) {
     for pixel in image.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
+}
+
+/// The colours of a cover, read from it at the resolution they are judged at. The
+/// colours do not move with the size a view happens to draw the cover at, so a card's
+/// button and the theme's accent agree on one cover.
+fn palette_of(image: &DynamicImage) -> CoverPalette {
+    let frame = palette_frame(image);
+    of_image(&RenderImage::new(vec![Frame::new(frame)]))
+}
+
+/// The frame the colours of a cover are read from: the cover at the resolution its
+/// colours are judged at, cropped to its centre square as it is drawn.
+fn palette_frame(image: &DynamicImage) -> RgbaImage {
+    let (width, height) = (image.width(), image.height());
+    let side = width.min(height);
+    let square = match width == height {
+        true => None,
+        false => Some(image.crop_imm((width - side) / 2, (height - side) / 2, side, side)),
+    };
+    let source = square.as_ref().unwrap_or(image);
+    let resized = match side <= PALETTE_EDGE {
+        true => None,
+        false => {
+            Some(source.resize_exact(PALETTE_EDGE, PALETTE_EDGE, imageops::FilterType::Triangle))
+        }
+    };
+    let mut frame = match resized {
+        Some(image) => image.into_rgba8(),
+        None => source.to_rgba8(),
+    };
+    bgra(&mut frame);
+    frame
 }
 
 struct Cached {
@@ -1253,7 +1289,7 @@ mod tests {
             ])
             .unwrap();
 
-        let frames = raster_frames(&bytes, ImageFormat::Gif, 64).unwrap();
+        let (frames, _palette) = raster_frames(&bytes, ImageFormat::Gif, 64).unwrap();
 
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].buffer().dimensions(), (64, 64));
