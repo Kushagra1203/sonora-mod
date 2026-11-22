@@ -14,8 +14,8 @@ use i18n::t;
 use input::{ShowMembers, ToggleFullscreen, ToggleLyrics, ToggleQueue};
 use state::{AppSettings, Playback, PlayerBarLayout, Queue, SideTab, Sonora};
 use ui::{
-    Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Popup, Room, Scrollbar, Scrubber,
-    ScrubberState, clock, tabular,
+    Artwork, Button, CoverFade, ExplicitBadge, InlineLink, InlineLinks, Popup, Room, Scrollbar,
+    Scrubber, ScrubberState, clock, tabular,
 };
 
 use crate::chrome::sessions_button::SessionsButton;
@@ -47,6 +47,8 @@ pub(crate) struct PlayerBar {
     over_volume: Option<f32>,
     volume_held: bool,
     muted: Option<f32>,
+    /// The now-playing cover's dissolve, so a change of track never pops the artwork.
+    cover_fade: CoverFade,
 }
 
 impl PlayerBar {
@@ -77,6 +79,7 @@ impl PlayerBar {
             over_volume: None,
             volume_held: false,
             muted: None,
+            cover_fade: CoverFade::new(),
         }
     }
 
@@ -270,9 +273,9 @@ impl PlayerBar {
     }
 
     fn now_playing(
-        &self,
+        &mut self,
         room: bool,
-        window: &Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let label = match self.playback.read(cx).shown_track(cx) {
@@ -293,7 +296,7 @@ impl PlayerBar {
     }
 
     /// The playing cover keeps its album link and context menu in every layout.
-    fn artwork(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn artwork(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let layout = self.settings.read(cx).player_bar_layout();
         let artwork = ui::snapped(
@@ -310,6 +313,7 @@ impl PlayerBar {
             true => t!("song-view-album"),
             false => SharedString::from(track.album.clone()),
         });
+        let artwork_layers = self.cover_fade.element(cover, artwork, window, cx);
         div()
             .id("now-playing-artwork")
             .when_some(
@@ -326,7 +330,7 @@ impl PlayerBar {
                     }),
                 )
             })
-            .child(Artwork::new(cover).size(artwork))
+            .child(artwork_layers)
             .flex_none()
     }
 

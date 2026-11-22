@@ -5,6 +5,7 @@ mod button;
 mod card;
 mod checkbox;
 mod controls;
+mod crossfade;
 mod deck;
 mod drag;
 mod dropdown;
@@ -73,6 +74,7 @@ pub use checkbox::Checkbox;
 pub use controls::WindowControls;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub use controls::WindowFrame;
+pub use crossfade::CoverFade;
 pub use deck::Deck;
 pub use drag::{Edge, Ghost, drop_gap, drop_into, drop_marker, grip};
 pub use dropdown::Dropdown;
