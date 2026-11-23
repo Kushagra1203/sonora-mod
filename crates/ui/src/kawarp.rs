@@ -5,22 +5,30 @@
 //! two octaves of simplex noise then bend that square's coordinates, so the picture behind
 //! the window bends and mixes the way a line of wet paint does.
 //!
-//! The bend is worked out on the CPU rather than in a shader, because the renderer Sonora
-//! draws through offers no way to run one of its own. It is worked out at a fraction of the
-//! window's size and scaled back up, which is what the effect looks like anyway: nothing in
-//! it is sharper than the blur it is drawn from.
+//! On the wgpu renderer the bend runs in a fragment shader: the prepared square is uploaded
+//! once per cover and every frame is one draw call with an updated clock, so a moving field
+//! costs no CPU work and no texture upload. Backends without that hook work the bend out on
+//! the CPU at a fraction of the window's size and let the renderer scale it back up, which is
+//! what the effect looks like anyway: nothing in it is sharper than the blur it is drawn from.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-use gpui::{Context, ObjectFit, Render, RenderImage, SharedString, Task, Window, div, img};
+use gpui::{
+    Context, ObjectFit, Render, RenderImage, SharedString, Task, WarpParams, Window, canvas, div,
+    img,
+};
 use i18n::t;
 use image::{Frame, RgbaImage};
 
 use crate::artwork::{ArtworkCache, resource};
 use crate::motion::animates;
+
+/// Whether the renderer can bend an image in its own shader. The wgpu backend is the only one
+/// with the hook; everywhere else the bend is worked out here.
+const GPU: bool = cfg!(any(target_os = "linux", target_os = "freebsd"));
 
 /// The edge of the square the artwork is reduced to before it is bent.
 const SOURCE: usize = 128;
@@ -60,12 +68,14 @@ const INV_FIELD: f32 = 1. / FIELD as f32;
 const HELD: usize = 3;
 
 /// How finely the immersive background is worked out. The field is smooth enough that a
-/// coarse one looks much the same as a fine one, so the choice is about what it costs.
+/// coarse one looks much the same as a fine one, so the choice is about what it costs. On a
+/// renderer that bends the image in its own shader even the finest field is cheap, so that is
+/// the default there and here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BackgroundQuality {
     Low,
-    #[default]
     Medium,
+    #[default]
     High,
 }
 
@@ -108,7 +118,9 @@ impl BackgroundQuality {
         };
         let width = width * scale;
         let height = height * scale;
-        let shrink = (width / cap.0).max(height / cap.1).min(1.);
+        // The cap is a ceiling on the field, so a window larger than the tier's cap has both
+        // of its edges pulled in by the same share and keeps the window's shape.
+        let shrink = (1. / (width / cap.0).max(height / cap.1)).min(1.);
         (
             (width * shrink).round().max(1.) as u32,
             (height * shrink).round().max(1.) as u32,
@@ -123,6 +135,14 @@ impl BackgroundQuality {
         }
     }
 }
+
+/// What a renderer that bends the image itself draws: the prepared square, the one the field
+/// is melting out of, and the warp's parameters for this frame.
+type Field = (
+    Arc<RenderImage>,
+    Option<(Arc<RenderImage>, usize)>,
+    WarpParams,
+);
 
 /// The artwork the bend is worked out from: a small square of colour, already tinted and
 /// blurred, which the bend samples as it goes.
@@ -156,12 +176,34 @@ impl Source {
     fn sample(&self, x: f32, y: f32) -> [f32; 3] {
         sample(&self.pixels, x, y)
     }
+
+    /// The prepared square as an image a renderer can hold in its atlas. It is built once per
+    /// cover; a field that moves only changes the warp's own parameters, so this is never
+    /// uploaded again.
+    fn image(&self) -> RenderImage {
+        let mut bytes = Vec::with_capacity(SOURCE * SOURCE * 4);
+        let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
+        for pixel in self.pixels.as_chunks::<3>().0 {
+            // The atlas holds its frames in blue, green, red order.
+            bytes.extend_from_slice(&[
+                channel(pixel[2]),
+                channel(pixel[1]),
+                channel(pixel[0]),
+                255,
+            ]);
+        }
+        let image = RgbaImage::from_raw(SOURCE as u32, SOURCE as u32, bytes)
+            .expect("the square is SOURCE by SOURCE");
+        RenderImage::new(vec![Frame::new(image)])
+    }
 }
 
 /// The immersive background: the playing cover bent like wet paint behind the window.
 ///
-/// The field follows one cover and melts into the next. It is worked out at a fraction of
-/// the window's size and scaled back up by the renderer.
+/// The field follows one cover and melts into the next. A renderer that can bend an image in
+/// its own shader is handed the prepared square and the clock, so a frame costs one draw call;
+/// everywhere else the field is worked out at a fraction of the window's size and scaled back
+/// up by the renderer.
 pub struct Immersive {
     /// The cover the field follows.
     cover: Option<SharedString>,
@@ -175,7 +217,12 @@ pub struct Immersive {
     previous: Option<Arc<Source>>,
     /// When the melt began.
     melted: Option<Instant>,
-    /// The frame on show.
+    /// The prepared square as an image the shader can sample. Uploaded once per cover and
+    /// sampled unchanged for as long as it is on show.
+    image: Option<Arc<RenderImage>>,
+    /// The image the field is melting out of.
+    previous_image: Option<Arc<RenderImage>>,
+    /// The frame on show, on a renderer that works the bend out here.
     frame: Option<Arc<RenderImage>>,
     /// The frames still on show somewhere: a window that is crossfading keeps the frame it
     /// held, so a frame stays in the atlas until the one after it has replaced it.
@@ -205,6 +252,8 @@ impl Immersive {
             current: None,
             previous: None,
             melted: None,
+            image: None,
+            previous_image: None,
             frame: None,
             frames: VecDeque::new(),
             frame_task: None,
@@ -224,10 +273,39 @@ impl Immersive {
         self.cover = cover;
     }
 
-    /// Whether the field has a frame to show. A field that has not drawn one yet leaves the
-    /// page's own artwork in place rather than showing nothing.
+    /// Whether the field has something to show. A field that has not prepared one yet leaves
+    /// the page's own artwork in place rather than showing nothing.
     pub fn ready(&self) -> bool {
-        self.frame.is_some()
+        match GPU {
+            true => self.image.is_some(),
+            false => self.frame.is_some(),
+        }
+    }
+
+    /// How far the current cover has melted over the previous one, from 0 to 1.
+    fn melt(&self) -> f32 {
+        self.melted
+            .map(|since| since.elapsed().as_secs_f32() / MELT.as_secs_f32())
+            .unwrap_or(1.)
+            .min(1.)
+    }
+
+    /// The size the bend is worked out at, in the target's own pixels.
+    ///
+    /// A renderer that bends the image itself can afford the finest field, so it gets the
+    /// tier that was asked for. One that works the bend out here cannot: the finest field it
+    /// ever worked out was the middle one, so that is where it stops.
+    fn field_size(&self, window: &Window) -> (u32, u32) {
+        let viewport = window.viewport_size();
+        let scale = window.scale_factor();
+        let quality = match (GPU, self.quality) {
+            (false, BackgroundQuality::High) => BackgroundQuality::Medium,
+            (_, quality) => quality,
+        };
+        quality.size(
+            viewport.width.as_f32() * scale,
+            viewport.height.as_f32() * scale,
+        )
     }
 
     /// Loads the cover the field follows and reduces it to the square the bend is worked
@@ -253,16 +331,30 @@ impl Immersive {
         };
         self.preparing = Some(cover.clone());
         self.source_task = Some(cx.spawn(async move |this, cx| {
-            let source = cx.background_spawn(async move { Source::of(&image) }).await;
+            let prepared = cx
+                .background_spawn(async move {
+                    Source::of(&image).map(|source| {
+                        let prepared = Arc::new(source.image());
+                        (source, prepared)
+                    })
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.source_task = None;
                 this.preparing = None;
-                let Some(source) = source else {
+                let Some((source, prepared)) = prepared else {
                     return;
                 };
-                // The cover on show melts into the new one.
+                // The cover on show melts into the new one. The image it was drawn from is
+                // left in the atlas a few frames longer, since the frame on show still
+                // refers to it.
                 this.previous = this.current.take();
+                if let Some(old) = this.previous_image.take() {
+                    this.frames.push_back(old);
+                }
+                this.previous_image = this.image.take();
                 this.current = Some(Arc::new(source));
+                this.image = Some(prepared);
                 this.shown = Some(cover);
                 this.melted = Some(Instant::now());
                 cx.notify();
@@ -271,30 +363,30 @@ impl Immersive {
         }));
     }
 
-    /// Asks for the next frame, unless one is already on its way.
+    /// Asks for the next frame, unless one is already on its way. A renderer that bends the
+    /// image itself only needs its clock moved on, so the field still ticks at the quality's
+    /// rate rather than repainting the whole window every frame.
     fn step(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.frame_task.is_some() || !animates(cx) {
             return;
         }
-        let Some(current) = self.current.clone() else {
+        if self.current.is_none() {
             return;
-        };
-        let viewport = window.viewport_size();
-        self.size = self
-            .quality
-            .size(viewport.width.as_f32(), viewport.height.as_f32());
-        let melt = self
-            .melted
-            .map(|since| since.elapsed().as_secs_f32() / MELT.as_secs_f32())
-            .unwrap_or(1.)
-            .min(1.);
+        }
         // The cover the field is melting out of is let go once the melt is over, so the
         // steady state samples only the cover on show.
+        let melt = self.melt();
         let previous = match melt < 1. {
             true => self.previous.clone(),
             false => {
                 self.previous = None;
-                None
+                match self.previous_image.take() {
+                    Some(old) => {
+                        self.frames.push_back(old);
+                        None
+                    }
+                    None => None,
+                }
             }
         };
         let now = Instant::now();
@@ -302,34 +394,47 @@ impl Immersive {
         self.stepped = now;
         let time = self.clock + step;
         self.clock = time;
-        let (width, height) = self.size;
-        let wait = Duration::from_secs_f32(1. / self.quality.rate()).saturating_sub(self.rendered);
-        self.frame_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
-            let started = Instant::now();
-            let bytes = cx
-                .background_spawn(async move {
-                    draw(
-                        previous.as_deref(),
-                        &current,
-                        eased(melt),
-                        time,
-                        width,
-                        height,
-                    )
-                })
-                .await;
-            let took = started.elapsed();
-            this.update(cx, |this, cx| {
-                this.frame_task = None;
-                this.rendered = took;
-                if let Some(bytes) = bytes {
-                    this.push(bytes, (width, height));
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
+        let wait = Duration::from_secs_f32(1. / self.quality.rate());
+        match GPU {
+            true => {
+                self.frame_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    this.update(cx, |this, cx| {
+                        this.frame_task = None;
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+            false => {
+                let Some(current) = self.current.clone() else {
+                    return;
+                };
+                self.size = self.field_size(window);
+                let wait = wait.saturating_sub(self.rendered);
+                let (width, height) = self.size;
+                let blend = eased(melt);
+                self.frame_task = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(wait).await;
+                    let started = Instant::now();
+                    let bytes = cx
+                        .background_spawn(async move {
+                            draw(previous.as_deref(), &current, blend, time, width, height)
+                        })
+                        .await;
+                    let took = started.elapsed();
+                    this.update(cx, |this, cx| {
+                        this.frame_task = None;
+                        this.rendered = took;
+                        if let Some(bytes) = bytes {
+                            this.push(bytes, (width, height));
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+        }
     }
 
     /// Puts a finished frame on show. The frame before it stays in the atlas a little
@@ -343,12 +448,49 @@ impl Immersive {
         self.frames.push_back(image.clone());
         self.frame = Some(image);
     }
+
+    /// What a renderer that bends the image itself draws: the prepared square, the one the
+    /// field is melting out of, and the warp's parameters for this frame. The square is in
+    /// the atlas already, so only the parameters change from frame to frame.
+    fn field(&self, window: &Window) -> Option<Field> {
+        let image = self.image.clone()?;
+        let melt = self.melt();
+        let previous = match melt < 1. {
+            true => self.previous_image.clone().map(|previous| (previous, 0)),
+            false => None,
+        };
+        let (width, height) = self.field_size(window);
+        Some((
+            image,
+            previous,
+            WarpParams {
+                time: self.clock,
+                intensity: INTENSITY,
+                saturation: SATURATION,
+                brightness: BRIGHTNESS,
+                zoom: ZOOM,
+                vignette: VIGNETTE,
+                falloff: FALLOFF,
+                blend: eased(melt),
+                field: [width as f32, height as f32],
+                pad: [0., 0.],
+            },
+        ))
+    }
 }
 
 impl Render for Immersive {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.prepare(window, cx);
         self.step(window, cx);
+        if GPU && self.image.is_none() {
+            log::debug!(
+                "kawarp: no image yet, cover {:?} source {} preparing {:?}",
+                self.cover,
+                self.current.is_some(),
+                self.preparing
+            );
+        }
         // The frames behind the one on show leave the atlas here, where the window they
         // were drawn in is to hand.
         while self.frames.len() > HELD {
@@ -358,19 +500,33 @@ impl Render for Immersive {
             cx.drop_image(old, Some(window));
         }
 
-        let frame = self.frame.clone();
+        let field = match GPU {
+            true => self.field(window).map(|(image, previous, warp)| {
+                canvas(
+                    move |bounds, _, _| (bounds, image, previous, warp),
+                    |_, (bounds, image, previous, warp), window, _| {
+                        window
+                            .paint_warped_image(bounds, image, 0, previous, warp)
+                            .ok();
+                    },
+                )
+                .size_full()
+                .into_any_element()
+            }),
+            false => self.frame.clone().map(|frame| {
+                img(frame)
+                    .size_full()
+                    .object_fit(ObjectFit::Fill)
+                    .into_any_element()
+            }),
+        };
+
         div()
             .id("immersive")
             .absolute()
             .inset_0()
             .overflow_hidden()
-            .child(match frame {
-                Some(frame) => img(frame)
-                    .size_full()
-                    .object_fit(ObjectFit::Fill)
-                    .into_any_element(),
-                None => div().into_any_element(),
-            })
+            .when_some(field, |this, field| this.child(field))
     }
 }
 
