@@ -9,20 +9,20 @@ use crate::motion::ease_out_cubic;
 
 /// How far an arriving item sits below its resting spot while it fades in.
 const RISE: Pixels = px(10.);
-/// The pause between two neighbours in a staggered arrival. Short, because a
-/// long pause turns a list into a ticker; the smoothness comes from each row's
-/// own fade, not from the wait between them.
-const STAGGER: Duration = Duration::from_millis(26);
+/// The pause between two neighbours in a staggered arrival. Long enough that the
+/// ladder reads as a ladder rather than a flash, and short enough that the tail of
+/// a long list is not made to wait.
+const STAGGER: Duration = Duration::from_millis(78);
 /// How many neighbours get their own slot before the cap, so a long list never
 /// makes its tail wait half a second.
 pub(crate) const SLOTS: usize = 10;
 /// How long one item's fade and rise takes. Long enough that a row is seen to
 /// arrive rather than blink in, which is what keeps the list from reading as a
 /// block that pops.
-const FADE: Duration = Duration::from_millis(240);
+const FADE: Duration = Duration::from_millis(600);
 /// The whole arrival clock: every item maps its own slot onto this one span so
 /// they all share a single start instant.
-pub(crate) const SPAN: Duration = Duration::from_millis(26 * 10 + 240);
+pub(crate) const SPAN: Duration = Duration::from_millis(78 * 10 + 600);
 
 /// A staggered entrance for content that just arrived. Wrap the first screenful
 /// of a batch — items past `SLOTS` render at rest immediately, and the wrapper
