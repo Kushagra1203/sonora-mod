@@ -15,8 +15,8 @@ use state::{
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 use ui::WindowFrame;
 use ui::{
-    ActiveTheme as _, CoverFade, Dismiss, Entrance, INPUT_CONTEXT, Look, Stillness, Theme,
-    ThemeKind, clear_listing,
+    ActiveTheme as _, CoverFade, Dismiss, Entrance, INPUT_CONTEXT, Immersive, Look, Stillness,
+    Theme, ThemeKind, clear_listing,
 };
 
 use crate::chrome::{
@@ -103,6 +103,8 @@ pub struct Root {
     ambient: Entity<Ambient>,
     /// The home page's field: the playing song's colours washed over the page.
     field: Entity<Ambient>,
+    /// The home page's bent artwork: the playing song's cover warped behind the window.
+    immersive: Entity<Immersive>,
     /// The home page's artwork: the playing song's cover, dissolving from the last one when
     /// the song changes.
     home_art: CoverFade,
@@ -271,6 +273,7 @@ impl Root {
         let fullscreen = cx.new(|cx| FullscreenView::new(playback.clone(), queue.clone(), cx));
         let ambient = cx.new(Ambient::new);
         let field = cx.new(|cx| Ambient::home(playback.clone(), cx));
+        let immersive = cx.new(Immersive::new);
 
         let title_bar = cx.new(TitleBar::new);
         cx.subscribe(&title_bar, |this, _, event, cx| match event {
@@ -384,6 +387,7 @@ impl Root {
             adaptive,
             ambient,
             field,
+            immersive,
             home_art: CoverFade::new(),
             jam_invite: cx.new(JamInvite::new),
             theme_invite: cx.new(ThemeInvite::new),
@@ -722,6 +726,20 @@ impl Root {
                 .blurred(Some(cover), art, BLUR, window, cx)
                 .into_any_element(),
         )
+    }
+
+    /// The bent artwork behind the home page, when the setting asks for it. The field
+    /// follows the playing cover and is worked out at the chosen quality.
+    fn immersive_field(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let settings = Sonora::global(cx).settings.read(cx);
+        if !settings.immersive_background() {
+            return None;
+        }
+        let quality = settings.background_quality();
+        let cover = self.playing_cover(cx).map(SharedString::from);
+        self.immersive
+            .update(cx, |immersive, _| immersive.follow(cover, quality));
+        Some(self.immersive.clone().into_any_element())
     }
 
     /// The cover the page wash is drawn from: the picture the page on show is built on. Read
@@ -1414,8 +1432,10 @@ impl Render for Root {
             // artwork is centred in the window and settles to half the page colour, so the
             // page reads with the picture the way the song page does.
             .when(field, |this| {
+                let immersive = self.immersive_field(cx);
                 this.child(
                     PageWash::of(self.home_art(window, cx))
+                        .field(immersive)
                         .ink(0.)
                         .shade(SHADE)
                         .centered(true)

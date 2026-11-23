@@ -19,6 +19,7 @@ mod hairline;
 mod info_card;
 mod inline_links;
 mod input;
+mod kawarp;
 mod kbd;
 mod label;
 mod layout;
@@ -98,6 +99,7 @@ pub use input::{
     SelectLeft, SelectRight, SelectWordLeft, SelectWordRight, ShowCharacterPalette, Space,
     WordLeft, WordRight, refresh_primary_paste,
 };
+pub use kawarp::{BackgroundQuality, Immersive};
 pub use kbd::Kbd;
 pub use label::{
     Tails, eyebrow, faint, heading, spoken, spoken_eyebrow, spoken_heading, spoken_vacant, upper,

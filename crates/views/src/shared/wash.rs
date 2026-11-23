@@ -51,6 +51,9 @@ pub(crate) const ARTIST_SHADE: f32 = 0.12;
 pub(crate) struct PageWash {
     /// Where the field's artwork comes from.
     source: Option<Source>,
+    /// A field laid over the artwork, filling the window: the artwork bent into one. The
+    /// artwork shows through until the field has a frame of its own to draw.
+    field: Option<AnyElement>,
     /// How far below the window's top the wash starts. Zero on a page that drops the title bar,
     /// the bar's height on one that keeps it.
     top: Pixels,
@@ -86,6 +89,7 @@ impl PageWash {
     pub(crate) fn new(cover: Option<String>) -> Self {
         Self {
             source: cover.map(Source::Cover),
+            field: None,
             top: Pixels::ZERO,
             settle: true,
             settle_to: 1.,
@@ -100,6 +104,7 @@ impl PageWash {
     pub(crate) fn of(art: Option<AnyElement>) -> Self {
         Self {
             source: art.map(Source::Art),
+            field: None,
             top: Pixels::ZERO,
             settle: true,
             settle_to: 1.,
@@ -113,6 +118,13 @@ impl PageWash {
     pub(crate) fn field_size(window: &Window) -> Pixels {
         let viewport = window.viewport_size();
         (viewport.width + BLEED * 2.).max(viewport.height + BLEED * 2.)
+    }
+
+    /// Lays a field over the artwork, filling the window: the artwork bent into one. The
+    /// artwork shows through until the field has a frame of its own to draw.
+    pub(crate) fn field(mut self, field: Option<AnyElement>) -> Self {
+        self.field = field;
+        self
     }
 
     /// Starts the wash `top` below the window's top edge.
@@ -223,6 +235,18 @@ impl RenderOnce for PageWash {
                         Source::Art(art) => art,
                     }),
             )
+            // The field is laid over the artwork and fills the window, so it hides the
+            // artwork once it has a frame of its own and shows it until then.
+            .when_some(self.field, |this, field| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .opacity(clarity)
+                        .child(field)
+                        .into_any_element(),
+                )
+            })
             .child(
                 div()
                     .absolute()

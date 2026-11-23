@@ -82,6 +82,8 @@ enum Slot {
     Frosted,
     Ambient,
     AmbientMotion,
+    ImmersiveBackground,
+    BackgroundQuality,
     Visualizer,
     VisualizerAbsolute,
     PlayerBarLayout,
@@ -736,6 +738,14 @@ impl SettingsView {
                 t!("settings-ambient-motion"),
                 t!("settings-ambient-motion-detail"),
             ),
+            Slot::ImmersiveBackground => (
+                t!("settings-immersive-background"),
+                t!("settings-immersive-background-detail"),
+            ),
+            Slot::BackgroundQuality => (
+                t!("settings-background-quality"),
+                t!("settings-background-quality-detail"),
+            ),
             Slot::Visualizer => (t!("settings-visualizer"), t!("settings-visualizer-detail")),
             Slot::PlayerBarLayout => (
                 t!("settings-player-bar-layout"),
@@ -973,6 +983,8 @@ impl SettingsView {
             Slot::CommunityThemes => self.community_themes_row(cx),
             Slot::Ambient => self.ambient_row(cx),
             Slot::AmbientMotion => self.ambient_motion_row(cx),
+            Slot::ImmersiveBackground => self.immersive_background_row(cx),
+            Slot::BackgroundQuality => self.background_quality_row(cx),
             Slot::Visualizer => div().into_any_element(),
             Slot::PlayerBarLayout => div().into_any_element(),
             Slot::PlayerBarTransparent => self.player_bar_transparent_row(cx),

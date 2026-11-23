@@ -536,6 +536,10 @@ struct Appearance {
     adaptive_theme: bool,
     ambient: bool,
     ambient_motion: bool,
+    /// Whether the playing cover is bent behind the window instead of lying still under it.
+    immersive_background: bool,
+    /// How finely the immersive background is worked out, by id.
+    background_quality: String,
     visualizer: bool,
     visualizer_style: String,
     /// Whether the visualizer draws the track at its own level rather than at the volume.
@@ -858,6 +862,8 @@ impl Default for Appearance {
             adaptive_theme: false,
             ambient: true,
             ambient_motion: true,
+            immersive_background: true,
+            background_quality: ui::BackgroundQuality::default().id().to_owned(),
             visualizer: true,
             visualizer_style: ui::VisualizerStyle::default().id().to_owned(),
             visualizer_absolute: false,
@@ -1414,6 +1420,16 @@ impl AppSettings {
     /// the system reduce-motion preference does too.
     pub fn ambient_motion(&self) -> bool {
         self.values.appearance.ambient_motion
+    }
+
+    /// Whether the playing cover is bent behind the window instead of lying still under it.
+    pub fn immersive_background(&self) -> bool {
+        self.values.appearance.immersive_background
+    }
+
+    /// How finely the immersive background is worked out.
+    pub fn background_quality(&self) -> ui::BackgroundQuality {
+        ui::BackgroundQuality::from_id(&self.values.appearance.background_quality)
     }
 
     /// Whether the playing cover should colour the theme, given whether fullscreen is up. The
@@ -2288,6 +2304,22 @@ impl AppSettings {
 
     pub fn set_ambient_motion(&mut self, motion: bool, cx: &mut Context<Self>) {
         self.values.appearance.ambient_motion = motion;
+        self.schedule_save(cx);
+    }
+
+    /// Lets the playing cover be bent behind the window, or lays it still under it.
+    pub fn set_immersive_background(&mut self, immersive: bool, cx: &mut Context<Self>) {
+        self.values.appearance.immersive_background = immersive;
+        self.schedule_save(cx);
+    }
+
+    /// Sets how finely the immersive background is worked out.
+    pub fn set_background_quality(
+        &mut self,
+        quality: ui::BackgroundQuality,
+        cx: &mut Context<Self>,
+    ) {
+        self.values.appearance.background_quality = quality.id().to_owned();
         self.schedule_save(cx);
     }
 

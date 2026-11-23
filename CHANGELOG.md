@@ -9,6 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The cover bends behind the window: the playing artwork melts into a soft, moving field on the
+  home page and in the fullscreen player, and you can turn it off or set its detail in Appearance
+  settings.
 - Pages fill in smoothly: the first rows of a track list, a shelf of home cards, search hits and
   library grids rise into place one after another as their data lands, and the hero fades up as
   its skeleton steps aside.

@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyView, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Render, ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
+    AnyElement, AnyView, App, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Render, ScrollWheelEvent, SharedString, SpringState, Task, TextShadow,
 };
 use gpui::{Window, canvas, deferred, div, linear_color_stop, linear_gradient, phi, px, relative};
 use i18n::t;
@@ -15,9 +15,9 @@ use input::{ToggleFullscreen, ToggleWindowFullscreen, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
 use state::{AppSettings, Cover, FullscreenControlsAutohide, Playback, Queue, SideTab, Sonora};
 use ui::{
-    ActiveTheme as _, Artwork, Button, CoverFade, ExplicitBadge, InlineLink, InlineLinks, Motion,
-    Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Springs, TabBar, Tails as _,
-    Text, Visualizer, clock, glass, snapped,
+    ActiveTheme as _, Artwork, Button, CoverFade, ExplicitBadge, Immersive, InlineLink,
+    InlineLinks, Motion, Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Springs,
+    TabBar, Tails as _, Text, Visualizer, clock, glass, snapped,
 };
 
 use crate::chrome::{Aside, TitleBarOptions};
@@ -113,6 +113,8 @@ pub struct FullscreenView {
     strip_cover: CoverFade,
     /// The backdrop's dissolve, so the colour field behind the player melts between covers.
     backdrop_fade: CoverFade,
+    /// The bent artwork behind the player: the playing cover warped like wet paint.
+    immersive: Entity<Immersive>,
     track_menu: ItemMenu,
     context_menu: Option<(music::Track, Point<Pixels>)>,
     last_moved: Instant,
@@ -171,6 +173,7 @@ impl FullscreenView {
             revision: 0,
             strip_cover: CoverFade::new(),
             backdrop_fade: CoverFade::new(),
+            immersive: cx.new(Immersive::new),
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
             context_menu: None,
             last_moved: Instant::now(),
@@ -633,6 +636,9 @@ impl FullscreenView {
     /// blurred until only its light survives, shaded toward the page and dithered. It melts
     /// into the next cover when the track changes, over the ambient field that shows through
     /// until the first cover has decoded.
+    ///
+    /// The bent artwork, when the setting asks for it, is laid over the blurred cover, which
+    /// shows through until the field has a frame of its own.
     fn backdrop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
         let cover = self
@@ -651,6 +657,7 @@ impl FullscreenView {
             true => theme.background.a,
             false => 1.,
         };
+        let immersive = self.immersive_field(cx);
 
         div()
             .absolute()
@@ -678,6 +685,18 @@ impl FullscreenView {
                             .blurred(cover, art, BACKDROP_BLUR, window, cx),
                     ),
             )
+            // The bent artwork fills the field and hides the blurred cover once it has a frame
+            // of its own.
+            .when_some(immersive, |this, field| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .opacity(clarity)
+                        .child(field)
+                        .into_any_element(),
+                )
+            })
             .child(
                 div()
                     .absolute()
@@ -690,6 +709,22 @@ impl FullscreenView {
                 linear_color_stop(theme.background.opacity(0.5 * clarity), 1.),
             )))
             .child(ui::grain(window))
+    }
+
+    /// The bent artwork behind the player, when the setting asks for it. The field follows the
+    /// playing cover and is worked out at the chosen quality.
+    fn immersive_field(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let settings = self.settings.read(cx);
+        if !settings.immersive_background() {
+            return None;
+        }
+        let quality = settings.background_quality();
+        let shown = self.playback.read(cx).shown_track(cx);
+        let large = self.cover.read(cx).large().map(SharedString::from);
+        let cover = large.or_else(|| shown.and_then(|track| track.cover).map(SharedString::from));
+        self.immersive
+            .update(cx, |immersive, _| immersive.follow(cover, quality));
+        Some(self.immersive.clone().into_any_element())
     }
 
     fn strip(
@@ -1488,6 +1523,8 @@ impl Render for FullscreenView {
         // The immersive field sits under everything the player paints, on a container without
         // the page's own padding, so it reaches the window's edges instead of stopping at them
         // and reading as a slab.
+        let ambient = ambient::shown(cx);
+        let immersive = self.settings.read(cx).immersive_background();
         div()
             .relative()
             .flex()
@@ -1495,7 +1532,7 @@ impl Render for FullscreenView {
             .flex_1()
             .min_h_0()
             .w_full()
-            .when(ambient::shown(cx), |this| {
+            .when(ambient || immersive, |this| {
                 this.child(self.backdrop(window, cx))
             })
             .child(page)

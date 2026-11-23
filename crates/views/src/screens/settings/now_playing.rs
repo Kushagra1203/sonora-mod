@@ -2,7 +2,9 @@ use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Pixels, Window, div, px, svg};
 use i18n::t;
 use state::FullscreenControlsAutohide;
-use ui::{ActiveTheme as _, Levels, OptionCard, Switch, Visualizer, VisualizerStyle};
+use ui::{
+    ActiveTheme as _, BackgroundQuality, Levels, OptionCard, Switch, Visualizer, VisualizerStyle,
+};
 
 use super::rows::{Announced as _, grid, segmented};
 use super::{Group, Row, SettingsView, Slot};
@@ -22,8 +24,12 @@ impl SettingsView {
     pub(super) fn now_playing_groups(&self, cx: &App) -> Vec<Group> {
         let settings = self.settings.read(cx);
         vec![
-            Group::new("settings-group-background", "icons/blend.svg")
-                .rows([Slot::Ambient, Slot::AmbientMotion]),
+            Group::new("settings-group-background", "icons/blend.svg").rows([
+                Slot::Ambient,
+                Slot::AmbientMotion,
+                Slot::ImmersiveBackground,
+                Slot::BackgroundQuality,
+            ]),
             Group::new("settings-visualizer", "icons/music-2.svg")
                 .cards(Slot::Visualizer)
                 .rows(
@@ -67,6 +73,52 @@ impl SettingsView {
                     this.settings
                         .update(cx, |settings, cx| settings.set_ambient_motion(!on, cx));
                 }))
+                .into_any_element(),
+        )
+        .disabled(disabled)
+        .into_any_element()
+    }
+
+    /// Whether the playing cover is bent behind the window instead of lying still under it.
+    pub(super) fn immersive_background_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).immersive_background();
+
+        self.row(
+            t!("settings-immersive-background"),
+            Switch::new("immersive-background", on)
+                .name(t!("settings-immersive-background"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings.update(cx, |settings, cx| {
+                        settings.set_immersive_background(!on, cx)
+                    });
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// How finely the immersive background is worked out. It is a choice between three
+    /// qualities rather than a slider, because the field looks much the same at any of them.
+    pub(super) fn background_quality_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let chosen = self.settings.read(cx).background_quality();
+        let disabled = !self.settings.read(cx).immersive_background();
+
+        let picker = segmented(
+            "background-quality",
+            BackgroundQuality::ALL.map(|quality| (quality, quality.label())),
+            chosen,
+            cx.listener(|this, quality: &BackgroundQuality, _, cx| {
+                let quality = *quality;
+                this.settings.update(cx, |settings, cx| {
+                    settings.set_background_quality(quality, cx)
+                });
+                cx.notify();
+            }),
+        );
+
+        Row::new(
+            t!("settings-background-quality"),
+            picker
+                .name(t!("settings-background-quality"))
                 .into_any_element(),
         )
         .disabled(disabled)

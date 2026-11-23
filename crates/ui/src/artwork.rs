@@ -371,7 +371,7 @@ struct Cached {
     sharp: bool,
 }
 
-struct ArtworkCache {
+pub(crate) struct ArtworkCache {
     items: HashMap<ArtworkKey, Cached>,
     /// Covers taken out of `items` and kept alive until the windows have redrawn once. See
     /// `condemn`.
@@ -394,7 +394,8 @@ struct Installed(Entity<ArtworkCache>);
 impl Global for Installed {}
 
 impl ArtworkCache {
-    fn entity(cx: &mut App) -> Entity<Self> {
+    /// The cache every cover is drawn through.
+    pub(crate) fn entity(cx: &mut App) -> Entity<Self> {
         if cx.try_global::<Installed>().is_none() {
             let cache = cx.new(|cx| Self {
                 items: HashMap::new(),
@@ -710,7 +711,8 @@ impl ArtworkCache {
         }
     }
 
-    fn load_at(
+    /// The cover at `resource`, decoded at `edge`. `None` while it is still on its way.
+    pub(crate) fn load_at(
         &mut self,
         resource: &Resource,
         edge: u32,
